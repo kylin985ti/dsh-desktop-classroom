@@ -56,6 +56,6 @@ jobs:
           python3 -B scripts/build-tencent-browser.py --work "$RUNNER_TEMP/tencent-build" --arch x86_64
       - name: Test helper and isolated repeat installation
         run: |
-          "$RUNNER_TEMP/tencent-build/$(uname -m)/DSH 腾讯文档浏览器 0.1.1.app/Contents/MacOS/Browser" --self-test
+          "$RUNNER_TEMP/tencent-build/$(uname -m)/DSH 腾讯文档浏览器 0.2.0.app/Contents/MacOS/Browser" --self-test
           if [ "$(uname -m)" = arm64 ]; then BROWSER_ARCH=arm64; else BROWSER_ARCH=x64; fi
-          node tests/tencent-installer.mjs "$RUNNER_TEMP/tencent-build/dsh-tencent-browser-0.1.1-$BROWSER_ARCH.zip"
+          node tests/tencent-installer.mjs "$RUNNER_TEMP/tencent-build/dsh-tencent-browser-0.2.0-$BROWSER_ARCH.zip"

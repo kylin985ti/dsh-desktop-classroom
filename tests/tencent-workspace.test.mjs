@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {documentURL,fileList,documentText} from '../plugins/dsh-tencent-docs/lib/workspace.mjs';
+import {documentURL,documentKind,fileList,documentText,sheetTabs,sheetBounds,sheetCells} from '../plugins/dsh-tencent-docs/lib/workspace.mjs';
 import {DocumentBrowser} from '../plugins/dsh-tencent-docs/lib/browser.mjs';
 test('document URL allowlist removes grants and rejects foreign origins and login pages',()=>{
  assert.equal(documentURL('https://docs.qq.com/sheet/synthetic?tab=test&access_token=discard&state=discard#private'),'https://docs.qq.com/sheet/synthetic?tab=test');
@@ -29,5 +29,18 @@ test('web inbox accepts only private exact document captures; dismiss leaves oth
   const bad='00000000-0000-4000-a000-000000000002';await fs.writeFile(join(root,bad+'.json'),JSON.stringify({...row,id:bad,url:'https://example.com/doc/private'}),{mode:0o600});
   const symlink='00000000-0000-4000-a000-000000000003';await fs.symlink(join(root,id+'.json'),join(root,symlink+'.json'));assert.equal((await browser.list()).length,1);
   await assert.rejects(browser.dismiss('../connection'));await browser.dismiss(id);assert.equal((await browser.list()).length,0);await fs.access(join(root,bad+'.json'));
+ }finally{await fs.rm(home,{recursive:true,force:true});}
+});
+
+test('typed sheet preview preserves data and bounds large reads',()=>{
+ const wrap=x=>({structuredContent:x});const tabs=sheetTabs(wrap({sheets:[{sheet_id:'tab1',sheet_name:'合成表',row_count:1000,col_count:26},{sheet_id:'hidden',hidden:true,row_count:10,col_count:10}]}));assert.equal(tabs.length,1);const bounds=sheetBounds(tabs[0],40,12);assert.deepEqual(bounds,{startRow:40,startCol:12,endRow:79,endCol:23});assert.throws(()=>sheetBounds(tabs[0],-1),/范围/);
+ const cells=sheetCells(wrap({cells:[{row:40,col:12,value_type:'NUMBER',number_value:0},{row:40,col:13,value_type:'BOOL',bool_value:false},{row:41,col:12,value_type:'STRING',string_value:'重复'},{row:41,col:13,value_type:'STRING',string_value:'重复'},{row:100,col:20,value_type:'STRING',string_value:'超出范围'}]}),bounds);assert.deepEqual(cells.map(c=>c.text),['0','false','重复','重复']);assert.equal(documentKind('https://docs.qq.com/document/synthetic'),'document');assert.equal(documentText(wrap({paragraphs:[{text:'重复'},{text:'重复'},{value:0},{value:false}]})),'重复\n\n重复\n\n0\n\nfalse');
+});
+test('image inbox validates private PNG ownership, dimensions and exact filename; dismiss removes only that capture',async()=>{
+ const home=await fs.mkdtemp(join(tmpdir(),'tencent-image-')),browser=new DocumentBrowser(home),id='00000000-0000-4000-a000-000000000011',root=browser.root;
+ try{await fs.mkdir(root,{recursive:true});const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jPhsAAAAASUVORK5CYII=','base64');const record={id,kind:'visual',url:'https://docs.qq.com/slide/synthetic',title:'合成幻灯片',text:'',comment:'请分析',receivedAt:new Date().toISOString(),image:{filename:id+'.png',width:1,height:1,bytes:png.length}};
+ await fs.writeFile(join(root,id+'.png'),png,{mode:0o600});await fs.writeFile(join(root,id+'.json'),JSON.stringify(record),{mode:0o600});assert.equal((await browser.list()).length,1);const image=await browser.image(id);assert.equal(image.base64,png.toString('base64'));assert.equal(image.mimeType,'image/png');await assert.rejects(browser.image('../connection'));
+ await fs.chmod(join(root,id+'.png'),0o644);assert.equal((await browser.list()).length,0);await assert.rejects(browser.image(id));await fs.chmod(join(root,id+'.png'),0o600);
+ record.image.filename='../connection.json';await fs.writeFile(join(root,id+'.json'),JSON.stringify(record),{mode:0o600});assert.equal((await browser.list()).length,0);await browser.dismiss(id);await assert.rejects(fs.access(join(root,id+'.png')));
  }finally{await fs.rm(home,{recursive:true,force:true});}
 });

@@ -52,7 +52,7 @@ python3 -B tests/wechat-reader.py --app '/private/tmp/dsh-wechat-build/arm64/DSH
 ```bash
 python3 -B scripts/build-tencent-browser.py --work /private/tmp/dsh-tencent-build --arch arm64
 python3 -B scripts/build-tencent-browser.py --work /private/tmp/dsh-tencent-build --arch x86_64
-node tests/tencent-installer.mjs /private/tmp/dsh-tencent-build/dsh-tencent-browser-0.1.1-arm64.zip
+node tests/tencent-installer.mjs /private/tmp/dsh-tencent-build/dsh-tencent-browser-0.2.0-arm64.zip
 ```
 
 浏览器只依赖系统 AppKit/WebKit。发布两个 ZIP 后同步 `classroom.json.tencentBrowser` 的版本、固定 URL 和下载 SHA256，refresh/test。构建、self-test 和安装器测试不打开网站、不访问 Cookie 或账号；真实登录、页面选区与 DSH 草稿验收必须另行通过 CUA 进行。不要把维护者网页数据、私有接收记录或截图放入仓库/Release。不要禁用宿主 webSecurity、修改 App 包或移除网站安全策略。
