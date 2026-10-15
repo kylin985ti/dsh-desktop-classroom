@@ -38,6 +38,10 @@ export async function verifyPayload(root) {
   for (const asset of Object.values(config.desktop.assets)) if (!/^[a-f0-9]{64}$/.test(asset.sha256)) throw new Error('Invalid Desktop SHA256');
   if (config.wechatBridge.defaultEnabled !== false) throw new Error('WeChat must be opt-in');
   for (const asset of Object.values(config.wechatBridge.assets)) { if (!/^[a-f0-9]{64}$/.test(asset.sha256) || /^0+$/.test(asset.sha256)) throw new Error('Invalid WeChat SHA256'); }
+  for (const asset of Object.values(config.tencentBrowser.assets)) {
+    if (!/^[a-f0-9]{64}$/.test(asset.sha256) || /^0+$/.test(asset.sha256)) throw new Error('Invalid Tencent browser SHA256');
+    if (!asset.url.startsWith(config.repository + '/releases/download/')) throw new Error('Invalid Tencent browser asset URL');
+  }
   // Match credential values and personal state, not config field names.
   const secrets = [/[s]k-(?:proj-|ant-)?[A-Za-z0-9_-]{28,}/, /[t]vly-[A-Za-z0-9_-]{20,}/,
     /[g]h[pousr]_[A-Za-z0-9]{30,}/, /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,

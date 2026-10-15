@@ -1,6 +1,8 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createMcpToolDefinition } from '@deepseek-ai/dsh-mcp-client';
 import { TencentAuth, ORIGIN } from './auth.mjs';
+import { documentURL, fileList, documentText } from './workspace.mjs';
+import { DocumentBrowser } from './browser.mjs';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -8,14 +10,13 @@ import { randomUUID, createHash } from 'node:crypto';
 
 export const name = 'tencent-docs';
 export const inject = ['connection', 'credentials', 'tools'];
-const SAFE_TOOLS = new Set(['query_space_node', 'query_space_list', 'get_user_info', 'manage.search_file', 'manage.query_file_info', 'search_space_file', 'get_content', 'smartcanvas.get_element_info', 'smartcanvas.get_page_info', 'smartcanvas.get_top_level_pages', 'smartsheet.list_tables', 'smartsheet.list_views', 'smartsheet.list_fields', 'smartsheet.list_records']);
+const SAFE_TOOLS = new Set(['query_space_node', 'query_space_list', 'get_user_info', 'manage.search_file', 'manage.recent_online_file', 'manage.folder_list', 'manage.query_file_info', 'search_space_file', 'get_content', 'smartcanvas.get_element_info', 'smartcanvas.get_page_info', 'smartcanvas.get_top_level_pages', 'smartsheet.list_tables', 'smartsheet.list_views', 'smartsheet.list_fields', 'smartsheet.list_records']);
 export const isReadOnly = tool => tool.annotations?.readOnlyHint === true || SAFE_TOOLS.has(tool.name) || /(?:^|\.)(?:get|list|query|search|read)(?:_|$)/.test(tool.name);
 const deletion = tool => /(?:^|\.)(?:delete|remove)(?:_|$)/.test(tool.name);
 export function documentId(input) {
   let value = String(input || '').trim();
   if (/^https?:\/\//i.test(value)) {
-    const url = new URL(value);
-    if (url.protocol !== 'https:' || url.hostname !== 'docs.qq.com') throw new Error('请输入腾讯文档链接或 file_id');
+    const url = new URL(documentURL(value));
     const match = url.pathname.match(/^\/(?:doc|sheet|slide|mind|form|smartcanvas|smartsheet|flowchart)\/([^/]+)\/?$/);
     if (!match) throw new Error('请输入包含文档 ID 的腾讯文档链接');
     value = decodeURIComponent(match[1]);
@@ -57,6 +58,7 @@ export function checkedResult(result) {
 export async function apply(ctx) {
   const root = join(process.env.DSH_HOME || join(homedir(), 'Library/Application Support/dsh-desktop/harness'), 'storages/tencent_docs');
   await mkdir(root, { recursive: true, mode: 0o700 });
+  const browser = new DocumentBrowser(process.env.DSH_HOME || join(homedir(), 'Library/Application Support/dsh-desktop/harness'));
   const path = join(root, 'connection.json');
   let saved = {}; try { saved = JSON.parse(await readFile(path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   let saving = Promise.resolve();
@@ -72,7 +74,7 @@ export async function apply(ctx) {
     if (connecting) { await connecting; return connect(); }
     connecting = (async () => {
       await disconnect();
-      const next = new Client({ name: 'dsh-desktop-tencent-docs', version: '0.1.6' });
+      const next = new Client({ name: 'dsh-desktop-tencent-docs', version: '0.2.0' });
       const wire = new StreamableHTTPClientTransport(new URL(ORIGIN + '/openapi/mcp'), { requestInit: { headers: { Authorization: header } } });
       try {
         await next.connect(wire, { timeout: 20000 });
@@ -153,11 +155,28 @@ export async function apply(ctx) {
     try {
       const body = await request.json();
       switch (body.action) {
-        case 'status': return Response.json({ authorized: !!(await auth.grant()), connected: !!client, toolCount: definitions.length, verified: saved.verified || null, identity: saved.identity || null, allowWrite: !!saved.allowWrite, login: auth.publicPending(), error: auth.lastError, commands: saved.commands });
+        case 'status': return Response.json({ authorized: !!(await auth.grant()), connected: !!client, toolCount: definitions.length, verified: saved.verified || null, identity: saved.identity || null, allowWrite: !!saved.allowWrite, login: auth.publicPending(), error: auth.lastError, commands: saved.commands, browser: await browser.describe() });
         case 'login': return Response.json({ login: await auth.begin() });
         case 'token': await auth.setPersonalToken(body.token); return Response.json({ ok: true });
         case 'logout': await auth.logout(); return Response.json({ ok: true });
         case 'allowWrite': saved.allowWrite = body.enabled === true; await save(); return Response.json({ allowWrite: saved.allowWrite });
+        case 'openBrowser': await browser.open(body.url); return Response.json({ ok: true });
+        case 'webInbox': return Response.json({ rows: await browser.list() });
+        case 'dismissWeb': await browser.dismiss(body.id); return Response.json({ ok: true });
+        case 'workspace': {
+          if (!(await auth.grant())) return Response.json({ authorized: false, rows: [], hasMore: false });
+          const page = Number(body.page ?? 1); if (!Number.isInteger(page) || page < 1 || page > 100) throw new Error('请使用有效的列表页码');
+          const section = body.section === 'mine' ? 'mine' : 'recent';
+          const result = section === 'mine' ? await call('manage.folder_list', { start: (page - 1) * 20, ...(body.folderId ? { folder_id: String(body.folderId).slice(0,300) } : {}) }) : await call('manage.recent_online_file', { num: page, count: 20, order_by: 0 });
+          return Response.json({ authorized: true, section, page, ...fileList(result) });
+        }
+        case 'preview': {
+          const fileId = documentId(body.fileId), result = await call('get_content', { file_id: fileId });
+          const text = documentText(result); if (!text.trim()) throw new Error('腾讯文档没有返回可引用的正文，请打开网页查看或选择文字');
+          saved.verified = { at: new Date().toISOString(), level: 'document-read', tools: definitions.length }; await save();
+          return Response.json({ fileId, text, verified: saved.verified });
+        }
+        case 'documentLink': return Response.json({ url: documentURL(body.url) });
         case 'discover': await connect(); return Response.json({ tools: definitions.map(tool => ({ name: tool.name, inputSchema: tool.inputSchema, readOnly: isReadOnly(tool) })) });
         case 'approve': return Response.json({ command: await approve(body.id) });
         case 'reject': {
@@ -180,7 +199,8 @@ export async function apply(ctx) {
           const properties = definitions.find(tool => tool.name === name)?.inputSchema?.properties || {};
           const field = ['query', 'keyword', 'search_key', 'search_string', 'q'].find(key => key in properties);
           if (!field) throw new Error('腾讯文档搜索参数发生变化，请在 AI 会话中使用搜索工具');
-          return Response.json({ result: await call(name, { ...(body.arguments || {}), [field]: String(body.query || '').slice(0, 200) }) });
+          const result = await call(name, { ...(body.arguments || {}), [field]: String(body.query || '').slice(0, 200) });
+          return Response.json({ result, ...fileList(result) });
         }
         case 'read': {
           const result = await call('get_content', { file_id: documentId(body.fileId) });

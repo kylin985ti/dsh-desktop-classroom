@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyPayload } from './verify.mjs';
 import { installWeChatBridge } from './install-wechat.mjs';
+import { installTencentBrowser } from './install-tencent-browser.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -22,6 +23,11 @@ const home = option('--dsh-home', join(homedir(), 'Library/Application Support/d
 const resources = join(app, 'Contents/Resources');
 const appRoot = join(resources, 'app.asar');
 const manifest = JSON.parse(await fs.readFile(join(root, 'classroom.json'), 'utf8'));
+const onlyIndex = args.indexOf('--only');
+const onlyName = onlyIndex < 0 ? null : args[onlyIndex + 1];
+if (onlyIndex >= 0 && (!onlyName || onlyName.startsWith('--'))) throw new Error('Missing --only plugin name');
+const plugins = onlyName ? manifest.plugins.filter(p => p.name === onlyName) : manifest.plugins;
+if (!plugins.length) throw new Error('Unknown --only plugin: ' + onlyName);
 const appInfo = JSON.parse(await fs.readFile(join(appRoot, 'package.json'), 'utf8'));
 if (appInfo.version !== manifest.desktop.version) throw new Error(`Desktop ${appInfo.version} is outside the tested pin ${manifest.desktop.version}; no changes made.`);
 await verifyPayload(root);
@@ -59,18 +65,25 @@ const { publishGenerationManifest } = await import(pathToFileURL(join(nativeRoot
 const { createGenerationPackageBackend } = await import(pathToFileURL(join(nativeRoot, 'package-backend.mjs')));
 const selected = await readDesired(home);
 let generations = await listGenerations(home);
-const report = { desktop: appInfo.version, pack: manifest.version, activation: 'restart-required-when-idle', plugins: [] };
+const report = { desktop: appInfo.version, pack: manifest.version, scope: onlyName || 'all', activation: 'restart-required-when-idle', plugins: [] };
 if (args.includes('--doctor')) {
-  for (const p of manifest.plugins) {
+  for (const p of plugins) {
     const g = generations.find(g => selected.includes(g.id) && g.pluginName === p.name && g.version === p.version);
     report.plugins.push({ name: p.name, expected: p.version, installed: !!g });
   }
   try { const receipt = JSON.parse(await fs.readFile(join(home, 'classroom/wechat-bridge.json'), 'utf8')); report.wechatBridge = { installed: receipt.version === manifest.wechatBridge.version && existsSync(receipt.app), expected: manifest.wechatBridge.version, authorization: 'student-owned; not inspected' }; } catch { report.wechatBridge = { installed: false, minimumMacOS: manifest.wechatBridge.minimumMacOS }; }
+  try { const receipt = JSON.parse(await fs.readFile(join(home, 'classroom/tencent-browser.json'), 'utf8')); report.tencentBrowser = { installed: receipt.version === manifest.tencentBrowser.version && existsSync(receipt.app), expected: manifest.tencentBrowser.version, login: 'user-owned; not inspected' }; } catch { report.tencentBrowser = { installed: false, minimumMacOS: manifest.tencentBrowser.minimumMacOS }; }
   console.log(JSON.stringify(report, null, 2));
   process.exit(report.plugins.every(p => p.installed) ? 0 : 2);
 }
-console.log('Installing opt-in WeChat connector; no authorization or database scan is performed.');
-report.wechatBridge = await installWeChatBridge(manifest, home);
+if (plugins.some(p => p.name === '@local/dsh-wechat-digest')) {
+  console.log('Installing opt-in WeChat connector; no authorization or database scan is performed.');
+  report.wechatBridge = await installWeChatBridge(manifest, home);
+}
+if (plugins.some(p => p.name === '@local/dsh-tencent-docs')) {
+  console.log('Installing the document browser; no websites or login sessions are opened.');
+  report.tencentBrowser = await installTencentBrowser(manifest, home);
+}
 if (!existsSync(join(home, 'profiles/web/package.json'))) {
   // The CLI's dump mode creates the shipped profile template without mounting
   // plugins, starting a web server, logging in, or generating model traffic.
@@ -110,7 +123,7 @@ const saveReceipt = async status => {
   await fs.writeFile(temporary, JSON.stringify({ ...report, plugins: [...progress.values()], status, packHash, installedAt: new Date().toISOString() }, null, 2) + '\n', { mode: 0o600 });
   await fs.rename(temporary, receiptPath);
 };
-for (const p of manifest.plugins) {
+for (const p of plugins) {
   const sourceHash = createHash('sha256').update(JSON.stringify(pluginEntries.filter(([path]) => path.startsWith(p.path + '/')))).digest('hex');
   const current = (await readDesired(home));
   generations = await listGenerations(home);

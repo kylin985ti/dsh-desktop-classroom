@@ -42,3 +42,20 @@ jobs:
           "$RUNNER_TEMP/wechat-build/$(uname -m)/DSH 微信群连接 0.2.0.app/Contents/MacOS/wechat-db-worker" --self-test
           if [ "$(uname -m)" = arm64 ]; then BRIDGE_ARCH=arm64; else BRIDGE_ARCH=x64; fi
           node tests/wechat-installer.mjs "$RUNNER_TEMP/wechat-build/dsh-wechat-bridge-0.2.0-$BRIDGE_ARCH.zip"
+
+  tencent-browser:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build both document browser architectures
+        run: |
+          python3 -B scripts/build-tencent-browser.py --work "$RUNNER_TEMP/tencent-build" --arch arm64
+          python3 -B scripts/build-tencent-browser.py --work "$RUNNER_TEMP/tencent-build" --arch x86_64
+      - name: Test helper and isolated repeat installation
+        run: |
+          "$RUNNER_TEMP/tencent-build/$(uname -m)/DSH 腾讯文档浏览器 0.1.1.app/Contents/MacOS/Browser" --self-test
+          if [ "$(uname -m)" = arm64 ]; then BROWSER_ARCH=arm64; else BROWSER_ARCH=x64; fi
+          node tests/tencent-installer.mjs "$RUNNER_TEMP/tencent-build/dsh-tencent-browser-0.1.1-$BROWSER_ARCH.zip"

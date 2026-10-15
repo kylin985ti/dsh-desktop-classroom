@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit source allowlist. Public WeChat implementation is maintained in this repository and is never imported from a personal installation. Never export a DSH profile, storage or credentials."""
+"""Explicit source allowlist. Public Tencent Docs and WeChat implementations is maintained in this repository and is never imported from a personal installation. Never export a DSH profile, storage or credentials."""
 import argparse, json, shutil, os
 from pathlib import Path
 
@@ -34,7 +34,6 @@ SOFTWARE.
 allow = {
     'dsh-library': ['package.json', 'cordis.patch.yml', 'lib/*.mjs', 'lib/client.js', 'lib/reader.py', 'lib/licenses/*.txt', 'src/*.js', 'scripts/build-editor.mjs', 'package-lock.json'],
     'dsh-quote-context': ['package.json', 'cordis.patch.yml', 'lib/*.mjs', 'lib/client.js'],
-    'dsh-tencent-docs': ['package.json', 'cordis.patch.yml', 'lib/*.mjs', 'lib/client.js'],
     'dsh-mcp-manager': ['package.json', 'cordis.patch.yml', 'LICENSE', 'lib/*.js', 'lib/*.mjs'],
     'dsh-skill-manager': ['package.json', 'cordis.patch.yml', 'LICENSE', 'lib/*.js', 'lib/*.mjs'],
     'dsh-suggest-prompt': ['package.json', 'cordis.patch.yml', 'LICENSE', 'UPSTREAM.json', 'lib/**/*.js', 'lib/**/*.d.ts'],
