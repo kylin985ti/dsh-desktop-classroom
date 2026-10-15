@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "updated": "2026-10-15",
   "repository": "https://github.com/kylin985ti/dsh-desktop-classroom",
   "desktop": {
@@ -83,10 +83,10 @@
     {
       "path": "plugins/dsh-wechat-digest",
       "name": "@local/dsh-wechat-digest",
-      "version": "0.4.1-classroom.1",
+      "version": "0.5.0-classroom.1",
       "title": "群聊简报",
-      "capability": "手动粘贴或导入、名称和备注、接收时间、一段话总结、原话依据",
-      "setup": "数据库自动读取、微信系统分享扩展未默认分发"
+      "capability": "本人授权与选群、微信群数据库自动接收、手动导入、备注和时间、一段话总结",
+      "setup": "默认关闭；数据库连接器需macOS 13+，微信4.1.13布局实验适配，学员自行授权"
     },
     {
       "path": "plugins/dsh-mcp-manager",
@@ -114,5 +114,22 @@
       "capability": "为原生 web 能力注册 Tavily provider",
       "setup": "需自己的 Tavily API Key，并在 web 设置选择 Tavily"
     }
-  ]
+  ],
+  "wechatBridge": {
+    "version": "0.2.0",
+    "minimumMacOS": "13.0",
+    "defaultEnabled": false,
+    "assets": {
+      "arm64": {
+        "filename": "dsh-wechat-bridge-0.2.0-arm64.zip",
+        "url": "https://github.com/kylin985ti/dsh-desktop-classroom/releases/download/v0.2.0/dsh-wechat-bridge-0.2.0-arm64.zip",
+        "sha256": "2e3caf4653ef31516d55946286ada3fa2714e1e776a033c2688bb4105efb3784"
+      },
+      "x64": {
+        "filename": "dsh-wechat-bridge-0.2.0-x64.zip",
+        "url": "https://github.com/kylin985ti/dsh-desktop-classroom/releases/download/v0.2.0/dsh-wechat-bridge-0.2.0-x64.zip",
+        "sha256": "8b71f2118fadc88eb383b756ee223f5f6ce944adde5a470da2fec978a2532ba3"
+      }
+    }
+  }
 }

@@ -59,7 +59,8 @@ ${config.plugins.map(p => '| ' + (p.upstream ? '[' + p.title + '](' + p.upstream
 2. 在 DSH 设置中连接自己的 Ollama Cloud / OpenAI 订阅或其他模型服务；按需完成浏览器登录。账号授权不随教学包分发，模型列表以本人账号实际返回为准。步骤见 [个人账号连接](docs/ACCOUNTS.md)。
 3. 腾讯文档在插件内验证登录；用本人有权限的文档测试。修改需查看提案后确认。
 4. 资料库由本人选择目录；联网搜索填写本人的 Tavily 凭据并选择 provider。群聊内容仅在点击生成简报时提交给所选模型。
-5. 按 [验收清单](docs/ACCEPTANCE.md) 核对界面和一次模型调用。安装器不代填密钥、不自动测试付费模型、不读取微信数据库。
+5. 微信数据库自动接收：打开群聊简报的连接设置，由本人授权并勾选群，明确开启后才读取。连接器需 macOS 13+，属于微信 4.1.13 布局的实验适配，见 [接通步骤](docs/WECHAT.md)。
+6. 按 [验收清单](docs/ACCEPTANCE.md) 核对界面和一次模型调用。安装器不代填密钥、不自动测试付费模型、不读取微信数据库。
 
 ## 更新与保留
 
@@ -71,7 +72,7 @@ ${config.plugins.map(p => '| ' + (p.upstream ? '[' + p.title + '](' + p.upstream
 
 \`classroom.json\` 是版本、平台和功能清单的来源。修改后运行 \`npm run refresh && npm test\`；CI 会拒绝 README、安装包校验清单或下载 pin 不同步的提交。详见 [维护说明](MAINTAINER.md) 和 [变更日志](CHANGELOG.md)。
 
-本仓库只收录经过白名单导出的插件源文件和必要预构建前端。不包含教师的 API Key、OAuth、Cookie、聊天记录、资料文件、微信群绑定或数据库密钥。微信整群自动读取仍属开发项，默认教学包只含手动导入。实际测试范围见 [验证记录](docs/VERIFICATION.md)。
+本仓库只收录经过白名单导出的插件源文件和必要预构建前端。不包含教师的 API Key、OAuth、Cookie、聊天记录、资料文件、微信群绑定或数据库密钥。微信数据库连接器也随包安装，默认关闭；学员自行授权与选群，兼容边界和接通步骤见 [微信说明](docs/WECHAT.md)。实际测试范围见 [验证记录](docs/VERIFICATION.md)。
 
 原始维护代码采用 MIT；上游项目和内嵌库按各自许可分发，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。这是个人教学套件，与上游厂商无隶属关系。
 `;

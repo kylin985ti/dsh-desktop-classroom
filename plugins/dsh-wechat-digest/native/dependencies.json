@@ -1,0 +1,12 @@
+{
+  "sqlcipher": {
+    "url": "https://codeload.github.com/sqlcipher/sqlcipher/tar.gz/c4b275a47932888216bade83aff2bbc73df0ff85",
+    "version": "4.19.0",
+    "sha256": "e56d1f43cb18ec90d68b4b52d54c00b8b1c11605a27fbbba4249a1d6fc042a6f"
+  },
+  "zstd": {
+    "url": "https://codeload.github.com/facebook/zstd/tar.gz/refs/tags/v1.5.7",
+    "version": "1.5.7",
+    "sha256": "37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3"
+  }
+}

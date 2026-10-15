@@ -7,7 +7,7 @@ import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { officePython } from './platform.mjs';
-import { DatabaseSource, TARGET_GROUP } from './database-source.mjs';
+import { DatabaseSource } from './database-source.mjs';
 
 export const name = 'wechat-digest';
 export const inject = ['llm', 'connection'];
@@ -75,13 +75,13 @@ export function apply(ctx, config) {
     try { return await next; } finally { if (edits.get(id) === settled) edits.delete(id); }
   };
   const validDate = value => typeof value === 'string' && value.length < 80 && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
-  const receiveDatabase = async ({ id, day, rows, groupIdentityHash }) => {
+  const receiveDatabase = async ({ id, day, rows, groupName, groupIdentityHash, accountHash }) => {
     await ready;
     const incoming = rows.map(row => ({ id: 'db-' + row.sourceId, sourceId: row.sourceId, sender: row.sender || null, timestamp: row.timestamp, text: row.text }));
     let exists = true; try { await load(id); } catch (error) { if (error.code !== 'ENOENT') throw error; exists = false; }
-    if (!exists) { const date = new Date().toISOString(); await store(id, { id, title: TARGET_GROUP + ' · ' + day, displayName: '', note: '', receivedAt: date, importedAt: date, source: 'local-database', groupIdentityHash, recordCount: incoming.length, messages: incoming, warnings: [], summary: null, summaryStale: false }); return; }
+    if (!exists) { const date = new Date().toISOString(); await store(id, { id, title: groupName + ' · ' + day, displayName: '', note: '', receivedAt: date, importedAt: date, source: 'local-database', groupIdentityHash, accountHash, recordCount: incoming.length, messages: incoming, warnings: [], summary: null, summaryStale: false }); return; }
     await update(id, current => {
-      if (current.source !== 'local-database' || current.groupIdentityHash !== groupIdentityHash) throw new Error('群归档身份不一致，已停止合并');
+      if (current.source !== 'local-database' || current.groupIdentityHash !== groupIdentityHash || current.accountHash !== accountHash) throw new Error('群归档身份不一致，已停止合并');
       const messages = new Map(current.messages.map(row => [row.id, row])); let added = 0;
       for (const row of incoming) if (!messages.has(row.id)) { messages.set(row.id, row); added++; }
       if (messages.size > 4000) throw new Error('当日群记录超过4000条，需缩短归档范围');
@@ -99,11 +99,7 @@ export function apply(ctx, config) {
     const digest = paragraphView(doc.summary), ids = new Set((doc.messages || []).map(row => row.id));
     return { ...doc, receivedAt: receivedAt || validDate(doc.importedAt), displayName: doc.displayName || '', note: doc.note || '', digestText: digest.text, digestSources: digest.sources.filter(id => ids.has(id)) };
   };
-  const databaseStatus = async () => ({
-    available: false, enabled: false, status: 'in-development', label: '功能开发中',
-    reason: '教学包支持手动文件导入；整群数据库自动读取和 macOS 分享扩展未默认分发。',
-    plannedScope: { active: false, defaultDeny: true, targetGroupName: TARGET_GROUP, groupIdBound: false, privateChatsAllowed: false },
-  });
+  const databaseStatus = () => database.describe();
   const parseFile = async (path, title) => new Promise((resolve, reject) => {
     const child = spawn(officePython(), ['-I', '-B', parserPath, path, title || basename(path)], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let output = ''; const timer = setTimeout(() => { child.kill(); reject(new Error('解析超时')); }, 20000);
@@ -176,6 +172,10 @@ export function apply(ctx, config) {
         return Response.json({ rows: rows.sort((a, b) => (b.receivedAt || '').localeCompare(a.receivedAt || '')), model: route(), automatic: await databaseStatus() });
       }
       if (body.action === 'get') return Response.json({ doc: await present(await load(body.id)) });
+      if (body.action === 'openDatabaseConnector') { await databaseStarting; await database.open(); return Response.json({ automatic: await databaseStatus() }); }
+      if (body.action === 'databaseGroups') { await databaseStarting; return Response.json({ groups: await database.groups(), automatic: await databaseStatus() }); }
+      if (body.action === 'selectDatabaseGroups') { await databaseStarting; await database.select(body.groupIds); return Response.json({ automatic: await databaseStatus() }); }
+      if (body.action === 'disconnectDatabase') { await databaseStarting; await database.disconnect(); return Response.json({ automatic: await databaseStatus() }); }
       if (body.action === 'databaseStatus') return Response.json({ automatic: await databaseStatus() });
       if (body.action === 'configureDatabase') { await databaseStarting; await database.configure(body.enabled, body.hours); return Response.json({ automatic: await databaseStatus() }); }
       if (body.action === 'syncDatabase') { await databaseStarting; await database.sync(); return Response.json({ automatic: await databaseStatus() }); }

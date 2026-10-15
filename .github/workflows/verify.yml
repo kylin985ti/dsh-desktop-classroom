@@ -19,3 +19,26 @@ jobs:
         run: python3 -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').rglob('*.py')]"
       - name: Test synthetic portable file and chat parsers
         run: python3 -B tests/parsers.py
+
+  wechat-native:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build pinned helper dependencies and both architectures
+        run: |
+          python3 -B scripts/build-wechat-helper.py --work "$RUNNER_TEMP/wechat-build" --arch arm64
+          python3 -B scripts/build-wechat-helper.py --work "$RUNNER_TEMP/wechat-build" --arch x86_64
+      - name: Synthetic encrypted database and own-process matcher tests
+        run: |
+          python3 -B tests/wechat-reader.py --app "$RUNNER_TEMP/wechat-build/$(uname -m)/DSH 微信群连接 0.2.0.app"
+          clang -O2 -Wall -Wextra -Werror tests/wechat-config.c -framework Security -framework CoreFoundation -o "$RUNNER_TEMP/wechat-config-test"
+          "$RUNNER_TEMP/wechat-config-test"
+          "$RUNNER_TEMP/wechat-build/$(uname -m)/DSH 微信群连接 0.2.0.app/Contents/MacOS/wechat-db-worker" --self-test
+          if [ "$(uname -m)" = arm64 ]; then BRIDGE_ARCH=arm64; else BRIDGE_ARCH=x64; fi
+          node tests/wechat-installer.mjs "$RUNNER_TEMP/wechat-build/dsh-wechat-bridge-0.2.0-$BRIDGE_ARCH.zip"

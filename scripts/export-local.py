@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit source allowlist. Never export a DSH profile, storage or credentials."""
+"""Explicit source allowlist. Public WeChat implementation is maintained in this repository and is never imported from a personal installation. Never export a DSH profile, storage or credentials."""
 import argparse, json, shutil, os
 from pathlib import Path
 
@@ -35,7 +35,6 @@ allow = {
     'dsh-library': ['package.json', 'cordis.patch.yml', 'lib/*.mjs', 'lib/client.js', 'lib/reader.py', 'lib/licenses/*.txt', 'src/*.js', 'scripts/build-editor.mjs', 'package-lock.json'],
     'dsh-quote-context': ['package.json', 'cordis.patch.yml', 'lib/*.mjs', 'lib/client.js'],
     'dsh-tencent-docs': ['package.json', 'cordis.patch.yml', 'lib/*.mjs', 'lib/client.js'],
-    'dsh-wechat-digest': ['package.json', 'cordis.patch.yml', 'lib/index.mjs', 'lib/client.js', 'lib/parse_records.py', 'native/LICENSE-WeChatBridge'],
     'dsh-mcp-manager': ['package.json', 'cordis.patch.yml', 'LICENSE', 'lib/*.js', 'lib/*.mjs'],
     'dsh-skill-manager': ['package.json', 'cordis.patch.yml', 'LICENSE', 'lib/*.js', 'lib/*.mjs'],
     'dsh-suggest-prompt': ['package.json', 'cordis.patch.yml', 'LICENSE', 'UPSTREAM.json', 'lib/**/*.js', 'lib/**/*.d.ts'],
@@ -90,37 +89,6 @@ for folder, patterns in allow.items():
         path.write_text(text)
         path = dest / 'lib/reader.py'
         path.write_text(path.read_text().replace('LIMIT = 300000', "sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))\nLIMIT = 300000"))
-    if folder == 'dsh-wechat-digest':
-        # No database scanner, keychain references, fixed group or account binding is distributed.
-        (dest / 'lib/database-source.mjs').write_text('''export const TARGET_GROUP = '尚未配置';
-export class DatabaseSource {
-  config = { enabled: false }; state = {};
-  async start() {} async dispose() {}
-  describe() { return { available: false, enabled: false }; }
-  async configure() { throw new Error('教学包未启用数据库自动读取'); }
-  async sync() { throw new Error('教学包未启用数据库自动读取'); }
-}
-''')
-        path = dest / 'lib/index.mjs'
-        text = path.read_text().replace("import { DatabaseSource, TARGET_GROUP }", "import { officePython } from './platform.mjs';\nimport { DatabaseSource, TARGET_GROUP }")
-        start, end = text.index('  const databaseStatus = async () => {'), text.index('  const parseFile = async')
-        text = text[:start] + '''  const databaseStatus = async () => ({
-    available: false, enabled: false, status: 'in-development', label: '功能开发中',
-    reason: '教学包支持手动文件导入；整群数据库自动读取和 macOS 分享扩展未默认分发。',
-    plannedScope: { active: false, defaultDeny: true, targetGroupName: TARGET_GROUP, groupIdBound: false, privateChatsAllowed: false },
-  });
-''' + text[end:]
-        text = text.replace("spawn('/usr/bin/python3', [parserPath,", "spawn(officePython(), ['-I', '-B', parserPath,")
-        path.write_text(text)
-        path = dest / 'lib/client.js'
-        text = path.read_text()
-        # Replace the specific upstream UI block without carrying the teacher's group name.
-        start, end = text.index('  const automaticPanel='), text.index('\n', text.index('  const automaticPanel='))
-        text = text[:start] + "  const automaticPanel=h('section',null,h('h2',null,'整群自动读取 · 功能开发中'),h('p',{className:'muted'},automatic?.reason||'教学包支持手动文件导入，数据库自动读取未启用。'));" + text[end:]
-        text = text.replace('微信“发送到 DSH”', '手动文件导入')
-        text = text.replace('在微信选择“发送到 DSH”，然后点击刷新。', '点击上方“导入记录”，粘贴聊天文字或选择文件。')
-        text = text.replace('例如：精英群 · 项目讨论', '例如：项目群 · 今日讨论')
-        path.write_text(text)
 
 # Exact prebuilt upstream sidebar snapshot, without local dependencies or build caches.
 source = args.sidebar or args.source.parent / 'profiles/web/node_modules/dsh-better-sidebar'

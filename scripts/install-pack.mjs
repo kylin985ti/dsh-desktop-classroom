@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyPayload } from './verify.mjs';
+import { installWeChatBridge } from './install-wechat.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -64,9 +65,12 @@ if (args.includes('--doctor')) {
     const g = generations.find(g => selected.includes(g.id) && g.pluginName === p.name && g.version === p.version);
     report.plugins.push({ name: p.name, expected: p.version, installed: !!g });
   }
+  try { const receipt = JSON.parse(await fs.readFile(join(home, 'classroom/wechat-bridge.json'), 'utf8')); report.wechatBridge = { installed: receipt.version === manifest.wechatBridge.version && existsSync(receipt.app), expected: manifest.wechatBridge.version, authorization: 'student-owned; not inspected' }; } catch { report.wechatBridge = { installed: false, minimumMacOS: manifest.wechatBridge.minimumMacOS }; }
   console.log(JSON.stringify(report, null, 2));
   process.exit(report.plugins.every(p => p.installed) ? 0 : 2);
 }
+console.log('Installing opt-in WeChat connector; no authorization or database scan is performed.');
+report.wechatBridge = await installWeChatBridge(manifest, home);
 if (!existsSync(join(home, 'profiles/web/package.json'))) {
   // The CLI's dump mode creates the shipped profile template without mounting
   // plugins, starting a web server, logging in, or generating model traffic.

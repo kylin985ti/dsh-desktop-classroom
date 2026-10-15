@@ -19,7 +19,7 @@ npm test
 git diff --stat
 ```
 
-导出器只有明确文件白名单，不导出 profiles、storages、sessions、credentials、`.env`、聊天、钥匙串或资料库内容。它将个人机器路径改为运行时路径，微信数据库适配替换为未启用状态。运行前确认本机源码确实是准备分发的版本；运行后审查 diff，不直接提交整个 DSH home。已经删除的文件不会自动清理，应由维护者核对后在仓库内显式删除。
+导出器只有明确文件白名单，不导出 profiles、storages、sessions、credentials、`.env`、聊天、钥匙串或资料库内容。它将个人机器路径改为运行时路径，微信公开适配源码由本仓库独立维护，整个群聊插件不从个人安装导出。运行前确认本机源码确实是准备分发的版本；运行后审查 diff，不直接提交整个 DSH home。已经删除的文件不会自动清理，应由维护者核对后在仓库内显式删除。
 
 `pypdf` 是资料库随包携带的纯 Python 依赖。来源与 SHA256 在其 `lib/vendor/UPSTREAM.json`，保留 BSD 许可。重新导出不覆盖 vendor。上游更新须另行下载、验证 SHA256、审查版本并重跑 PDF 测试；不能写入 Desktop 应用资源。
 
@@ -34,3 +34,15 @@ git diff --stat
 先看本机 `classroom/install-receipt.json`、原生插件管理日志和 doctor。只导出不含隐私的错误摘要用于 issue。不要上传完整 DSH home。失败的单个安装可原样重试；原生 generation 保留旧版本，使用 Desktop 的插件/恢复界面选择旧版。
 
 改变某个现有插件的名字会被视为新增插件，须避免双份运行。引用、预测等插件的已保存用户状态不得随代码更新删除。
+
+## 微信连接器 Release
+
+学生机器不要求编译工具。维护者需 Python 3.12+ 与 macOS Command Line Tools，按固定源码 SHA256 编译两个架构：
+
+```bash
+python3 -B scripts/build-wechat-helper.py --work /private/tmp/dsh-wechat-build --arch arm64
+python3 -B scripts/build-wechat-helper.py --work /private/tmp/dsh-wechat-build --arch x86_64
+python3 -B tests/wechat-reader.py --app '/private/tmp/dsh-wechat-build/arm64/DSH 微信群连接 0.2.0.app'
+```
+
+构建脚本只编译，不启动连接器、不读取微信或钥匙串。发布对应 Release ZIP，核对下载后的 SHA256 并同步 `classroom.json.wechatBridge`，再 refresh/test；不要替换已发布版本的资产，代码变化须升版本和 pin。保留 helper Resources 内的许可证。用新临时 home 和合成数据库验收，不复用维护者账号或连接配置。连接器尚未公证，Intel 真机未验收，须保留公开说明。
