@@ -16,7 +16,7 @@ async function privateJSON(path, limit = 65536) {
 }
 export class DatabaseSource {
   config = { enabled: false, hours: 24, revision: null, cursors: {} };
-  state = { busy: false, error: null }; epoch = 0; watchers = []; child = null; running = null; timer = null;
+  state = { busy: false, error: null }; epoch = 0; watchers = []; children = new Set(); running = null; timer = null;
   constructor(root, receive = async () => {}, options = {}) {
     this.root = root; this.home = options.home || resolve(root || '.', '../../..'); this.receive = receive;
     this.workerOverride = options.worker; this.connectionOverride = options.connection; this.watch = options.watch || watch;
@@ -38,12 +38,13 @@ export class DatabaseSource {
   }
   async call(action, args = {}) {
     if (this.workerOverride) return this.workerOverride(action, args);
-    const { worker } = await this.helper();
+    const epoch = this.epoch, { worker } = await this.helper();
+    if (epoch !== this.epoch) throw Error('本机读取已取消');
     return new Promise((done, reject) => {
       const child = spawn(worker, [action], { detached: true, stdio: ['pipe','pipe','ignore'], env: { ...process.env, DSH_HOME: this.home } });
-      this.child = child; const bytes = []; let size = 0, finished = false;
+      this.children.add(child); const bytes = []; let size = 0, finished = false;
       const stop = () => { try { process.kill(-child.pid, 'SIGTERM'); } catch {} };
-      const finish = (error, value) => { if (finished) return; finished = true; clearTimeout(timer); if (this.child === child) this.child = null; error ? reject(error) : done(value); };
+      const finish = (error, value) => { if (finished) return; finished = true; clearTimeout(timer); this.children.delete(child); error ? reject(error) : done(value); };
       const timer = setTimeout(() => { stop(); finish(Error('本机读取超时，已停止此次同步')); }, 55000);
       child.stdout.on('data', b => { size += b.length; if (size > 8*1024*1024) { stop(); finish(Error('读取结果超过限制')); } else bytes.push(b); });
       child.on('error', () => finish(Error('本机读取组件未就绪，请重新运行安装器')));
@@ -59,7 +60,7 @@ export class DatabaseSource {
   halt() {
     this.epoch++; clearTimeout(this.timer); this.timer = null;
     for (const watcher of this.watchers) watcher.close(); this.watchers = [];
-    if (this.child) { try { process.kill(-this.child.pid, 'SIGTERM'); } catch {} }
+    for (const child of this.children) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
   }
   async start() {
     if (!this.root) return;

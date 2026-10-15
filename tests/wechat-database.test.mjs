@@ -21,3 +21,16 @@ test('account or group change during in-flight read drops stale output',()=>fixt
 test('scope-forged response never reaches local archive',()=>fixture(async({db,received})=>{db.workerOverride=async()=>({...reply(current()),groupId:'synthetic-b@chatroom'});await assert.rejects(db.configure(true),/范围校验/);assert.equal(received.length,0);assert.equal(db.config.enabled,false);}));
 test('zero messages is a successful authorized sync, distinct from no grant',()=>fixture(async({db,get})=>{db.workerOverride=async()=>({...reply(get()),recordCount:0,messages:[]});await db.configure(true);assert.equal((await db.describe()).count,0);assert.equal(db.config.enabled,true);}));
 test('scope-directory event pauses enabled stream, without polling',()=>fixture(async({db,set,get,watched})=>{await db.configure(true);set({...get(),revision:'scope-2'});watched[1].cb('rename','connection.json');await new Promise(r=>setTimeout(r,30));assert.equal(db.config.enabled,false);}));
+test('pause stops every concurrent helper process, including metadata request',()=>fixture(async({db})=>{
+ // Use harmless isolated child process groups; never a desktop or WeChat PID.
+ const {spawn}=await import('node:child_process');const children=[0,1].map(()=>spawn(process.execPath,['-e','setTimeout(()=>{},30000)'],{detached:true,stdio:'ignore'}));
+ try {
+  for(const child of children)db.children.add(child);
+  const exited=Promise.all(children.map(child=>new Promise(resolve=>child.once('exit',(_code,signal)=>resolve(signal)))));
+  await db.configure(false);assert.deepEqual(await exited,['SIGTERM','SIGTERM']);
+ } finally {for(const child of children){try{process.kill(-child.pid,'SIGKILL');}catch{}db.children.delete(child);}}
+}));
+test('cancel during helper discovery cannot launch a late database read',()=>fixture(async({db})=>{
+ db.workerOverride=null;let complete;db.helper=()=>new Promise(resolve=>complete=resolve);
+ const pending=db.call('read',{});db.halt();complete({worker:'/nonexistent/synthetic'});await assert.rejects(pending,/已取消/);assert.equal(db.children.size,0);
+}));
