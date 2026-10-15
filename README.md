@@ -19,7 +19,7 @@
 
 | 平台 | 支持状态 |
 | --- | --- |
-| macOS Apple Silicon | 主要支持；原生安装链路在临时空目录验证 |
+| macOS Apple Silicon | 主要支持；原始 App 的隔离安装、重复安装和原生配置检查通过；界面按清单验收 |
 | macOS Intel | 提供对应上游安装包；尚无 Intel 真机验收 |
 | Windows / Linux | 本教学安装器暂不支持 |
 

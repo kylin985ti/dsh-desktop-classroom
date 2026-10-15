@@ -22,7 +22,7 @@
   "platforms": [
     {
       "name": "macOS Apple Silicon",
-      "status": "主要支持；原生安装链路在临时空目录验证"
+      "status": "主要支持；原始 App 的隔离安装、重复安装和原生配置检查通过；界面按清单验收"
     },
     {
       "name": "macOS Intel",

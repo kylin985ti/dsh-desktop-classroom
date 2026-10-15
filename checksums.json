@@ -2,16 +2,16 @@
   ".github/workflows/verify.yml": "622ff9fa0fea2f827a3d942a4fcdcc3be04ccd46fcbadcd1d12f8a6651c6ef4a",
   ".gitignore": "4e2ba125c4135f371704a76145bbfcd2d00bbcf686d0f3cf28009b92ab702477",
   "AGENTS.md": "76c2aa66a9e9c3d44fbba0cb4dd2954f1ad43522b7a11900fa3802c18578a9a0",
-  "CHANGELOG.md": "a9b26c992f102b2b2f01ccebbec9bdeb7abb63a602794af40b7f29006c824bac",
+  "CHANGELOG.md": "251f6a4fed7c29435924881cd77cad6e7c0e1d729cf586c41a3c29485c5702a8",
   "INSTALL.md": "6c4308f90eec7f59210cc20e02de96da214ed35b3a5a2f0f29dab5d23465c0a1",
   "LICENSE": "9538d690976b8c495a98d96af5a601ad00e0a50cd0e13e3d74e794e7230f50b2",
   "MAINTAINER.md": "2268c5c6dd8189ad6b3d741a436d669e6d99f7b6dbbdde5db906fdc7271324ad",
-  "README.md": "282b91813e95805a5eca156ba5d5a61aa1480d6810e438e12ff8b83e74aa3ec7",
+  "README.md": "a15a469a9320163401c07e53fe8f9fed16103dab0c91182530feced04081c3d0",
   "THIRD_PARTY_NOTICES.md": "61b76a5ff8543e1c78e64364f9c7167c648bd32d3b7cc3dcb1b57126d08565b9",
-  "classroom.json": "7083fd6bb7ebd8eb9034e758ab2bbcef461d886cc60804013b7e18a3361bc1b2",
+  "classroom.json": "01ffbf3b7241a5b06e1f2ba83a51fc0516512c793448bcff4253066fed39b919",
   "docs/ACCEPTANCE.md": "6003f1dc855b04eb976cd3bf231534bd38ec2d80e3d6d340f36be7406ff758d7",
   "docs/ACCOUNTS.md": "36e923bd355cd964aa08b068284a23e414e6333c7ff2b22ecb61bdaa1ef11ff7",
-  "docs/VERIFICATION.md": "4fa561563ae6fbe5d7860e0899479b9f4f92e70efdbf7dfc80d6fcb69198ba19",
+  "docs/VERIFICATION.md": "1ac941ccd14851ce1206bc673d46d69f5a8c37c3553ef7e06cd8f2f4c4f6365a",
   "package.json": "dd0c98d539723a735907f3d3182ed3195bdf3445c1018ec0ef2d3d3e4a9ef449",
   "plugins/dsh-better-sidebar/LICENSE": "f4d265194e0824721af0592462a71fe750c04db3565c23c5d6c65fdee25fb4b0",
   "plugins/dsh-better-sidebar/cordis.patch.yml": "ec25fc02f0d283e913014bb2cbdef92a17ea360c92f2503d5104b4f8f5e7c064",
@@ -402,5 +402,5 @@
   "scripts/verify.mjs": "ccaaef023473dac4d790699c6aa04f3df71fd9175064f074f0648fa89678af26",
   "tests/distribution.test.mjs": "5f4b39dff398067abf7887d51a94f3bc7c4017d536daf0b51f1f636731ab5a36",
   "tests/library-store.test.mjs": "c5f03be6e30c9a38d5aa61715641d7decdc5b7d426f082fc107e9cd742eec919",
-  "tests/parsers.py": "c4ad4deea53ea5f7054d8d80daa147a4cff9bf44140109c143a9f4a2d7ab282e"
+  "tests/parsers.py": "64fa89e72550e2afe9e06dd8773d9a90c32cbe210b567c405cb7aaf84f222404"
 }
