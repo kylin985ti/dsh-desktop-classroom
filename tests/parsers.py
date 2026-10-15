@@ -3,7 +3,7 @@ import json, subprocess, sys, tempfile, zipfile
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
-library = root / 'plugins/dsh-library/lib'
+library = Path(sys.argv[sys.argv.index('--library') + 1]) if '--library' in sys.argv else root / 'plugins/dsh-library/lib'
 parser = root / 'plugins/dsh-wechat-digest/lib/parse_records.py'
 sys.path.insert(0, str(library / 'vendor'))
 from pypdf import PdfWriter

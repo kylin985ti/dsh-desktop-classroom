@@ -11,7 +11,8 @@
 | Node 测试 | 6 项通过 | 发布文件/许可/版本、JS 语法、校验和拒绝、凭据值检测、数据库默认关闭、资料库冲突/边界/持久化 |
 | Python 解析 | 通过 | 合成 PDF、DOCX、XLSX、PPTX、2 条聊天记录；拒绝 XML 外部实体和 ZIP 越界路径 |
 | 隐私扫描 | 通过 | 源文件白名单、个人路径/文档链接/群绑定排查；无 profile 或 storage 导出 |
-| 新下载的原始 App 与首次安装 | 待最终下载验证 | Release ZIP SHA256、bundle ID、版本与代码签名检查 |
+| 新下载的原始 App 与首次安装 | 通过 | 原始 Release ZIP 的 SHA256、bundle ID、版本和代码签名通过；使用新解压的 App 在空目录安装全部 9 个插件，未启动真实界面 |
+| 公开仓库快照 | 通过 | 通过公开 GitHub API 固定提交，再下载 codeload 完整快照；逐文件校验和、9 插件 doctor 通过 |
 | Intel 真机 | 未验证 | 有固定 x64 下载包和纯 Python PDF 解析器 |
 | 真实 Desktop 界面与个人账号 | 留给学员首次使用验收 | 看 docs/ACCEPTANCE.md；无需上传真实凭据或内容 |
 
