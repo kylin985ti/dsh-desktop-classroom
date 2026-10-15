@@ -1,0 +1,8 @@
+{
+  "package": "@studyzy/dsh-suggest-prompt",
+  "version": "1.2.2",
+  "url": "https://github.com/studyzy/dsh-suggest-prompt",
+  "npmIntegrity": "sha512-kBt3W1lY6Sj4LDStv2GKxzq6cEKbch+aEMR2p1zw0CQCREegTwZVQXmGQMBgkVRBnVfq1MlUVcHWuK2yaQrN3g==",
+  "sourceCommit": "b766d30b55ced7194fdf4d1e9eb4eb398bba90ac",
+  "localVersion": "1.2.2-desktop.2"
+}

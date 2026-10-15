@@ -1,0 +1,33 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, writeFile, readFile, symlink, rm, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { LibraryStore, sha } from '../plugins/dsh-library/lib/store.mjs';
+const root = await mkdtemp(join(tmpdir(), 'dsh-library-test-'));
+try {
+  const store = new LibraryStore(join(root, 'state')); await store.ready;
+  const path = join(root, '工作笔记.md'); await writeFile(path, '# 原稿\n'); const file = await store.register(path);
+  const initial = await store.bytes(file.id); await store.write(file.id, '# 修改稿\n', initial.hash);
+  assert.equal(await readFile(path, 'utf8'), '# 修改稿\n');
+  await store.undo(file.id, sha('# 修改稿\n')); assert.equal(await readFile(path, 'utf8'), '# 原稿\n');
+  await store.saveDraft(file.id, { text: '# 未保存草稿', baseHash: sha('# 原稿\n'), stamp: Date.now() + 1 });
+  assert.equal((await store.draft(file.id)).text, '# 未保存草稿');
+  await writeFile(path, '# 外部改动\n');
+  await assert.rejects(store.write(file.id, '# 覆盖\n', sha('# 原稿\n')), /别处修改/);
+  assert.equal(await readFile(path, 'utf8'), '# 外部改动\n');
+  const one = store.write(file.id, '# 第一处\n', sha('# 外部改动\n'));
+  const two = store.write(file.id, '# 第二处\n', sha('# 外部改动\n'));
+  const results = await Promise.allSettled([one, two]); assert.equal(results.filter(item => item.status === 'fulfilled').length, 1);
+  assert.equal(await readFile(path, 'utf8'), '# 第一处\n');
+  const created = await store.create('新文档'); await assert.rejects(store.create('新文档'), { code: 'EEXIST' }); assert.equal((await store.bytes(created.id)).data.toString(), '# 新文档\n\n');
+  await assert.rejects(store.create('../越界'), /文件名/);
+  const folder = join(root, 'folder'); await mkdir(folder); const granted = await store.register(folder, 'directory');
+  await assert.rejects(store.listRoot(granted.id, root), /已加入/);
+  const page = join(folder, 'demo.html'); await writeFile(page, '<button>测试</button>'); const html = await store.register(page);
+  await writeFile(join(root, 'outside.js'), 'secret'); await symlink(join(root, 'outside.js'), join(folder, 'escape.js'));
+  await writeFile(join(folder, '.env'), 'secret'); await writeFile(join(folder, 'ok.js'), 'console.log(1)');
+  const assets = await store.assets(html.id, ['escape.js', '../outside.js', '.env', 'ok.js']); assert.deepEqual(assets.map(item => item.reference), ['ok.js']);
+  await rm(path); await symlink(join(root, 'outside.js'), path); await assert.rejects(store.bytes(file.id), /替换/);
+  const reloaded = new LibraryStore(join(root, 'state')); await reloaded.ready; assert.ok(reloaded.index.files.some(item => item.id === created.id));
+  console.log('PASS library: Unicode paths, saved version undo, external conflicts, concurrent saves, persistent drafts, no overwrite on create, folder and asset boundaries, symlink replacement');
+} finally { await rm(root, { recursive: true, force: true }); }

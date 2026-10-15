@@ -1,0 +1,63 @@
+{
+  "name": "@local/dsh-wechat-digest",
+  "version": "0.4.1-classroom.1",
+  "private": true,
+  "type": "module",
+  "description": "指定微信群数据库只读接收、按日归档与一段式简报",
+  "main": "./lib/index.mjs",
+  "exports": {
+    ".": "./lib/index.mjs",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "LICENSE",
+    "cordis.patch.yml",
+    "native/LICENSE-WeChatBridge"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "python3 scripts/test_parser.py"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.0-rc.2",
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "*",
+    "react": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-ui-layout": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-sidebar": {
+      "optional": true
+    },
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}

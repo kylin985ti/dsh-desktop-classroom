@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "version": "0.1.0",
+  "updated": "2026-10-15",
+  "repository": "https://github.com/kylin985ti/dsh-desktop-classroom",
+  "desktop": {
+    "repository": "https://github.com/dataelement/dsh-desktop",
+    "version": "0.11.1",
+    "bundleId": "io.dsh.desktop",
+    "minimumMacOS": "12.0",
+    "assets": {
+      "arm64": {
+        "filename": "dsh-desktop-mac-arm64.zip",
+        "sha256": "a0a3eb7d5638c1e61ab1bba8f00101f6871d71a0a943a18c1d769a5febee58cd"
+      },
+      "x64": {
+        "filename": "dsh-desktop-mac-x64.zip",
+        "sha256": "7d24210b82d6d67844ded006c7b47185e5237649a31e94013243c27e263f22d4"
+      }
+    }
+  },
+  "platforms": [
+    {
+      "name": "macOS Apple Silicon",
+      "status": "主要支持；原生安装链路在临时空目录验证"
+    },
+    {
+      "name": "macOS Intel",
+      "status": "提供对应上游安装包；尚无 Intel 真机验收"
+    },
+    {
+      "name": "Windows / Linux",
+      "status": "本教学安装器暂不支持"
+    }
+  ],
+  "auxiliaryModel": {
+    "provider": "ollama-cloud",
+    "model": "deepseek-v4.1-flash"
+  },
+  "plugins": [
+    {
+      "path": "plugins/dsh-better-sidebar",
+      "name": "dsh-better-sidebar",
+      "version": "0.26.0",
+      "title": "增强侧栏",
+      "capability": "会话文件树、侧边提问与编辑",
+      "setup": "上游插件，依赖宿主文件/终端权限",
+      "upstream": "https://github.com/omdsh-dev/DSH-better-sidebar"
+    },
+    {
+      "path": "plugins/dsh-suggest-prompt",
+      "name": "@studyzy/dsh-suggest-prompt",
+      "version": "1.2.2-desktop.2",
+      "title": "下一轮提示词预测",
+      "capability": "灰色候选、Tab 填入、Esc 忽略",
+      "setup": "需自行连接 Ollama Cloud，默认 deepseek-v4.1-flash",
+      "upstream": "https://github.com/studyzy/dsh-suggest-prompt"
+    },
+    {
+      "path": "plugins/dsh-library",
+      "name": "@local/dsh-library",
+      "version": "0.3.0-classroom.1",
+      "title": "资料库",
+      "capability": "文件树、多标签、Markdown 所见即所得、HTML 交互、Office/PDF 正文提取、AI 修改预览",
+      "setup": "需本人选择资料目录；扫描 PDF 无 OCR"
+    },
+    {
+      "path": "plugins/dsh-quote-context",
+      "name": "@local/dsh-quote-context",
+      "version": "0.3.0-classroom.1",
+      "title": "选区引用与评论",
+      "capability": "回复或产出物选区工具栏、引用卡片、逐条评论、侧栏提问",
+      "setup": "0.3 引用卡片仍需学员在 Desktop 中验收"
+    },
+    {
+      "path": "plugins/dsh-tencent-docs",
+      "name": "@local/dsh-tencent-docs",
+      "version": "0.1.6-classroom.1",
+      "title": "腾讯文档",
+      "capability": "浏览器 OAuth、读取、修改提案、确认后写入",
+      "setup": "每位学员登录自己的账号；受文档权限和 API 支持类型限制"
+    },
+    {
+      "path": "plugins/dsh-wechat-digest",
+      "name": "@local/dsh-wechat-digest",
+      "version": "0.4.1-classroom.1",
+      "title": "群聊简报",
+      "capability": "手动粘贴或导入、名称和备注、接收时间、一段话总结、原话依据",
+      "setup": "数据库自动读取、微信系统分享扩展未默认分发"
+    },
+    {
+      "path": "plugins/dsh-mcp-manager",
+      "name": "@dshp/mcp-manager",
+      "version": "0.4.0-desktop.1",
+      "title": "MCP 管理",
+      "capability": "查看和管理 MCP 服务配置",
+      "setup": "添加第三方服务时使用学员自己的凭据",
+      "upstream": "https://github.com/Yinxe/deepseek-harness-plugins"
+    },
+    {
+      "path": "plugins/dsh-skill-manager",
+      "name": "@dshp/skill-manager",
+      "version": "0.4.0-desktop.1",
+      "title": "Skills 管理",
+      "capability": "查看和管理技能目录",
+      "setup": "只操作学员本人技能文件",
+      "upstream": "https://github.com/Yinxe/deepseek-harness-plugins"
+    },
+    {
+      "path": "plugins/dsh-tavily",
+      "name": "@local/dsh-tavily",
+      "version": "0.1.0-classroom.1",
+      "title": "Tavily 联网搜索",
+      "capability": "为原生 web 能力注册 Tavily provider",
+      "setup": "需自己的 Tavily API Key，并在 web 设置选择 Tavily"
+    }
+  ]
+}

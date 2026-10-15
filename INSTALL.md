@@ -1,0 +1,69 @@
+# 给本机 AI 助手的安装说明
+
+目标：为当前学员安装或更新这套 macOS 教学环境。此文件是公开安装规范，不包含个人账号配置。执行前先读本文件、README 和脚本；下载一个固定提交的完整快照后再执行，避免更新中混用文件。
+
+## 1. 获取同一个提交的完整快照
+
+需要可执行本机终端的助手。用 macOS 自带工具即可，不需要先安装 Git、Node.js 或 Python：
+
+```bash
+TASK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dsh-classroom-download.XXXXXX")"
+curl --fail --location --retry 3 --proto '=https' \
+  'https://api.github.com/repos/kylin985ti/dsh-desktop-classroom/commits/main' \
+  -o "$TASK_DIR/commit.json"
+REVISION="$(plutil -extract sha raw -o - "$TASK_DIR/commit.json")"
+[[ "$REVISION" =~ ^[0-9a-f]{40}$ ]] || exit 1
+curl --fail --location --retry 3 --proto '=https' \
+  "https://codeload.github.com/kylin985ti/dsh-desktop-classroom/tar.gz/$REVISION" \
+  -o "$TASK_DIR/pack.tar.gz"
+tar -xzf "$TASK_DIR/pack.tar.gz" -C "$TASK_DIR"
+PACK_DIR="$TASK_DIR/dsh-desktop-classroom-$REVISION"
+```
+
+读取这个快照的 `README.md`、`classroom.json`、`scripts/bootstrap.sh` 和 `scripts/install-pack.mjs`，再执行：
+
+```bash
+/bin/bash "$PACK_DIR/scripts/bootstrap.sh"
+```
+
+命令需在同一个终端会话运行，或保留输出的临时路径。网络失败应报告具体下载阶段，不改用不明镜像、不跳过 SHA256、不关闭 Gatekeeper。GitHub API 限流可稍后重试，或用学员已有的 GitHub 登录工具读取同一提交。
+
+## 2. 安装行为与边界
+
+- macOS 12+；自动识别 arm64 或 x64。Apple Silicon 是主要验证平台；Intel 尚未真机验收。
+- 优先复用 `/Applications/DSH Desktop.app`，其次 `~/Applications/DSH Desktop.app`。新安装放 `~/Applications`，不需要管理员权限。
+- 新下载使用清单固定的上游 ZIP 和 SHA256，验证 bundle ID、版本和代码签名，不修改 App 包。
+- 原始 ZIP 缓存在本机 `~/Library/Caches/dsh-desktop-classroom`；每次使用均重算 SHA256。缓存校验失败时只处理对应下载文件，不关闭校验，也不删除应用数据。
+- 已有不同版本 Desktop 会停止，不自动覆盖、降级、退出或重启。若用户正在运行任务，插件安装后保留“待空闲重启”状态即可。
+- 使用安装包内的 Node 和 Desktop 原生 generation API。不会安装全局运行时，不复制教师 profile，不覆盖学生默认模型、凭据或资料。
+- 本地回执记录教学包版本和各插件 generation。失败时说明已完成与未完成的项；保留已安装插件，供重试，不删除 DSH home。
+- 当前不安装微信数据库读取/密钥检测器，也不安装微信系统分享扩展。普通聊天粘贴和已有文件导入可用。
+- 如 DSH 使用非默认 home 或非标准 App 路径，先从本人设置确认再传 `--dsh-home` / `--app`；不要猜测并读其他用户的目录。
+
+## 3. 首次启动与本人授权
+
+安装器只安装，不自动启动或重启。如果是首次安装，引导学员在访达打开 DSH Desktop；若已运行，等待全部任务结束后由本人从 Harness 菜单重启。使用可用的原生 UI 工具协助时也不得强制退出。
+
+按需引导用户在 DSH 中连接个人模型账号：Ollama Cloud、OpenAI 订阅或其他 provider。登录、验证码、Apple/Google 登录和系统权限由本人完成；不要让用户把密码、Token 或 Cookie 粘贴进聊天。不要复制执行助手自身的订阅凭据到 DSH。
+
+辅助模型默认 `ollama-cloud/deepseek-v4.1-flash`。若账号没有这个型号，在插件设置选择本人可用的模型并报告；不要宣称连接已通过。主会话模型由学员选择，安装器不设置它。
+
+腾讯文档：在插件内完成自己的浏览器授权，先读本人有权限的文档；写入时先生成具体预览，由用户确认后执行。未经本人同意，不创建验收文档、不改真实表格。
+
+Tavily：通过 DSH 凭据/设置界面配置自己的 `TAVILY_API_KEY`，将原生 web 搜索 provider 设为 `tavily`。插件只注册 provider，不暗中改现有搜索选择，不自动产生付费调用。
+
+资料库：选择本人用于学习的目录。群聊简报：用合成记录测试，不自动读取私人聊天。实际内容只有在学员点击 AI 操作后才发给所选模型。
+
+## 4. 验收和交付
+
+```bash
+/bin/bash "$PACK_DIR/scripts/bootstrap.sh" --doctor
+```
+
+这是只读安装检查，不能替代界面与账号调用验收。按 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) 检查，分别报告：已安装、待重启、本人授权、实际调用和未完成项。不可把一项成功推断为全套验收通过。
+
+安装完成、回执核对后可删除本次 `$TASK_DIR`；插件已经复制到本机 DSH home 下稳定的 `classroom/packs/<hash>`，不会依赖临时目录。不要删除该 packs 目录或原生 generations。
+
+## 更新
+
+下次仍使用 README 中同一句提示词，重新获取 main 的提交快照，再运行安装脚本。插件清单和 README 随仓库提交同步。应用版本不匹配时先报告，等待教学包适配；不自行更改下载 pin。

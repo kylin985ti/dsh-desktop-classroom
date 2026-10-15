@@ -1,0 +1,372 @@
+/**
+ * suggest-prompt plugin: after every completed agent turn, generate one
+ * suggested next prompt for the user through a bounded auxiliary LLM call and
+ * deliver it to the web composer, which renders it as ghost placeholder text.
+ *
+ * Delivery does NOT go through the session log. The pre-1.2 build appended
+ * private `SessionEventMap` types (`suggest-prompt/…`), which are outside the
+ * harness's closed `KNOWN_SESSION_EVENT_TYPES`; `0.2.0-rc.2` offers no way to
+ * mark an appended event `ignorable`, so `validateStoredEvents` refused the
+ * whole log on the next cold read and the session could not be reopened
+ * (issue #4). A suggestion is plugin-owned derived state, so it is persisted in
+ * this plugin's own storage domain and served to the browser over a
+ * plugin-owned `connection.rpc` channel. With zero session-log writes, issue #4
+ * cannot recur by construction.
+ *
+ * The plugin is scoped to the projection registry, whose host-only transcript
+ * fold supplies the bounded transcript: generation reads that fold rather than
+ * scanning session history, which `dsh >= 0.2.0` deprecates for new callers.
+ * @module @studyzy/dsh-suggest-prompt
+ */
+import z from '@deepseek-ai/schemastery';
+import { z as zod } from 'zod';
+import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout';
+import { generateSuggestion, resolveSuggestPromptConfig } from './generate.js';
+import { clearSuggestion, readSuggestion, suggestPromptDomainSpec, writeSuggestion, } from './records.js';
+import { applyTranscriptProjection, EMPTY_TRANSCRIPT_STATE } from './transcript.js';
+import { SUGGEST_ROUTE_METHOD, SUGGEST_ROUTE_PATH } from './rpc-contract.js';
+/**
+ * The browser-facing RPC channel this plugin owns. Absolute by contract
+ * (`/^\/[A-Za-z0-9._~-]+$/`), and never the reserved `/api`.
+ */
+export { SUGGEST_ROUTE_METHOD, SUGGEST_ROUTE_PATH };
+/** Persisted-state schema of the host-only `suggestPromptTranscript` fold. */
+const transcriptStateSchema = zod.object({
+    lastCompletedTurn: zod.number().int().nonnegative(),
+    turnStarts: zod.array(zod.object({
+        turn: zod.number().int().positive(),
+        seq: zod.number().int().nonnegative(),
+    })),
+    entries: zod.array(zod.object({
+        seq: zod.number().int().nonnegative(),
+        role: zod.union([zod.literal('user'), zod.literal('assistant')]),
+        text: zod.string(),
+        turn: zod.number().int().positive(),
+    })),
+    lastSuggestedTurn: zod.number().int().min(-1),
+});
+/**
+ * Loader schema for the deployment policy.
+ *
+ * `dsh >= 0.2.0` derives a plugin's settings form from this schema, and a field
+ * appears there only when it is marked `volatile()`. That marking is what makes
+ * the entry describable at all: with no volatile field the host omits the entry
+ * from `settings.describe`, so the WebUI card would mount and then render
+ * nothing. Only the three user-editable preferences are volatile — the
+ * deployment bounds stay ordinary configuration, so the generated form does not
+ * invite edits to them.
+ *
+ * The schema is declared separately from {@link Config} because `volatile()`
+ * brands its output (`Volatile<T>`), which would otherwise leak that brand into
+ * every consumer of the runtime policy type. `Config` stays the plain shape the
+ * plugin actually reads.
+ *
+ * Requires `@deepseek-ai/schemastery >= 3.18.3`, the first release with
+ * `volatile()`.
+ */
+const ConfigSchema = z.object({
+    maxInputBytes: z.number().step(1).min(1).required(),
+    maxOutputTokens: z.number().step(1).min(1).required(),
+    timeoutMs: z.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).required(),
+    maxRecentTurns: z.number().step(1).min(1).default(1),
+    maxTranscriptChars: z.number().step(1).min(1).required(),
+    maxSuggestionChars: z.number().step(1).min(1).required(),
+    provider: z.string().volatile(),
+    model: z.string().volatile(),
+    acceptKey: z.string().default('Tab').volatile(),
+});
+/**
+ * Exported loader schema. Cast to the runtime shape: `volatile()` only affects
+ * how the settings form projects the field, not the value the plugin receives.
+ */
+export const Config = ConfigSchema;
+/** Cordis plugin identity. */
+export const name = 'suggest-prompt';
+/**
+ * Services required before this plugin activates. `storageDomain` is the
+ * durable suggestion store (`@deepseek-ai/dsh-base` mounts it, so it is present
+ * in every profile); `connection` carries the shared `/api` gateway this
+ * plugin's browser route hangs off.
+ *
+ * `webServer` is deliberately NOT here. The plugin never touches it: it
+ * registers through `connection.fetch.register`, which writes only to the
+ * connection service's own route table. The sibling surface `rpc.handle` does
+ * read `owner.webServer`, but on the *connection* fiber — which injects neither
+ * `webServer` nor anything that provides it — so that call throws there
+ * regardless of this plugin's own list. See `SUGGEST_ROUTE_PATH`.
+ */
+export const inject = ['llm', 'sessions', 'storageDomain', 'connection'];
+/**
+ * Settings namespace of the suggestion route. `dsh >= 0.2.0` keys a plugin's
+ * settings page by its profile entry id and derives the form from the plugin's
+ * own `Config` schema, so this value names that entry/page rather than a
+ * separately registered namespace. It is what the WebUI settings card binds to
+ * and what `configEditor` writes through.
+ */
+export const SUGGEST_PROMPT_NS = 'suggest-prompt';
+/**
+ * Narrow an untrusted RPC payload to the session id the caller asked about.
+ * @param payload - decoded request payload.
+ * @returns the session id, or `undefined` when the payload is malformed.
+ */
+function sessionIdOf(payload) {
+    if (typeof payload !== 'object' || payload === null)
+        return undefined;
+    const candidate = payload.sessionId;
+    return typeof candidate === 'string' && candidate.length > 0
+        ? candidate
+        : undefined;
+}
+/**
+ * Mount the plugin: open the suggestion store, expose the browser read
+ * endpoint, and generate one suggestion per completed turn.
+ * @param ctx - context exposing LLM, session, storage, and connection services.
+ * @param config - required bounded-generation policy.
+ */
+export function apply(ctx, config) {
+    // Everything runs under the projection registry: generation reads the
+    // retained transcript from `suggestPromptTranscript` rather than scanning
+    // session history, so an assembly without the registry cannot generate. The
+    // scoped inject keeps the absence graceful — a headless assembly simply never
+    // mounts the suggestion capability instead of throwing at every turn end.
+    ctx.inject(['sessionProjections'], (projectionCtx) => {
+        applyWithProjections(projectionCtx, config);
+    });
+}
+/**
+ * Body of the plugin once the projection registry is present.
+ *
+ * The domain open is asynchronous, so the body is async and every reader awaits
+ * the same open promise: the browser endpoint answers `null` until the store is
+ * ready rather than failing, and generation waits for it before its first
+ * write.
+ * @param ctx - context exposing the LLM, session, projection, storage, and connection services.
+ * @param config - required bounded-generation policy.
+ */
+function applyWithProjections(ctx, config) {
+    const states = new WeakMap();
+    const tracked = new Set();
+    // Lazy, shared, and single-flight: the RPC handler and the generator both
+    // read this promise, so the domain is opened exactly once per plugin mount.
+    let domainPromise;
+    const domain = () => {
+        domainPromise ??= ctx.storageDomain.open(suggestPromptDomainSpec);
+        return domainPromise;
+    };
+    /** The retained transcript fold for one session. */
+    const transcriptStateOf = (session) => ctx.sessionProjections.stateOf(session, 'suggestPromptTranscript') ?? EMPTY_TRANSCRIPT_STATE;
+    /**
+     * Answer one browser read. Every failure mode resolves to `null` rather than
+     * throwing: the caller is the composer, which renders "no suggestion" for an
+     * absent value and nothing at all for an error.
+     * @param request - the buffered POST the browser sent.
+     * @returns the stored suggestion, or `null` when there is none to show.
+     */
+    const readForBrowserRequest = async (request) => {
+        let body;
+        try {
+            body = await request.json();
+        }
+        catch {
+            return null;
+        }
+        const sessionId = sessionIdOf(body);
+        if (sessionId === undefined)
+            return null;
+        const opened = await domain();
+        return readSuggestion(opened, sessionId) ?? null;
+    };
+    const handleTurnEnd = (session, turn) => {
+        let state = states.get(session);
+        if (state === undefined) {
+            state = { lastSuggestedTurn: -1, pending: undefined };
+            states.set(session, state);
+            tracked.add(state);
+        }
+        if (state.pending?.turn === turn)
+            return;
+        const pending = state.pending;
+        if (pending !== undefined)
+            pending.controller.abort();
+        const controller = new AbortController();
+        state.pending = { turn, controller };
+        // Resolve the policy fresh at each turn: the composition entry's `config`
+        // is the settings-backed value, so a settings edit lands on the next
+        // completed turn. The microtask reads it when the turn settles.
+        const resolved = resolveSuggestPromptConfig(config);
+        /**
+         * Retire the previous turn's suggestion before generating this one.
+         *
+         * Without this the browser serves the *superseded* suggestion for the whole
+         * duration of the new generation: the composer stops hiding ghost text the
+         * moment the turn ends, the poll then reads a store that still holds the
+         * older turn's text, and only the write at the end of this function
+         * displaces it. The user sees the old prompt flash and then swap — the
+         * stale window is exactly the model's latency, which is why it reads as
+         * "about a second".
+         *
+         * Clearing is a microtask that races generation but NOT the poll: the read
+         * path stays a single awaited step of the same async chain that does the
+         * work, so a poll landing in between answers `null` ("no suggestion yet")
+         * rather than a retracted one. A cleared store is also honest about what
+         * the host knows at that instant — this turn has no suggestion yet.
+         *
+         * A failed clear is not fatal: it costs the stale flash, not correctness,
+         * and the write below still lands. It is reported once so a persistently
+         * unwritable store is not silent.
+         * @returns nothing; the clear is awaited by the caller's chain.
+         */
+        const retirePrevious = async () => {
+            // Only worth a write when a record could actually be served: the cursor
+            // is seeded from the store, so a turn at or below it has nothing stale.
+            if (state.lastSuggestedTurn < 0)
+                return;
+            try {
+                const opened = await domain();
+                if (state.pending?.controller !== controller)
+                    return;
+                await clearSuggestion(opened, session.id);
+            }
+            catch (error) {
+                // Superseded clears are expected to lose their slot; only a live
+                // failure is worth reporting, and only once per turn.
+                if (state.pending?.controller !== controller)
+                    return;
+                const message = error instanceof Error ? error.message : String(error);
+                ctx.logger.warn(`suggest-prompt: could not retire the previous suggestion: ${message}`);
+            }
+        };
+        /**
+         * Whether this turn already has a durable suggestion.
+         *
+         * The cursor is seeded from the store, not from the log: a session reopened
+         * from history must not regenerate a turn it already answered. The read is
+         * awaited (not fired alongside generation) because the decision it informs
+         * is whether to call the model at all — racing it would let every reload
+         * issue one redundant request before the seed landed.
+         * @returns true when the stored record already answers this turn.
+         */
+        const alreadySuggested = async () => {
+            if (state.lastSuggestedTurn >= turn)
+                return true;
+            const stored = readSuggestion(await domain(), session.id);
+            if (stored === undefined)
+                return false;
+            // A store that cannot be read stays pessimistic: the cursor only ever
+            // rises, so an unreadable record costs one regeneration, never a silence.
+            state.lastSuggestedTurn = Math.max(state.lastSuggestedTurn, stored.turn);
+            return state.lastSuggestedTurn >= turn;
+        };
+        /**
+         * Persist one generated suggestion, or advance the cursor for a silent
+         * no-suggestion.
+         *
+         * Separate from the settling callback so a WRITE failure reaches the same
+         * reporting path as a generation failure: an `async` fulfillment handler's
+         * rejection is NOT delivered to the sibling rejection handler, so inlining
+         * this would let a failed write escape as an unhandled rejection.
+         *
+         * A superseding turn that started while the store was opening drops the
+         * write — persisting then would resurrect a suggestion the user already
+         * moved past.
+         * @param suggested - the generated suggestion, or `undefined` when the
+         *   model produced nothing usable.
+         */
+        const persist = async (suggested) => {
+            if (suggested === undefined) {
+                // A silent no-suggestion is normal (see generate.ts): no write, and the
+                // cursor still advances so this turn is not retried.
+                if (state.pending?.controller !== controller)
+                    return;
+                state.pending = undefined;
+                state.lastSuggestedTurn = turn;
+                return;
+            }
+            const opened = await domain();
+            if (state.pending?.controller !== controller)
+                return;
+            await writeSuggestion(opened, session.id, suggested);
+            if (state.pending?.controller !== controller)
+                return;
+            state.pending = undefined;
+            state.lastSuggestedTurn = turn;
+        };
+        /**
+         * Report one failed generation or write.
+         * @param error - the rejection reason.
+         */
+        const reportFailure = (error) => {
+            if (state.pending?.controller === controller)
+                state.pending = undefined;
+            // Superseded calls abort with the new controller; their failure is expected.
+            if (controller.signal.aborted)
+                return;
+            // The LLM layer wraps adapter rejections into Errors, so the non-Error
+            // arm is defensive only.
+            /* v8 ignore next 2 -- non-Error rejections are wrapped by the LLM layer */
+            const message = error instanceof Error ? error.message : String(error);
+            ctx.logger.warn(`suggest-prompt: suggestion generation failed: ${message}`);
+        };
+        // session/event is dispatched synchronously inside the committing append;
+        // defer to a microtask so the turn's own commit unwinds first.
+        void Promise.resolve().then(async () => {
+            if (await alreadySuggested())
+                return;
+            // A superseding turn may have arrived while the store was read; its own
+            // generation owns the slot now.
+            if (state.pending?.controller !== controller)
+                return;
+            // Retire the older turn's text before the model is called, so the store
+            // answers `null` instead of a suggestion this turn has already replaced.
+            await retirePrevious();
+            if (state.pending?.controller !== controller)
+                return;
+            // The transcript fold reflects every event up to and including this
+            // turn/end, so reading it here yields the completed turn's messages.
+            return await generateSuggestion(ctx, resolved, session, turn, transcriptStateOf(session), controller.signal);
+        }).then((suggested) => persist(suggested), (error) => { reportFailure(error); }).catch((error) => { reportFailure(error); });
+    };
+    // The listener is deliberately not stored: Cordis disposes it with the
+    // plugin fiber, and the plugin owns no path that unsubscribes early.
+    ctx.on('session/event', (session, event) => {
+        if (event.type === 'turn/end' && event.data.reason.kind === 'completed') {
+            handleTurnEnd(session, event.data.turn);
+        }
+    });
+    // Abort every in-flight generation when the plugin unloads.
+    ctx.effect(() => () => {
+        for (const state of tracked)
+            state.pending?.controller.abort();
+    });
+    // The browser read endpoint. `connection.fetch.register` claims an exact
+    // path on the shared `/api` gateway and returns its disposer, which
+    // `ctx.effect` ties to the plugin. A malformed body is answered `null`
+    // rather than thrown: the caller is the composer, which only ever wants a
+    // value to render.
+    //
+    // Deliberately NOT `connection.rpc.handle`: that surface registers an HTTP
+    // route through the *connection* service's own fiber, which never injects
+    // `webServer`, so it throws there regardless of this plugin's own `inject`
+    // list. See `SUGGEST_ROUTE_PATH`.
+    ctx.effect(() => ctx.connection.fetch.register({
+        path: SUGGEST_ROUTE_PATH,
+        methods: [SUGGEST_ROUTE_METHOD],
+        requestBody: 'buffered',
+        fetch: async (request) => {
+            const suggestion = await readForBrowserRequest(request);
+            return Response.json({ suggestion });
+        },
+    }), 'suggest-prompt: browser suggestion route');
+    // Host-only transcript fold: the retained transcript that generation reads in
+    // place of the prohibited synchronous session-history scans. It carries no
+    // `wire`, so its state never leaves the host. Registered here because the
+    // whole plugin body is scoped to the projection registry.
+    ctx.sessionProjections.register({
+        key: 'suggestPromptTranscript',
+        stateSchema: transcriptStateSchema,
+        init: () => EMPTY_TRANSCRIPT_STATE,
+        apply: applyTranscriptProjection,
+        stateVersion: 1,
+    });
+}
+//# sourceMappingURL=index.js.map

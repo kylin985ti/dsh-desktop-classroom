@@ -1,0 +1,73 @@
+{
+  "name": "@local/dsh-library",
+  "version": "0.3.0-classroom.1",
+  "private": true,
+  "type": "module",
+  "description": "文件树、多标签、Markdown自动保存、CSV/HTML编辑与可审阅的AI协作",
+  "main": "./lib/index.mjs",
+  "exports": {
+    ".": "./lib/index.mjs",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "LICENSE",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "*",
+    "react": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-ui-layout": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-sidebar": {
+      "optional": true
+    },
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-primitives": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@milkdown/crepe": "^7.22.3",
+    "diff": "9.0.0",
+    "esbuild": "^0.25.12",
+    "papaparse": "5.7.0"
+  },
+  "scripts": {
+    "build:editor": "node scripts/build-editor.mjs"
+  },
+  "license": "MIT"
+}

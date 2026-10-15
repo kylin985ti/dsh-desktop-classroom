@@ -1,0 +1,6 @@
+- insert:
+    - id: wechat-digest
+      name: '@local/dsh-wechat-digest'
+      config:
+        provider: ollama-cloud
+        model: deepseek-v4.1-flash

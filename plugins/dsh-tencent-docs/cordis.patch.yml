@@ -1,0 +1,3 @@
+- insert:
+    - id: tencent-docs
+      name: '@local/dsh-tencent-docs'

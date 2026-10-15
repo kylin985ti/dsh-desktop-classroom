@@ -1,0 +1,24 @@
+{
+  "name": "@local/dsh-tavily",
+  "version": "0.1.0-classroom.1",
+  "type": "module",
+  "license": "MIT",
+  "main": "lib/index.mjs",
+  "files": [
+    "lib",
+    "LICENSE",
+    "LICENSE-DeepSeek",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-credentials": "*",
+    "@deepseek-ai/dsh-launch-environment": "*",
+    "@deepseek-ai/dsh-web": "*"
+  }
+}

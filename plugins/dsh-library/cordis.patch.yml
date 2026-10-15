@@ -1,0 +1,6 @@
+- insert:
+    - id: library
+      name: '@local/dsh-library'
+      config:
+        provider: ollama-cloud
+        model: deepseek-v4.1-flash
