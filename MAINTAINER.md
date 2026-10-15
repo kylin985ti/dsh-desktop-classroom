@@ -19,7 +19,7 @@ npm test
 git diff --stat
 ```
 
-导出器只有明确文件白名单，不导出 profiles、storages、sessions、credentials、`.env`、聊天、钥匙串或资料库内容。它将个人机器路径改为运行时路径，微信公开适配源码由本仓库独立维护，整个群聊插件不从个人安装导出。运行前确认本机源码确实是准备分发的版本；运行后审查 diff，不直接提交整个 DSH home。已经删除的文件不会自动清理，应由维护者核对后在仓库内显式删除。
+导出器只有明确文件白名单，不导出 profiles、storages、sessions、credentials、`.env`、聊天、钥匙串或资料库内容。它将个人机器路径改为运行时路径，腾讯文档和微信公开适配源码由本仓库独立维护，这两项不从个人安装导出。运行前确认本机源码确实是准备分发的版本；运行后审查 diff，不直接提交整个 DSH home。已经删除的文件不会自动清理，应由维护者核对后在仓库内显式删除。
 
 `pypdf` 是资料库随包携带的纯 Python 依赖。来源与 SHA256 在其 `lib/vendor/UPSTREAM.json`，保留 BSD 许可。重新导出不覆盖 vendor。上游更新须另行下载、验证 SHA256、审查版本并重跑 PDF 测试；不能写入 Desktop 应用资源。
 
@@ -46,3 +46,13 @@ python3 -B tests/wechat-reader.py --app '/private/tmp/dsh-wechat-build/arm64/DSH
 ```
 
 构建脚本只编译，不启动连接器、不读取微信或钥匙串。发布对应 Release ZIP，核对下载后的 SHA256 并同步 `classroom.json.wechatBridge`，再 refresh/test；不要替换已发布版本的资产，代码变化须升版本和 pin。保留 helper Resources 内的许可证。用新临时 home 和合成数据库验收，不复用维护者账号或连接配置。连接器尚未公证，Intel 真机未验收，须保留公开说明。
+
+## 腾讯文档浏览器 Release
+
+```bash
+python3 -B scripts/build-tencent-browser.py --work /private/tmp/dsh-tencent-build --arch arm64
+python3 -B scripts/build-tencent-browser.py --work /private/tmp/dsh-tencent-build --arch x86_64
+node tests/tencent-installer.mjs /private/tmp/dsh-tencent-build/dsh-tencent-browser-0.1.1-arm64.zip
+```
+
+浏览器只依赖系统 AppKit/WebKit。发布两个 ZIP 后同步 `classroom.json.tencentBrowser` 的版本、固定 URL 和下载 SHA256，refresh/test。构建、self-test 和安装器测试不打开网站、不访问 Cookie 或账号；真实登录、页面选区与 DSH 草稿验收必须另行通过 CUA 进行。不要把维护者网页数据、私有接收记录或截图放入仓库/Release。不要禁用宿主 webSecurity、修改 App 包或移除网站安全策略。

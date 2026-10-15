@@ -5,12 +5,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP=""
 DSH_DIRECTORY="${DSH_HOME:-$HOME/Library/Application Support/dsh-desktop/harness}"
 DOCTOR=0
+ONLY_PLUGIN=""
 MINIMUM_MACOS_MAJOR=12
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --app) APP="$2"; shift 2 ;;
     --dsh-home) DSH_DIRECTORY="$2"; shift 2 ;;
     --doctor) DOCTOR=1; shift ;;
+    --only) ONLY_PLUGIN="$2"; shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -62,8 +64,7 @@ BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Conten
 [ "$BUNDLE_ID" = io.dsh.desktop ] || { echo 'The selected app is not DSH Desktop.' >&2; exit 1; }
 NODE="$APP/Contents/MacOS/DSH Desktop"
 export ELECTRON_RUN_AS_NODE=1
-if [ "$DOCTOR" = 1 ]; then
-  "$NODE" "$ROOT/scripts/install-pack.mjs" --app "$APP" --dsh-home "$DSH_DIRECTORY" --doctor
-else
-  "$NODE" "$ROOT/scripts/install-pack.mjs" --app "$APP" --dsh-home "$DSH_DIRECTORY"
-fi
+INSTALL_ARGS=(--app "$APP" --dsh-home "$DSH_DIRECTORY")
+if [ "$DOCTOR" = 1 ]; then INSTALL_ARGS+=(--doctor); fi
+if [ -n "$ONLY_PLUGIN" ]; then INSTALL_ARGS+=(--only "$ONLY_PLUGIN"); fi
+"$NODE" "$ROOT/scripts/install-pack.mjs" "${INSTALL_ARGS[@]}"
