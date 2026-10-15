@@ -7,5 +7,5 @@
 - Do not stop, restart, poll or modify another user's running DSH task. Integration tests use a new temporary DSH home; real UI testing requires a separately safe idle window.
 - Install using Desktop's generation backend, preserving unrelated data, plugin settings, model defaults and auth. Never patch the App bundle or silently downgrade Desktop.
 - User login, OS authorization and concrete document writes remain explicit user actions. An installed credential or plugin is not proof of a successful call or UI acceptance.
-- WeChat database reading and system share helper are excluded from the default pack. Do not reintroduce private/native scanners or teacher bindings during an export.
+- WeChat database reading is an opt-in public feature. Ship generic source and verified helper assets only: default off, student authorization, explicit account and exact group selection, local Keychain. Never export maintainer account/group/key state. The system share helper remains outside this pack.
 - Preserve upstream license files and attribution, including embedded browser dependencies and pypdf.

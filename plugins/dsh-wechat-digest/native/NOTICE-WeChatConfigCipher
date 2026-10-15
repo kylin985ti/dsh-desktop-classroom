@@ -1,0 +1,4 @@
+WCDB Config.Cipher layout adapter
+Reference implementations: beijinguang/wechat-cli commit 44c7e9591aded0c44ce0ac4517b8297939bdea16 and sunfeihu007/wechat-cli commit 8ba897b0cf80dd8bd3545f3c5b32547cbbba55c2 (Apache-2.0; LICENSE-WeChatConfigCipher).
+Local changes: student-selected account/salt scope, multiple checked layouts, bounded recursive mapping reads, complete96/160 keyspec parsing with HMAC retained, no entropy filtering, no target writes or re-signing, no key stdout, private FIFO handoff to a separate classroom Keychain worker, native SQLCipher verification before storage.
+The shared keyspec matcher derives from raclen/wechat-suite 68235fb4308d71b1462e78e533850162849562a1 (MIT; LICENSE-WeChatDBScanner).

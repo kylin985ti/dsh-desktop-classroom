@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-wechat-digest",
-  "version": "0.4.1-classroom.1",
+  "version": "0.5.0-classroom.1",
   "private": true,
   "type": "module",
   "description": "指定微信群数据库只读接收、按日归档与一段式简报",

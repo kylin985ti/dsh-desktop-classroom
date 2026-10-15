@@ -16,17 +16,6 @@ test('all distributed JavaScript parses without installing host dependencies', a
     assert.equal(r.status, 0, file + ': ' + r.stderr);
   }
 });
-test('WeChat automatic database adapter cannot read, enable or sync', async () => {
-  const { DatabaseSource, TARGET_GROUP } = await import('../plugins/dsh-wechat-digest/lib/database-source.mjs');
-  const database = new DatabaseSource();
-  await database.start();
-  assert.equal(database.describe().available, false);
-  assert.equal(database.config.enabled, false);
-  assert.equal(TARGET_GROUP, '尚未配置');
-  await assert.rejects(database.configure(true));
-  await assert.rejects(database.sync());
-  await database.dispose();
-});
 test('checksum rejects an altered payload; privacy check rejects a newly added credential value', async () => {
   const dir = await fs.mkdtemp(join(tmpdir(), 'dsh-pack-test-'));
   try {

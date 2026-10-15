@@ -25,3 +25,7 @@
 Tavily 需要自己的 [Tavily API Key](https://app.tavily.com/)。通过 DSH 的凭据或插件设置保存 `TAVILY_API_KEY`，再将原生 web 搜索 provider 选择为 `tavily`。本仓库只带 provider 代码，不带任何已付费额度、Key 或强制搜索设置。
 
 所有账号验收使用合成内容。不要把密钥、密码、验证码、完整错误配置、真实聊天或 OAuth 回调 URL 提交到 GitHub issue。
+
+## 微信数据库（自选）
+
+在群聊简报的连接设置打开本机连接器，使用本人的 macOS 系统授权；选账号、勾选群并明确开启。密钥仅存本机钥匙串，默认不接入任何群，不复制老师的账号或群配置。步骤和兼容边界见 [微信说明](WECHAT.md)。
