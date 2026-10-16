@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "version": "0.3.0",
-  "updated": "2026-10-15",
+  "version": "0.4.0",
+  "updated": "2026-10-16",
   "repository": "https://github.com/kylin985ti/dsh-desktop-classroom",
   "desktop": {
     "repository": "https://github.com/dataelement/dsh-desktop",
@@ -75,10 +75,10 @@
     {
       "path": "plugins/dsh-tencent-docs",
       "name": "@local/dsh-tencent-docs",
-      "version": "0.2.0-classroom.1",
+      "version": "0.4.0-classroom.1",
       "title": "腾讯文档",
-      "capability": "文档列表、独立网页登录、选区引用卡片与评论、AI 修改确认",
-      "setup": "本人登录；文档窗口需macOS 13+；网页登录与AI文档权限分别连接"
+      "capability": "腾讯官方 MCP 读写、本人登录授权、修改提案与逐笔确认",
+      "setup": "会话粘贴文档链接；原版式在官网查看；能力取决于官方工具与本人权限"
     },
     {
       "path": "plugins/dsh-wechat-digest",
@@ -129,22 +129,6 @@
         "filename": "dsh-wechat-bridge-0.2.0-x64.zip",
         "url": "https://github.com/kylin985ti/dsh-desktop-classroom/releases/download/v0.2.0/dsh-wechat-bridge-0.2.0-x64.zip",
         "sha256": "8b71f2118fadc88eb383b756ee223f5f6ce944adde5a470da2fec978a2532ba3"
-      }
-    }
-  },
-  "tencentBrowser": {
-    "version": "0.1.1",
-    "minimumMacOS": "13.0",
-    "assets": {
-      "arm64": {
-        "filename": "dsh-tencent-browser-0.1.1-arm64.zip",
-        "url": "https://github.com/kylin985ti/dsh-desktop-classroom/releases/download/v0.3.0/dsh-tencent-browser-0.1.1-arm64.zip",
-        "sha256": "554fc7af9e37ea926ed08d5d83d3c3b248819ba961d7acaef1bd81c713817f71"
-      },
-      "x64": {
-        "filename": "dsh-tencent-browser-0.1.1-x64.zip",
-        "url": "https://github.com/kylin985ti/dsh-desktop-classroom/releases/download/v0.3.0/dsh-tencent-browser-0.1.1-x64.zip",
-        "sha256": "d532570534dfc3628a4630894001a0a54b99ed8282de96fe7433d587569fd8d3"
       }
     }
   }

@@ -1,28 +1,127 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {registerHooks} from 'node:module';
+import { registerHooks } from 'node:module';
 import fs from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-const sources={
- '@modelcontextprotocol/client':`export class Client { constructor(){this.fixture=globalThis.__tencentApiFixture;}async connect(){}async close(){}async listTools(){return{tools:this.fixture.tools};}async callTool(query){this.fixture.calls.push(query);return this.fixture.answer(query);} } export class StreamableHTTPClientTransport {}`,
- '@deepseek-ai/dsh-mcp-client':`export const createMcpToolDefinition=(_ctx,value)=>value;`,
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+const sources = {
+  '@modelcontextprotocol/client': `export class Client { constructor(){this.f=globalThis.__tencentApiFixture;this.f.clients++;} async connect(wire){this.f.wires.push(wire);} async close(){} async listTools(){return {tools:this.f.tools};} async callTool(q,options){this.f.calls.push(q);return this.f.answer(q,options);} } export class StreamableHTTPClientTransport {constructor(url,options){this.url=url.href;this.options=options;}}`,
+  '@deepseek-ai/dsh-mcp-client': `export const createMcpToolDefinition=(_ctx,value)=>value;`,
 };
-const hook=registerHooks({resolve(specifier,context,next){return sources[specifier]?{url:'data:text/javascript,'+encodeURIComponent(sources[specifier]),shortCircuit:true}:next(specifier,context);}});
-const {apply,isReadOnly}=await import('../plugins/dsh-tencent-docs/lib/index.mjs');hook.deregister();
-async function fixture(granted){
- const home=await fs.mkdtemp(join(tmpdir(),'dsh-tencent-api-')),previous=process.env.DSH_HOME;process.env.DSH_HOME=home;
- const fixture={calls:[],tools:['manage.recent_online_file','manage.folder_list','manage.search_file','get_content'].map(name=>({name,inputSchema:{type:'object',properties:name==='manage.search_file'?{search_key:{type:'string'}}:{}}})),answer(query){return{content:[{type:'text',text:JSON.stringify(query.name==='get_content'?{content:'合成正文，供选区引用。'}:{data:{file_list:[{file_id:'synthetic',title:'合成文档',file_type:'doc'}],has_more:false}})}]};}};
- globalThis.__tencentApiFixture=fixture;let route;const cleanup=[];
- try{await apply({effect:fn=>{const value=fn();if(typeof value==='function')cleanup.push(value);},credentials:{readRecord:async()=>granted?{kind:'grant',payload:{mode:'personal-token',accessToken:'synthetic-only'}}:null},tools:{register:()=>()=>{}},connection:{fetch:{register:options=>{route=options;return()=>{};}}}});}finally{if(previous===undefined)delete process.env.DSH_HOME;else process.env.DSH_HOME=previous;}
- return {calls:fixture.calls,async request(value){const response=await route.fetch(new Request('http://localhost/api/tencent-docs',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(value)}));return{status:response.status,value:await response.json()};},async close(){for(const fn of cleanup.reverse())fn();delete globalThis.__tencentApiFixture;await fs.rm(home,{recursive:true,force:true});}};
+const hook = registerHooks({ resolve(specifier, context, next) { return sources[specifier] ? { url: 'data:text/javascript,' + encodeURIComponent(sources[specifier]), shortCircuit: true } : next(specifier, context); } });
+const { apply, isReadOnly, documentId, checkedResult, nativeInputSchema } = await import('../plugins/dsh-tencent-docs/lib/index.mjs'); hook.deregister();
+const response = data => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
+const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
+async function fixture({ granted = true, saved = {} } = {}) {
+  const home = await fs.mkdtemp(join(tmpdir(), 'dsh-tencent-api-')), previous = process.env.DSH_HOME;
+  const path = join(home, 'storages/tencent_docs/connection.json');
+  await fs.mkdir(join(home, 'storages/tencent_docs'), { recursive: true }); await fs.writeFile(path, JSON.stringify(saved));
+  const state = {
+    clients: 0, calls: [], wires: [], writes: 0, content: '合成内容', cells: 0, beforeRead: null, failWrite: false,
+    tools: ['get_content', 'sheet.get_cell_data', 'sheet.set_cell_value', 'doc.update_content', 'doc.create', 'doc.delete', 'get_and_update_content', 'new_unknown_tool'].map(name => ({ name, inputSchema: { type: 'object', properties: { file_id: { type: 'string' } } } })),
+    async answer(q) {
+      if (q.name === 'get_content') { if (state.beforeRead) await state.beforeRead(); return response({ content: state.content, trace_id: String(Math.random()) }); }
+      if (q.name === 'sheet.get_cell_data') return response({ cells: [{ row: 0, col: 0, value: state.cells }] });
+      state.writes++;
+      if (state.failWrite) throw new Error('synthetic transport failure after possible write');
+      return response({ code: 0, message: 'synthetic success' });
+    },
+  };
+  let record = granted ? { kind: 'grant', payload: { mode: 'personal-token', accessToken: 'synthetic-only-token' } } : null;
+  const credentials = { readRecord: async () => record, modifyRecord: async (_key, fn) => { const next = await fn(record); if (next !== undefined) record = next; }, deleteRecord: async () => { record = null; } };
+  globalThis.__tencentApiFixture = state; let route; const cleanup = [], tools = new Map(); process.env.DSH_HOME = home;
+  try {
+    await apply({ effect: fn => { const dispose = fn(); if (typeof dispose === 'function') cleanup.push(dispose); }, credentials, tools: { register: value => { tools.set(value.rawName, value); return () => tools.delete(value.rawName); } }, connection: { fetch: { register: value => { route = value; return () => {}; } } } });
+  } finally { if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous; }
+  const request = async body => { const r = await route.fetch(new Request('http://localhost/api/tencent-docs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })); return { status: r.status, value: await r.json() }; };
+  if (granted) assert.equal((await request({ action: 'discover' })).status, 200);
+  return { state, home, tools, request, stored: async () => JSON.parse(await fs.readFile(path, 'utf8')), tool: (name, args) => tools.get(name).call(args, { signal: new AbortController().signal }), async close() { for (const fn of cleanup.reverse()) fn(); delete globalThis.__tencentApiFixture; await fs.rm(home, { recursive: true, force: true }); } };
 }
-test('workspace without an API grant returns an unconnected list and never calls Tencent',async()=>{
- const f=await fixture(false);try{const r=await f.request({action:'workspace'});assert.equal(r.status,200);assert.equal(r.value.authorized,false);assert.deepEqual(r.value.rows,[]);assert.equal(f.calls.length,0);}finally{await f.close();}
+const propose = async f => { await f.request({ action: 'allowWrite', enabled: true }); const r = await f.tool('doc.update_content', { file_id: 'synthetic', content: '新内容' }); return JSON.parse(r.content[0].text).operationId; };
+test('without authorization status does not contact Tencent or expose credentials; old browser routes are gone', async () => {
+  const f = await fixture({ granted: false });
+  try {
+    const r = await f.request({ action: 'status' }); assert.equal(r.value.authorized, false); assert.equal(f.state.clients, 0); assert.equal(f.state.calls.length, 0);
+    assert.equal((await f.request({ action: 'allowWrite', enabled: true })).status, 400);
+    for (const action of ['openBrowser', 'webInbox', 'webImage', 'dismissWeb', 'workspace', 'preview', 'browse', 'search', 'call']) assert.equal((await f.request({ action })).status, 400);
+    assert.equal(f.state.calls.length, 0);
+  } finally { await f.close(); }
 });
-test('recent and folder workspace use the verified paging schemas and only read tools',async()=>{
- const f=await fixture(true);try{let r=await f.request({action:'workspace',section:'recent',page:2});assert.equal(r.status,200);assert.equal(r.value.rows[0].title,'合成文档');assert.deepEqual(f.calls.at(-1),{name:'manage.recent_online_file',arguments:{num:2,count:20,order_by:0}});r=await f.request({action:'workspace',section:'mine',page:3,folderId:'synthetic-folder'});assert.equal(r.status,200);assert.deepEqual(f.calls.at(-1),{name:'manage.folder_list',arguments:{start:40,folder_id:'synthetic-folder'}});assert.ok(f.calls.every(q=>isReadOnly({name:q.name})));const count=f.calls.length;r=await f.request({action:'workspace',page:-1});assert.equal(r.status,400);assert.equal(f.calls.length,count);}finally{await f.close();}
+test('official MCP discovery and read use the native tool adapter; discovery alone is not a document read', async () => {
+  const f = await fixture();
+  try {
+    assert.equal(f.state.wires[0].url, 'https://docs.qq.com/openapi/mcp'); assert.equal(f.state.wires[0].options.requestInit.headers.Authorization, 'synthetic-only-token');
+    assert.equal((await f.request({ action: 'status' })).value.verified, null); assert.equal(f.state.calls.length, 0); assert.equal(f.tools.has('doc.delete'), false);
+    const result = await f.tool('get_content', { file_id: 'synthetic' }); assert.match(result.content[0].text, /合成内容/); assert.equal(f.state.writes, 0);
+    const r = await f.request({ action: 'read', fileId: 'https://docs.qq.com/doc/synthetic?access_token=discard' }); assert.equal(r.status, 200); assert.equal(r.value.verified.level, 'document-read'); assert.deepEqual(f.state.calls.at(-1).arguments, { file_id: 'synthetic' });
+    assert.equal(JSON.stringify((await f.request({ action: 'status' })).value).includes('synthetic-only-token'), false);
+  } finally { await f.close(); }
 });
-test('preview reads plain content; search uses its discovered key and source links lose grants',async()=>{
- const f=await fixture(true);try{let r=await f.request({action:'preview',fileId:'https://docs.qq.com/doc/synthetic'});assert.equal(r.status,200);assert.equal(r.value.text,'合成正文，供选区引用。');r=await f.request({action:'search',query:'合成'});assert.equal(r.status,200);assert.deepEqual(f.calls.at(-1),{name:'manage.search_file',arguments:{search_key:'合成'}});r=await f.request({action:'documentLink',url:'https://docs.qq.com/sheet/synthetic?tab=demo&access_token=synthetic#secret'});assert.equal(r.value.url,'https://docs.qq.com/sheet/synthetic?tab=demo');const count=f.calls.length;for(const fileId of ['https://example.com/doc/synthetic','https://docs.qq.com:8443/doc/synthetic','https://user:pass@docs.qq.com/doc/synthetic']){r=await f.request({action:'preview',fileId});assert.equal(r.status,400);assert.equal(f.calls.length,count);}}finally{await f.close();}
+test('all unknown/mutating tools require confirmation even with a read-only annotation or misleading prefix', () => {
+  for (const name of ['doc.update_content', 'slide_set_text', 'get_and_update_content', 'doc.get_and_delete', 'new_unknown_tool']) assert.equal(isReadOnly({ name, annotations: { readOnlyHint: true } }), false, name);
+  for (const name of ['get_content', 'sheet.get_cell_data', 'slide_get_page_info']) assert.equal(isReadOnly({ name }), true, name);
+  assert.equal(isReadOnly({ name: 'get_content', annotations: { readOnlyHint: false } }), false);
+});
+test('AI proposes an immutable modification; only the exact reviewed id can execute once', async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(f.tool('doc.update_content', { file_id: 'synthetic', content: '新内容' }), /尚未开启/); assert.equal(f.state.writes, 0);
+    const id = await propose(f); assert.equal(f.state.writes, 0); assert.equal((await f.stored()).commands[0].state, 'pending');
+    assert.equal((await f.request({ action: 'approve', id: 'forged' })).status, 400);
+    const r = await f.request({ action: 'approve', id, arguments: { content: '不可替换参数' } }); assert.equal(r.status, 200); assert.equal(r.value.command.state, 'completed');
+    assert.deepEqual(f.state.calls.at(-1), { name: 'doc.update_content', arguments: { file_id: 'synthetic', content: '新内容' } }); assert.equal(f.state.writes, 1);
+    assert.equal((await f.request({ action: 'approve', id })).status, 400); assert.equal(f.state.writes, 1);
+  } finally { await f.close(); }
+});
+test('document or exact sheet range changes block a write, including zero/false values', async () => {
+  const f = await fixture();
+  try {
+    const id = await propose(f); f.state.content = '外部变化'; assert.equal((await f.request({ action: 'approve', id })).status, 400); assert.equal(f.state.writes, 0);
+    f.state.content = '稳定'; const r = await f.tool('sheet.set_cell_value', { file_id: 'synthetic', sheet_id: 'tab1', row: 0, col: 0, value_type: 'BOOL', bool_value: false });
+    const sheetId = JSON.parse(r.content[0].text).operationId;
+    assert.deepEqual(f.state.calls.at(-1), { name: 'sheet.get_cell_data', arguments: { file_id: 'synthetic', sheet_id: 'tab1', start_row: 0, end_row: 0, start_col: 0, end_col: 0, include_formula: true, return_csv: false } });
+    f.state.cells = false; assert.equal((await f.request({ action: 'approve', id: sheetId })).status, 400); assert.equal(f.state.writes, 0);
+  } finally { await f.close(); }
+});
+for (const stop of ['allowWrite', 'reject', 'logout']) test('a concurrent ' + stop + ' during conflict checking prevents the write', async () => {
+  const f = await fixture();
+  try {
+    const id = await propose(f), entered = deferred(), release = deferred();
+    f.state.beforeRead = async () => { entered.resolve(); await release.promise; };
+    const pending = f.request({ action: 'approve', id }); await entered.promise;
+    assert.equal((await f.request({ action: 'approve', id })).status, 400);
+    assert.equal((await f.request({ action: stop, id, enabled: false })).status, 200);
+    release.resolve(); assert.equal((await pending).status, 400); assert.equal(f.state.writes, 0);
+    if (stop === 'logout') { const r = await f.request({ action: 'status' }); assert.equal(r.value.allowWrite, false); assert.equal(r.value.authorized, false); assert.equal(r.value.commands[0].state, 'account-changed'); }
+  } finally { await f.close(); }
+});
+test('ambiguous writes become persistent outcome-unknown and are never retried; crash recovery also forbids retry', async () => {
+  const f = await fixture(); let stored;
+  try {
+    const id = await propose(f); f.state.failWrite = true; assert.equal((await f.request({ action: 'approve', id })).status, 400);
+    assert.equal((await f.stored()).commands[0].state, 'outcome-unknown'); assert.equal((await f.request({ action: 'approve', id })).status, 400); assert.equal(f.state.writes, 1);
+    stored = await f.stored(); stored.commands[0].state = 'executing';
+  } finally { await f.close(); }
+  const recovered = await fixture({ saved: stored });
+  try { const r = await recovered.request({ action: 'status' }); assert.equal(r.value.commands[0].state, 'outcome-unknown'); assert.equal((await recovered.request({ action: 'approve', id: stored.commands[0].id })).status, 400); assert.equal(recovered.state.writes, 0); } finally { await recovered.close(); }
+});
+test('invalid links fail before network calls, and native schemas preserve nullable arguments', async () => {
+  const f = await fixture();
+  try {
+    for (const value of ['https://example.com/doc/synthetic', 'https://docs.qq.com:8443/doc/synthetic', 'https://u:p@docs.qq.com/doc/synthetic', 'https://docs.qq.com/desktop/', 'https://docs.qq.com/openapi/mcp/oauth/authorize']) assert.equal((await f.request({ action: 'read', fileId: value })).status, 400);
+    assert.equal(f.state.calls.length, 0); assert.equal(documentId('https://docs.qq.com/sheet/synthetic?tab=one'), 'synthetic');
+    const schema = nativeInputSchema({ type: 'object', required: ['name'], properties: { name: { type: ['string', 'null'] }, active: { type: 'boolean', const: false } } });
+    assert.deepEqual(schema.properties.name.oneOf, [{ type: 'string' }, { type: 'null' }]); assert.deepEqual(schema.properties.active.enum, [false]);
+    assert.throws(() => checkedResult(response({ error_code: 400006 })), /授权失效/); assert.throws(() => checkedResult({ isError: true, content: [] }), /调用失败/);
+  } finally { await f.close(); }
+});
+test('structured-only content participates in conflicts and structured business errors never count as success', async () => {
+  const f = await fixture();
+  try {
+    f.state.answer = async q => { if (q.name === 'get_content') return { content: [], structuredContent: { data: { content: f.state.content } } }; f.state.writes++; return response({ code: 0 }); };
+    const id = await propose(f); f.state.content = '结构化结果的外部变化';
+    assert.equal((await f.request({ action: 'approve', id })).status, 400); assert.equal(f.state.writes, 0);
+    assert.throws(() => checkedResult({ content: [], structuredContent: { error_code: 400006 } }), /授权失效/);
+    assert.throws(() => checkedResult({ content: [], structuredContent: { retcode: 7, message: 'synthetic error' } }), /返回错误/);
+  } finally { await f.close(); }
 });

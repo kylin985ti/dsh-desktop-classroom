@@ -47,12 +47,10 @@ python3 -B tests/wechat-reader.py --app '/private/tmp/dsh-wechat-build/arm64/DSH
 
 构建脚本只编译，不启动连接器、不读取微信或钥匙串。发布对应 Release ZIP，核对下载后的 SHA256 并同步 `classroom.json.wechatBridge`，再 refresh/test；不要替换已发布版本的资产，代码变化须升版本和 pin。保留 helper Resources 内的许可证。用新临时 home 和合成数据库验收，不复用维护者账号或连接配置。连接器尚未公证，Intel 真机未验收，须保留公开说明。
 
-## 腾讯文档浏览器 Release
+## 腾讯文档 MCP 更新
 
-```bash
-python3 -B scripts/build-tencent-browser.py --work /private/tmp/dsh-tencent-build --arch arm64
-python3 -B scripts/build-tencent-browser.py --work /private/tmp/dsh-tencent-build --arch x86_64
-node tests/tencent-installer.mjs /private/tmp/dsh-tencent-build/dsh-tencent-browser-0.1.1-arm64.zip
-```
+腾讯文档只维护 `plugins/dsh-tencent-docs` 的官方 MCP 适配、本人授权和修改确认；不发布独立浏览器资产，不复制腾讯或 WorkBuddy 的私有协议。OAuth 保留既有凭据 namespace；断开/换账号会关闭修改建议并使旧提案失效。新工具默认需确认，明确只读工具才直接调用，删除工具不注册。不要添加一个可绕过提案确认的通用写入 API。
 
-浏览器只依赖系统 AppKit/WebKit。发布两个 ZIP 后同步 `classroom.json.tencentBrowser` 的版本、固定 URL 和下载 SHA256，refresh/test。构建、self-test 和安装器测试不打开网站、不访问 Cookie 或账号；真实登录、页面选区与 DSH 草稿验收必须另行通过 CUA 进行。不要把维护者网页数据、私有接收记录或截图放入仓库/Release。不要禁用宿主 webSecurity、修改 App 包或移除网站安全策略。
+修改后测试授权刷新、业务错误、并发确认/拒绝/断开、文档冲突和结果不明不重试。使用临时 home 检查原生 generation 安装和重复安装。维护者本机只以 `--only @local/dsh-tencent-docs` 安装，核对其他 generation 和配置哈希不变；资料库等独立开发中的插件不从本仓库覆盖或降级。
+
+真实 UI 需本人给出空闲窗口，不能轮询任务或强制重启。测试真实文档默认只读，不自动调用模型；实际写入仍需对具体参数取得本人确认。旧浏览器和 web-inbox 的本机数据保留，不混入公开包。历史构建源码可在 Git 历史查看。
