@@ -49,7 +49,15 @@ python3 -B tests/wechat-reader.py --app '/private/tmp/dsh-wechat-build/arm64/DSH
 
 ## 腾讯文档 MCP 更新
 
-0.5.0 起以腾讯文档连接器交付：保留包名、插件 ID、凭据 namespace、存储目录和官方工具名，侧边栏“连接器”管理账号，原生 `conversation.input.dock` 承载当前会话的状态和确认。导航使用 `layout.selectPanel(null)` / `uiWorkspace.startSession()`，不操作或自动发送草稿。提案的 SessionId 只读取 `execution.agent.session.id`，子会话不推断为父会话；历史无归属项留在管理页。事件端点仅推送失效版本号，不包含凭据、文档内容或会话 ID。
+0.6.0 使用原生 `conversation.input.left` 放置图标，宿主 primitives 提供图标、浮层定位与外部点击关闭；不再注册常驻 dock。保留包名、插件 ID、凭据 namespace、存储目录和官方工具名，侧边栏“连接器”管理账号。导航使用 `layout.selectPanel(null)` / `uiWorkspace.startSession()`，不操作或自动发送草稿。提案的 SessionId 只读取 `execution.agent.session.id`，子会话不推断为父会话；历史无归属项留在管理页。事件端点仅推送失效版本号，不包含凭据、文档内容或会话 ID。
+
+会话启用保存在本机 `sessionConnections`，未选择默认关闭，不从旧全局连接推断。通过 `agent/created`、`agents.list/get` 和 `agent.ctx.tools` 的作用域注册/限制保持工具可见性；全局名称保留供旧历史校验，执行 guard 与逐次操作版本再次拦截。每个会话都有独立的遮罩，仅为已启用会话注册本层工具，避免父子相互继承连接。关闭会话取消它的进行中请求，但不关闭共享账号客户端；迟到读取不返回，已发出的写入仍按结果不明机制处理。插件释放时清理所有作用域注册、遮罩、请求和事件流。
+
+macOS 维护者可运行真实宿主工具运行时的隔离检查：只新建临时 home，使用合成凭据、合成 Agent 和合成 MCP 返回，不连接正在运行的 DSH，不启动模型或读写真实文档。该检查不替代实际界面验收。
+
+```bash
+ELECTRON_RUN_AS_NODE=1 '/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop' tests/tencent-native-scopes.mjs
+```
 
 腾讯文档只维护 `plugins/dsh-tencent-docs` 的官方 MCP 适配、本人授权和修改确认；不发布独立浏览器资产，不复制腾讯或 WorkBuddy 的私有协议。OAuth 保留既有凭据 namespace；断开/换账号会关闭修改建议并使旧提案失效。新工具默认需确认，明确只读工具才直接调用，删除工具不注册。不要添加一个可绕过提案确认的通用写入 API。
 

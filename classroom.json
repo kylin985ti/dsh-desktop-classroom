@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "updated": "2026-10-16",
   "repository": "https://github.com/kylin985ti/dsh-desktop-classroom",
   "desktop": {
@@ -75,10 +75,10 @@
     {
       "path": "plugins/dsh-tencent-docs",
       "name": "@local/dsh-tencent-docs",
-      "version": "0.5.0-classroom.1",
+      "version": "0.6.0-classroom.1",
       "title": "腾讯文档连接器",
-      "capability": "一次授权后会话直接读写、会话内审阅与确认修改",
-      "setup": "在会话输入区连接腾讯账号；保留原授权，文档内容由官方 MCP 返回"
+      "capability": "会话独立选择连接、官方 MCP 读写、修改前确认",
+      "setup": "输入框底部图标选择本会话启用；默认关闭，账号授权保留"
     },
     {
       "path": "plugins/dsh-wechat-digest",
