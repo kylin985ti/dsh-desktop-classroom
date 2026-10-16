@@ -62,18 +62,30 @@ export async function apply(ctx) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const path = join(root, 'connection.json');
   let saved = {}; try { saved = JSON.parse(await readFile(path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const listeners = new Set(), streams = new Set(); let revision = 0;
+  // Push only an invalidation counter. Grants and document contents never enter events.
+  const changed = () => { revision++; for (const listener of listeners) listener(revision); };
   let saving = Promise.resolve();
-  const save = () => { const text = JSON.stringify(saved); const task = saving.then(async () => { const temp = path + '.' + randomUUID(); await writeFile(temp, text, { mode: 0o600 }); await rename(temp, path); }); saving = task.catch(() => {}); return task; };
+  const save = () => { const text = JSON.stringify(saved); const task = saving.then(async () => { const temp = path + '.' + randomUUID(); await writeFile(temp, text, { mode: 0o600 }); await rename(temp, path); changed(); }); saving = task.catch(() => {}); return task; };
   saved.commands ||= []; for (const command of saved.commands) if (command.state === 'executing') command.state = 'outcome-unknown';
   if (saved.commands.some(command => command.state === 'outcome-unknown')) await save();
-  let client = null, connecting = null, authorization = '', definitions = [], disposers = [], disposed = false, grantRevision = 0;
+  let client = null, connecting = null, authorization = '', definitions = [], disposers = [], disposed = false, grantRevision = 0, connectionError = '';
   const disconnect = async () => { for (const dispose of disposers) dispose(); disposers = []; definitions = []; const old = client; client = null; authorization = ''; if (old) await old.close().catch(() => {}); };
-  const auth = new TencentAuth({ credentials: ctx.credentials, client: saved.client, saveClient: async value => { saved.client = value; await save(); }, onGrant: async () => { grantRevision++; await disconnect(); delete saved.verified; delete saved.identity; saved.allowWrite = false; for (const command of saved.commands) if (command.state === 'pending') command.state = 'account-changed'; await save(); } });
+  const auth = new TencentAuth({ credentials: ctx.credentials, client: saved.client, saveClient: async value => { saved.client = value; await save(); }, onGrant: async () => {
+    grantRevision++; await disconnect(); connectionError = ''; delete saved.verified; delete saved.identity; saved.allowWrite = false;
+    for (const command of saved.commands) if (command.state === 'pending') command.state = 'account-changed';
+    await save();
+    // A successful login immediately makes tools available in the conversation.
+    // Connection failure remains distinct from saved authorization and is retryable.
+    if (connecting) await connecting.catch(() => {});
+    if (await auth.grant()) await connect().catch(() => {});
+  } });
   const connect = async () => {
     if (disposed) throw new Error('插件已关闭');
     const header = await auth.authorization(); if (client && header === authorization) return client;
     if (connecting) { await connecting; return connect(); }
     const revision = grantRevision;
+    connectionError = '';
     connecting = (async () => {
       await disconnect();
       const next = new Client({ name: 'dsh-desktop-tencent-docs', version: '0.4.0' });
@@ -89,16 +101,17 @@ export async function apply(ctx) {
           const publicName = ('mcp__tencent_docs__' + cleaned).slice(0, 50) + '_' + createHash('sha256').update(tool.name).digest('hex').slice(0, 8);
           const definition = createMcpToolDefinition(ctx, { name: publicName, rawName: tool.name, description: (tool.description || tool.name) + (isReadOnly(tool) ? '' : '\n此操作只生成待确认修改；用户在腾讯文档插件审阅并确认后才真正执行，确认前不可声称已修改。'), inputSchema: nativeInputSchema(tool.inputSchema), outputSchema: isReadOnly(tool) ? tool.outputSchema : undefined, call: async (args, execution) => {
             if (!isReadOnly(tool)) {
-              const command = await propose(tool.name, args);
-              return { content: [{ type: 'text', text: JSON.stringify({ status: 'pending-user-confirmation', operationId: command.id, tool: command.tool, message: '修改尚未执行，请用户到腾讯文档插件审阅并确认。' }) }] };
+              const command = await propose(tool.name, args, execution.agent?.session?.id);
+              return { content: [{ type: 'text', text: JSON.stringify({ status: 'pending-user-confirmation', operationId: command.id, tool: command.tool, message: '修改尚未执行，请在会话输入区的腾讯文档连接器中审阅并确认。' }) }] };
             }
             return call(tool.name, args, { signal: execution.signal, readOnly: true });
           } });
           disposers.push(ctx.tools.register(definition));
         }
         return next;
-      } catch { await next.close().catch(() => {}); await disconnect(); throw new Error('腾讯文档连接失败：请检查登录授权、网络或可用额度'); }
-    })().finally(() => { connecting = null; });
+      } catch { await next.close().catch(() => {}); await disconnect(); connectionError = '腾讯文档连接失败：请检查登录授权、网络或可用额度'; throw new Error(connectionError); }
+    })().finally(() => { connecting = null; changed(); });
+    changed();
     return connecting;
   };
   const call = async (toolName, args, { signal, readOnly = false, guard } = {}) => {
@@ -140,7 +153,7 @@ export async function apply(ctx) {
     const snapshots = []; for (const item of plan) snapshots.push({ name: item.name, result: await call(item.name, item.arguments, { readOnly: true }) });
     return snapshots.length === 1 ? snapshots[0].result : { content: snapshots.flatMap(item => [{ type: 'text', text: item.name }, ...item.result.content]) };
   };
-  const propose = async (toolName, args) => {
+  const propose = async (toolName, args, sessionId) => {
     if (!saved.allowWrite) throw new Error('腾讯文档写入尚未开启，请在腾讯文档插件中开启后再修改');
     const revision = grantRevision;
     const snapshot = JSON.parse(JSON.stringify(args)); if (Buffer.byteLength(JSON.stringify(snapshot)) > 512000) throw new Error('腾讯文档修改内容过长，请分批处理');
@@ -150,7 +163,7 @@ export async function apply(ctx) {
     const readPlan = beforePlan(toolName, snapshot, fileId);
     const before = await readBefore(readPlan);
     if (revision !== grantRevision || !saved.allowWrite || disposed) throw new Error('腾讯文档连接或修改权限已变化，请重新提出修改');
-    const command = { id: randomUUID(), tool: toolName, arguments: snapshot, fileId, readPlan, before, beforeHash: before ? digest(before) : null, state: 'pending', at: new Date().toISOString() };
+    const command = { id: randomUUID(), tool: toolName, arguments: snapshot, fileId, ...(typeof sessionId === 'string' && sessionId ? { sessionId } : {}), readPlan, before, beforeHash: before ? digest(before) : null, state: 'pending', at: new Date().toISOString() };
     saved.commands.unshift(command); saved.commands = saved.commands.filter((command, index) => command.state === 'pending' || command.state === 'executing' || command.state === 'outcome-unknown' || index < 50); await save(); return command;
   };
   const approving = new Set();
@@ -168,20 +181,44 @@ export async function apply(ctx) {
       catch (error) { command.state = error.notExecuted ? (revision === grantRevision ? 'pending' : 'account-changed') : 'outcome-unknown'; await save(); if (error.notExecuted) throw error; throw new Error('腾讯文档未返回明确写入结果。请先打开文档核对，本插件不会自动重复执行。'); }
     } finally { approving.delete(id); }
   };
-  ctx.effect(() => () => { disposed = true; auth.dispose(); void disconnect(); });
+  ctx.effect(() => () => { disposed = true; auth.dispose(); for (const close of [...streams]) close(); void disconnect(); });
+  // Desktop's HTTP bridge otherwise attaches a streaming body to this GET.
+  ctx.effect(() => ctx.connection.fetch.register({ path: '/api/tencent-docs/events', methods: ['GET'], requestBody: 'buffered', fetch(request) {
+    const encoder = new TextEncoder(); let stop = () => {};
+    const body = new ReadableStream({
+      start(controller) {
+        let closed = false, timer;
+        const send = value => { if (!closed) { try { controller.enqueue(encoder.encode(value)); } catch { stop(); } } };
+        const listener = value => send('event: changed\ndata: ' + JSON.stringify({ revision: value }) + '\n\n');
+        stop = () => { if (closed) return; closed = true; clearInterval(timer); listeners.delete(listener); streams.delete(stop); request.signal.removeEventListener('abort', stop); try { controller.close(); } catch {} };
+        listeners.add(listener); streams.add(stop); request.signal.addEventListener('abort', stop, { once: true });
+        listener(revision); timer = setInterval(() => send(': keepalive\n\n'), 25000); timer.unref?.();
+        if (request.signal.aborted || disposed) stop();
+      },
+      cancel() { stop(); },
+    });
+    return new Response(body, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store', 'x-accel-buffering': 'no' } });
+  } }), 'tencent-docs: authenticated connector state events');
   ctx.effect(() => ctx.connection.fetch.register({ path: '/api/tencent-docs', methods: ['POST'], requestBody: 'buffered', async fetch(request) {
     try {
       const body = await request.json();
+      const scoped = body.scope === 'session';
+      if (scoped && (typeof body.sessionId !== 'string' || !body.sessionId || body.sessionId.length > 300)) throw new Error('请打开有效会话后使用腾讯文档连接器');
+      const scopedCommand = id => {
+        const command = saved.commands.find(item => item.id === id);
+        if (scoped && command?.sessionId !== body.sessionId) throw new Error('腾讯文档修改不属于当前会话，请到连接器页面核对');
+        return command;
+      };
       switch (body.action) {
-        case 'status': return Response.json({ authorized: !!(await auth.grant()), connected: !!client, toolCount: definitions.filter(tool => !deletion(tool) && tool.execution?.taskSupport !== 'required').length, verified: saved.verified || null, allowWrite: !!saved.allowWrite, login: auth.publicPending(), error: auth.lastError, commands: saved.commands.map(({ result, ...command }) => command) });
+        case 'status': return Response.json({ connector: 'tencent-docs', authorized: !!(await auth.grant()), connected: !!client, connecting: !!connecting, toolCount: definitions.filter(tool => !deletion(tool) && tool.execution?.taskSupport !== 'required').length, verified: saved.verified || null, allowWrite: !!saved.allowWrite, login: auth.publicPending(), error: auth.lastError || connectionError, otherPendingCount: scoped ? saved.commands.filter(command => command.state === 'pending' && command.sessionId !== body.sessionId).length : 0, commands: saved.commands.filter(command => !scoped || command.sessionId === body.sessionId).map(({ result, ...command }) => command) });
         case 'login': return Response.json({ login: await auth.begin() });
         case 'token': await auth.setPersonalToken(body.token); return Response.json({ ok: true });
         case 'logout': await auth.logout(); return Response.json({ ok: true });
         case 'allowWrite': if (!(await auth.grant())) throw new Error('请先登录腾讯文档'); saved.allowWrite = body.enabled === true; await save(); return Response.json({ allowWrite: saved.allowWrite });
         case 'discover': await connect(); return Response.json({ tools: definitions.filter(tool => !deletion(tool) && tool.execution?.taskSupport !== 'required').map(tool => ({ name: tool.name, inputSchema: tool.inputSchema, readOnly: isReadOnly(tool) })) });
-        case 'approve': return Response.json({ command: await approve(body.id) });
+        case 'approve': scopedCommand(body.id); return Response.json({ command: await approve(body.id) });
         case 'reject': {
-          const command = saved.commands.find(command => command.id === body.id); if (!command || command.state !== 'pending') throw new Error('腾讯文档修改请求已处理'); command.state = 'rejected'; await save(); return Response.json({ ok: true });
+          const command = scopedCommand(body.id); if (!command || command.state !== 'pending') throw new Error('腾讯文档修改请求已处理'); command.state = 'rejected'; await save(); return Response.json({ ok: true });
         }
         case 'read': {
           const result = await read('get_content', { file_id: documentId(body.fileId) });

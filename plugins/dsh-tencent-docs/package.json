@@ -1,9 +1,9 @@
 {
   "name": "@local/dsh-tencent-docs",
-  "version": "0.4.0-classroom.2",
+  "version": "0.5.0-classroom.1",
   "private": true,
   "type": "module",
-  "description": "腾讯官方 MCP 读写、本人 OAuth 授权和逐笔确认修改",
+  "description": "腾讯文档连接器：本人授权后在会话读写，原位审阅并确认修改",
   "main": "./lib/index.mjs",
   "exports": {
     ".": "./lib/index.mjs",
@@ -23,7 +23,10 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-ui-layout",
-        "@deepseek-ai/dsh-client-ui-sidebar"
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ]
     },
     "bundle": {
@@ -36,7 +39,11 @@
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-mcp-client": "0.2.0-rc.2",
     "@deepseek-ai/dsh-credentials": "0.2.0-rc.2",
-    "react": "*"
+    "react": "*",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-session": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-workspace": "0.2.0-rc.2",
+    "react-dom": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-client-ui-layout": {
@@ -55,6 +62,18 @@
       "optional": true
     },
     "react": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-conversation": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-workspace": {
+      "optional": true
+    },
+    "react-dom": {
       "optional": true
     }
   },
