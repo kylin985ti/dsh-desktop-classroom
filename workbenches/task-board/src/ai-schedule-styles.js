@@ -1,0 +1,34 @@
+export const AI_SCHEDULE_CSS = `
+/* AI proposal flow stays inside the workbench frame; native composer is never duplicated. */
+.tbAINewTasks{display:flex;flex-direction:column;gap:10px;font-size:12px}.tbAINewTask{border-left:3px solid var(--tb-accent)}
+.tbAIShade{position:absolute;inset:var(--tb-bar-h,60px) 0 0;z-index:120;display:flex;align-items:flex-start;justify-content:center;padding:18px;overflow:hidden;background:#26355336;backdrop-filter:blur(2px);min-width:0;min-height:0}
+.tbAI{display:flex;flex-direction:column;gap:0;width:min(900px,100%);max-width:100%;max-height:100%;min-height:0;margin:auto 0;background:var(--tb-surface);border:1px solid var(--tb-line);border-radius:12px;box-shadow:var(--tb-shadow);min-width:0;overflow:hidden}
+.tbAIHeader{display:flex;align-items:flex-start;gap:15px;justify-content:space-between;padding:20px 22px 15px;border-bottom:1px solid var(--tb-line);min-width:0;flex-shrink:0}
+.tbAIHeader>div{min-width:0}.tbAIHeader h2{margin:0;font-size:18px;font-weight:650;line-height:1.5}.tbAIHeader h2:focus{outline:none}.tbAIHeader p{font-size:11px;line-height:1.8;margin:5px 0 0;color:var(--tb-muted)}
+.tbAIBody{display:flex;flex:1 1 auto;flex-direction:column;gap:18px;padding:18px 22px 22px;min-width:0;min-height:0;overflow:auto;overflow-wrap:anywhere}.tbAIBody>*{flex-shrink:0}
+.tbAISafety{padding:11px 13px;border:1px solid var(--tb-line);border-radius:7px;background:var(--tb-hover);color:var(--tb-secondary);font-size:11px;line-height:1.9}
+.tbAIStep{display:flex;flex-direction:column;gap:11px;min-width:0;border-top:1px solid var(--tb-subtle);padding-top:17px}.tbAIStep h3{font-size:13px;line-height:1.6;margin:0;font-weight:650}
+.tbAIFields{display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,.55fr);gap:12px}.tbAIFields>label,.tbAILabel{display:flex;flex-direction:column;gap:6px;font-size:11px;color:var(--tb-secondary);min-width:0}
+.tbAI .tbAICheck{display:flex;flex-direction:row;align-items:flex-start;gap:8px;font-size:11px;line-height:1.9;color:var(--tb-secondary)}.tbAICheck>input{margin:4px 0 0;flex:0 0 auto;accent-color:var(--tb-accent)}
+.tbAIHelp{font-size:11px;line-height:1.85;color:var(--tb-muted);margin:0}.tbAIWarning{font-size:11px;line-height:1.85;color:var(--tb-danger);margin:0}
+.tbAIActions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}.tbAI .tbAIActions .tbBtn{max-width:100%;white-space:normal;text-align:center}
+.tbAICode{display:block;width:100%;min-width:0;max-width:100%;resize:vertical;min-height:100px;border:1px solid var(--tb-line);border-radius:7px;padding:10px;background:var(--tb-canvas);color:var(--tb-ink);font:11px/1.8 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace!important;tab-size:2;white-space:pre-wrap;overflow-wrap:anywhere}
+.tbAICode[readonly]{cursor:text}.tbAINativeOptions{font-size:11px;color:var(--tb-secondary);border:1px solid var(--tb-line);border-radius:7px;padding:9px 11px}.tbAINativeOptions>summary{cursor:pointer}.tbAINativeOptions[open]>.tbAIActions{margin-top:10px}
+.tbAIIssues,.tbAIWarnings{border:1px solid var(--tb-line);border-radius:7px;padding:10px 12px;font-size:11px;line-height:1.9;min-width:0;overflow-wrap:anywhere}.tbAIIssues{color:var(--tb-danger);border-color:color-mix(in srgb,var(--tb-danger) 30%,var(--tb-line));background:color-mix(in srgb,var(--tb-danger) 6%,var(--tb-surface))}.tbAIWarnings{color:var(--tb-secondary);background:var(--tb-canvas)}
+.tbAIIssues strong,.tbAIWarnings strong{font-weight:600}.tbAIIssues ul,.tbAIWarnings ul{margin:4px 0 0;padding-left:17px}.tbAINotice{margin:0;padding:10px 12px;color:var(--tb-success);border:1px solid var(--tb-line);border-radius:7px;background:var(--tb-success-soft);font-size:11px;line-height:1.9}
+.tbAIProposalList{display:flex;flex-direction:column;gap:10px;min-width:0}.tbAIProposal{border:1px solid var(--tb-line);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;min-width:0}.tbAIProposal>p{margin:0;font-size:12px;line-height:1.85}.tbAIProposalTitle{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;min-width:0}.tbAIProposalTitle>strong{font-size:12px;font-weight:600;overflow-wrap:anywhere}
+.tbAIStatus{color:var(--tb-muted);font-size:10px;line-height:1.8;flex-shrink:0}.tbAIRange{display:grid;grid-template-columns:52px minmax(0,1fr);gap:5px 10px;font-size:11px;min-width:0}.tbAIRange>span{color:var(--tb-muted)}.tbAIRange>code{font:11px/1.8 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere;white-space:normal}
+.tbAIParentChanges{border:1px dashed var(--tb-line);border-radius:7px;padding:10px 12px;font-size:11px;color:var(--tb-secondary);line-height:1.85}.tbAIParentChanges p{margin:6px 0 0}.tbAICloseConfirm{padding:12px;border:1px solid var(--tb-line);border-radius:8px;background:var(--tb-hover);display:flex;flex-direction:column;gap:10px;font-size:12px;font-weight:400}.tbAICloseConfirm>strong{font-weight:500;line-height:1.9}
+.tbAIWorkspace{display:flex;flex-direction:column;gap:9px;padding:11px 12px;border:1px solid var(--tb-line);border-radius:7px;background:var(--tb-canvas);min-width:0}
+.tbAIWorkspaceResult{display:flex;flex-direction:column;gap:8px;font-size:11px;line-height:1.85;color:var(--tb-secondary);min-width:0}.tbAIWorkspaceResult summary{cursor:pointer;overflow-wrap:anywhere}.tbAIWorkspaceResult p{margin:0}
+.tbAIFileIndex{max-height:140px;overflow:auto;margin:8px 0;padding:0 0 0 18px;overflow-wrap:anywhere;font:10px/1.9 ui-monospace,monospace}
+.tbAIWorkspaceDocument{padding:7px 9px;margin-top:7px;border:1px solid var(--tb-line);border-radius:5px;min-width:0;background:var(--tb-surface)}
+.tbAIWorkspaceDocument pre{margin:7px 0;max-height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:10px/1.8 ui-monospace,monospace;color:var(--tb-secondary)}
+/* Minimized state has no shade or full-frame hit surface, and avoids the right-hand native input. */
+.tbAIDock{position:absolute;z-index:60;left:12px;bottom:12px;max-width:min(320px,calc(100% - 24px));display:flex;gap:7px;align-items:center;flex-wrap:wrap;padding:10px 11px;background:var(--tb-surface);border:1px solid var(--tb-line);border-radius:9px;box-shadow:var(--tb-shadow);pointer-events:auto}
+.tbAIDock>.tbAIStatus{width:100%;white-space:normal}.tbAIDock .tbBtn{white-space:normal;max-width:100%;font-size:11px!important}
+/* Narrow drawers use most of the frame width: move the compact return control
+   above messages rather than across the native bottom composer. */
+@container tb-body (max-width:760px){.tbAIDock{left:8px;top:calc(var(--tb-bar-h,60px) + 8px);bottom:auto;max-width:min(260px,calc(100% - 16px));padding:8px}.tbAIDock>.tbAIStatus{display:none}}
+@container tb-body (max-width:600px){.tbAIShade{padding:10px}.tbAIHeader{padding:16px;gap:10px}.tbAIBody{padding:14px 16px 18px;gap:15px}.tbAIFields{grid-template-columns:minmax(0,1fr)}.tbAIHeader h2{font-size:16px}}
+`

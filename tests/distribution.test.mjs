@@ -8,7 +8,20 @@ import { spawnSync } from 'node:child_process';
 import { verifyPayload, payloadHashes, filesIn } from '../scripts/verify.mjs';
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 test('public payload hashes, licenses and plugin versions agree', async () => {
-  assert.equal((await verifyPayload(root)).plugins, 9);
+  const result = await verifyPayload(root);
+  assert.equal(result.plugins, 9);
+  assert.equal(result.workbenches, 1);
+});
+test('task-board source stays optional and retains the existing host identity', async () => {
+  const config = JSON.parse(await fs.readFile(join(root, 'classroom.json'), 'utf8'));
+  const workbench = config.workbenches.find(p => p.name === 'dsh-task-board');
+  assert.equal(workbench.version, '1.7.1');
+  assert.equal(workbench.distribution, 'source-only');
+  assert.ok(!config.plugins.some(p => p.name === workbench.name));
+  const pkg = JSON.parse(await fs.readFile(join(root, workbench.path, 'package.json'), 'utf8'));
+  assert.equal(pkg.repository.url, 'https://github.com/xudingsheng/dsh-task-board');
+  const client = await fs.readFile(join(root, workbench.path, 'src/client.js'), 'utf8');
+  assert.ok(client.includes(pkg.repository.url));
 });
 test('all distributed JavaScript parses without installing host dependencies', async () => {
   for (const file of await filesIn(root)) if (/\.(mjs|js)$/.test(file)) {

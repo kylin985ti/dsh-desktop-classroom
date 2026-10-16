@@ -1,0 +1,5 @@
+- insert:
+    - id: dsh-task-board
+      name: dsh-task-board
+      config:
+        root: !!js dshHomePath('task-board')

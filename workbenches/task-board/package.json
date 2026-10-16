@@ -1,0 +1,52 @@
+{
+  "name": "dsh-task-board",
+  "version": "1.7.1",
+  "description": "任务栏工作台：多级任务、甘特图与连续任务月历；工作域 Markdown 阅读编辑与原生 AI 会话。",
+  "type": "module",
+  "private": true,
+  "author": "xudingsheng",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xudingsheng/dsh-task-board"
+  },
+  "main": "dsh/index.js",
+  "exports": {
+    ".": "./dsh/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "dsh-desktop-workbenches",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "files": [
+    "dsh",
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "check:package": "node scripts/check-workbench-package.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.4"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "playwright": "1.56.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}

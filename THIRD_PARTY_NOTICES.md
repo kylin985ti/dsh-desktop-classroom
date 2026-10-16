@@ -23,3 +23,5 @@ This is an independent classroom distribution, not an official DeepSeek, DataEle
 Other npm dependencies declared by upstream plugins are resolved by Desktop's pnpm installer, with their original license metadata in the installed package tree. Prebuilt upstream bundles retain their original embedded notices. Do not strip these files when creating a reduced distribution.
 
 The library, quote context, Tencent Docs, digest classroom wrappers and installer are MIT (Copyright 2026 kylin985ti), with the third-party terms above applying to included components. The opt-in database helper is source-built and distributed as separate pinned Release assets; it never includes account state. The system-share extension is not included.
+
+The optional task-board workbench 1.7.1 is MIT, attributed to xudingsheng as declared in its package metadata; its LICENSE is retained in workbenches/task-board. React and ReactDOM are host-provided externals, not bundled copies. Esbuild and Playwright are development-only dependencies. The existing workbench identity is preserved solely for host compatibility.

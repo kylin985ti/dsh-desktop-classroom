@@ -35,6 +35,15 @@ export async function verifyPayload(root) {
     if (pkg.name !== p.name || pkg.version !== p.version) throw new Error('Plugin version table is stale: ' + p.path);
     await fs.access(join(root, p.path, 'LICENSE'));
   }
+  const workbenches = config.workbenches || [];
+  if (!Array.isArray(workbenches)) throw new Error('Invalid workbench manifest');
+  for (const p of workbenches) {
+    if (!/^workbenches\/[a-z0-9-]+$/.test(p.path) || names.has(p.name) || p.distribution !== 'source-only') throw new Error('Unsafe or duplicate optional workbench manifest');
+    names.add(p.name);
+    const pkg = JSON.parse(await fs.readFile(join(root, p.path, 'package.json'), 'utf8'));
+    if (pkg.name !== p.name || pkg.version !== p.version) throw new Error('Workbench version table is stale: ' + p.path);
+    await fs.access(join(root, p.path, 'LICENSE'));
+  }
   for (const asset of Object.values(config.desktop.assets)) if (!/^[a-f0-9]{64}$/.test(asset.sha256)) throw new Error('Invalid Desktop SHA256');
   if (config.wechatBridge.defaultEnabled !== false) throw new Error('WeChat must be opt-in');
   for (const asset of Object.values(config.wechatBridge.assets)) { if (!/^[a-f0-9]{64}$/.test(asset.sha256) || /^0+$/.test(asset.sha256)) throw new Error('Invalid WeChat SHA256'); }
@@ -49,7 +58,7 @@ export async function verifyPayload(root) {
     const text = bytes.toString('utf8');
     if (secrets.some(pattern => pattern.test(text))) throw new Error('Potential credential/account value: ' + path);
   }
-  return { ok: true, files: Object.keys(actual).length, plugins: config.plugins.length };
+  return { ok: true, files: Object.keys(actual).length, plugins: config.plugins.length, workbenches: workbenches.length };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   console.log(JSON.stringify(await verifyPayload(resolve(fileURLToPath(new URL('..', import.meta.url))))));
