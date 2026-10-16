@@ -13,7 +13,8 @@
 ## 从维护者本机导出
 
 ```bash
-python3 scripts/export-local.py --source "$HOME/Library/Application Support/dsh-desktop/harness/local-plugins"
+python3 scripts/export-local.py --source "$HOME/Library/Application Support/dsh-desktop/harness/local-plugins" --only dsh-library
+npm ci --prefix plugins/dsh-library --legacy-peer-deps --no-audit --no-fund
 npm run refresh
 npm test
 git diff --stat
@@ -21,7 +22,7 @@ git diff --stat
 
 导出器只有明确文件白名单，不导出 profiles、storages、sessions、credentials、`.env`、聊天、钥匙串或资料库内容。它将个人机器路径改为运行时路径，腾讯文档和微信公开适配源码由本仓库独立维护，这两项不从个人安装导出。运行前确认本机源码确实是准备分发的版本；运行后审查 diff，不直接提交整个 DSH home。已经删除的文件不会自动清理，应由维护者核对后在仓库内显式删除。
 
-`pypdf` 是资料库随包携带的纯 Python 依赖。来源与 SHA256 在其 `lib/vendor/UPSTREAM.json`，保留 BSD 许可。重新导出不覆盖 vendor。上游更新须另行下载、验证 SHA256、审查版本并重跑 PDF 测试；不能写入 Desktop 应用资源。
+`pypdf` 是资料库随包携带的纯 Python 依赖。来源与 SHA256 在其 `lib/vendor/UPSTREAM.json`，保留 BSD 许可。重新导出不覆盖 vendor。单独更新资料库使用 `--only dsh-library`，保留其余插件。导出包含 CSS 与现有测试，并统一插件 manifest 和锁文件版本；公开版保留便携运行时路径与纯 Python PDF，不复制 `pdf-text` 二进制。编辑器源码变化后运行 `npm --prefix plugins/dsh-library run build:editor`，CI 会核对其输出与已提交 bundle 一致。上游更新须另行下载、验证 SHA256、审查版本并重跑 PDF 测试；不能写入 Desktop 应用资源。
 
 ## 兼容版本升级
 

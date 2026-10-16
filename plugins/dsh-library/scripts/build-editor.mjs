@@ -12,5 +12,7 @@ const inlineCss = { name: 'bundle-editor-css', setup(builder) {
   });
 } };
 const compiled = await build({ absWorkingDir: process.cwd(), entryPoints: ['src/markdown-editor.js'], bundle: true, write: false, format: 'iife', globalName: 'DSHMarkdownEditor', target: 'es2022', minify: true, plugins: [inlineCss], legalComments: 'inline' });
-const client = await readFile('src/client-base.js', 'utf8');
+const uiStyles = await readFile('src/library-ui.css', 'utf8');
+const client = (await readFile('src/client-base.js', 'utf8')).replace('__LIBRARY_UI_CSS__', () => JSON.stringify(uiStyles));
+if (client.includes('__LIBRARY_UI_CSS__')) throw new Error('Library UI styles were not embedded');
 await writeFile('lib/client.js', compiled.outputFiles[0].text + '\n' + client);

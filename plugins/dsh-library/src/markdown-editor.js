@@ -6,7 +6,7 @@ import theme from '@milkdown/crepe/theme/frame.css';
 export const styles = frame + '\n' + theme;
 
 /**
- * options: { readOnly?: boolean, onSelection?: (selection | null) => void }.
+ * options: { readOnly?, onSelection?, onQuote?, onCollaborate? }.
  * Selection positions are ProseMirror positions, NOT Markdown string offsets.
  * rect uses viewport coordinates (for a position:fixed host-owned floating menu).
  * On the quote button's pointerdown/mousedown call captureSelection(event), then
@@ -45,6 +45,23 @@ export async function mount(root, markdown, onChange, options = {}) {
     [Crepe.Feature.Toolbar]: {
       boldLabel: '加粗', italicLabel: '斜体', strikethroughLabel: '删除线',
       codeLabel: '行内代码', linkLabel: '链接', latexLabel: '行内公式',
+      buildToolbar(builder) {
+        if (!options.onQuote && !options.onCollaborate) return;
+        const group = builder.addGroup('library', '资料协作');
+        const action = callback => () => {
+          if (readOnly || destroyed || view?.composing) return;
+          const selection = getSelection();
+          if (selection) callback?.(selection);
+        };
+        if (options.onQuote) group.addItem('library-quote', {
+          icon: '<svg viewBox="0 0 24 24"><path d="M5 5h6v7H7c0 3 1 4 3 5l-2 2c-4-2-5-5-5-9V7a2 2 0 0 1 2-2Zm10 0h6v7h-4c0 3 1 4 3 5l-2 2c-4-2-5-5-5-9V7a2 2 0 0 1 2-2Z"/></svg>',
+          label: '引用到对话', active: () => false, onRun: action(options.onQuote),
+        });
+        if (options.onCollaborate) group.addItem('library-collaborate', {
+          icon: '<svg viewBox="0 0 24 24"><path d="m12 2 2.8 7.2L22 12l-7.2 2.8L12 22l-2.8-7.2L2 12l7.2-2.8L12 2Z"/></svg>',
+          label: 'AI 协作选区', active: () => false, onRun: action(options.onCollaborate),
+        });
+      },
     },
   } });
 
@@ -174,6 +191,9 @@ export async function mount(root, markdown, onChange, options = {}) {
     view.dom.setAttribute('role', 'textbox');
     view.dom.setAttribute('aria-multiline', 'true');
     view.dom.setAttribute('tabindex', '0');
+    const toolbar = root.querySelector?.('.milkdown-toolbar');
+    toolbar?.setAttribute('role', 'toolbar');
+    toolbar?.setAttribute('aria-label', '正文格式与协作');
     setReadOnly(readOnly);
     const listen = (target, name, capture = false) => {
       target.addEventListener(name, scheduleSelection, capture);
@@ -185,6 +205,17 @@ export async function mount(root, markdown, onChange, options = {}) {
     listen(view.dom.ownerDocument, 'scroll', true);
     const win = view.dom.ownerDocument.defaultView;
     if (win) listen(win, 'resize');
+    // Crepe's toolbar dispatches on pointerdown. Preserve that command path for
+    // keyboard activation too, without changing the selected document range.
+    const toolbarKey = event => {
+      if (event.isComposing || readOnly || view.composing || !['Enter', ' '].includes(event.key)) return;
+      const button = event.target.closest?.('.milkdown-toolbar button.toolbar-item');
+      if (!button || !root.contains(button) || button.disabled) return;
+      event.preventDefault();
+      button.dispatchEvent(new win.PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'keyboard' }));
+    };
+    root.addEventListener?.('keydown', toolbarKey);
+    cleanups.push(() => root.removeEventListener?.('keydown', toolbarKey));
     ready = true;
     scheduleSelection();
   } catch (error) {
@@ -215,3 +246,5 @@ export async function mount(root, markdown, onChange, options = {}) {
 }
 
 export { readCSV, writeCSV, changes, htmlReferences, prepareHTML, applyVisualEdit } from './document-tools.js';
+export { createReference, referenceStale, libraryQuotePayload, extractHeadings } from './library-model.js';
+export { collaborationInput } from '../lib/ai-context.mjs';

@@ -17,6 +17,7 @@ for (const p of config.plugins) {
   if (info.name !== p.name || info.version !== p.version) throw new Error('Update classroom.json for ' + p.path);
 }
 const base = config.repository;
+const library = config.plugins.find(plugin => plugin.name === '@local/dsh-library');
 const sourceEntries = Object.entries(await payloadHashes(root)).filter(([name]) => name.startsWith('plugins/'));
 const sourceRevision = createHash('sha256').update(JSON.stringify(sourceEntries)).digest('hex').slice(0, 12);
 const prompt = `请读取 ${base}/blob/main/INSTALL.md ，按其中步骤为这台 Mac 安装或更新 DSH Desktop 教学套件。保留已有数据、账号、默认模型和正在运行的任务；登录和系统授权由我完成；最后按清单验收并报告未完成项。`;
@@ -53,6 +54,14 @@ ${config.plugins.map(p => '| ' + (p.upstream ? '[' + p.title + '](' + p.upstream
 
 辅助预测、文件协作和简报默认路由为 **${config.auxiliaryModel.provider} / ${config.auxiliaryModel.model}**。学员需自行连接该服务，或在对应插件设置中选择自己的可用模型。模型可用性取决于服务商；安装成功不等于模型已连通。
 
+## 资料库 ${library.version}
+
+${library.highlights.map(item => '- ' + item).join('\n')}
+
+${library.limitations.map(item => '- ' + item).join('\n')}
+
+范围、限制和更新步骤见 [资料库说明](docs/LIBRARY.md)。
+
 ## 首次使用
 
 1. 安装完成后，等待所有 DSH 任务结束，再在应用中重启。不要为加载插件中断任务。
@@ -66,7 +75,7 @@ ${config.plugins.map(p => '| ' + (p.upstream ? '[' + p.title + '](' + p.upstream
 
 再次发送同一句提示词会读取仓库当前 main 的固定快照，按清单更新插件。重复安装同一套内容跳过已安装项，插件使用 Desktop 原生 generation 机制，保留其他插件和既有数据。已有较新/不同版本 Desktop 时停止并说明，不自动降级。
 
-安装回执保存在本机 DSH home 下的 \`classroom/install-receipt.json\`；新插件在空闲重启后加载。只更新腾讯文档可使用 \`--only @local/dsh-tencent-docs\`，保留正在单独开发的其他插件。旧 generation 由 Desktop 保留；需要恢复时在原生插件管理/恢复界面选择旧版本，勿删除整个 DSH home。
+安装回执保存在本机 DSH home 下的 \`classroom/install-receipt.json\`；新插件在空闲重启后加载。只更新资料库可使用 \`--only @local/dsh-library\`，只更新腾讯文档可使用 \`--only @local/dsh-tencent-docs\`，保留正在单独开发的其他插件。旧 generation 由 Desktop 保留；需要恢复时在原生插件管理/恢复界面选择旧版本，勿删除整个 DSH home。
 
 ## 开发与维护
 

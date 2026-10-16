@@ -13,6 +13,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Install pinned library editor dependencies
+        working-directory: plugins/dsh-library
+        run: npm ci --legacy-peer-deps --no-audit --no-fund
+      - name: Verify reproducible library client bundle
+        working-directory: plugins/dsh-library
+        run: |
+          npm run build:editor
+          git diff --exit-code -- lib/client.js
       - run: npm test
       - run: bash -n scripts/bootstrap.sh
       - name: Check Python source syntax
