@@ -1,0 +1,10 @@
+/node_modules
+.verification/
+*.tgz
+.DS_Store
+.env
+.env.*
+*.log
+coverage/
+playwright-report/
+test-results/

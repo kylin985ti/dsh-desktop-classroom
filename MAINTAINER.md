@@ -65,3 +65,9 @@ ELECTRON_RUN_AS_NODE=1 '/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop
 修改后测试授权刷新、业务错误、并发确认/拒绝/断开、文档冲突和结果不明不重试。使用临时 home 检查原生 generation 安装和重复安装。维护者本机只以 `--only @local/dsh-tencent-docs` 安装，核对其他 generation 和配置哈希不变；资料库等独立开发中的插件不从本仓库覆盖或降级。
 
 真实 UI 需本人给出空闲窗口，不能轮询任务或强制重启。测试真实文档默认只读，不自动调用模型；实际写入仍需对具体参数取得本人确认。旧浏览器和 web-inbox 的本机数据保留，不混入公开包。历史构建源码可在 Git 历史查看。
+
+## 可选工作台源码维护
+
+任务栏位于 `workbenches/task-board`，版本与能力列在 `classroom.json.workbenches`，不加入默认 `plugins` 安装列表。同步只允许源码、锁文件、许可、必要客户端构建产物与可分发验证摘要；不导出 `.verification`、本机任务/会话或运行日志。保留既有工作台身份。
+
+先在工作台目录执行 `pnpm install --frozen-lockfile && pnpm build`，再回根目录 `npm run refresh && npm test`。工作台包自检和 139 项定向检查纳入根测试，CI 同时检查客户端构建可重复。不要为同步源码而安装到运行中的 DSH。
