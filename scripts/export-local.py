@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source', type=Path, default=Path.home() / 'Library/Application Support/dsh-desktop/harness/local-plugins')
 parser.add_argument('--sidebar', type=Path)
+parser.add_argument('--only', choices=['dsh-library'], help='Export only the library without replacing other public plugins')
 args = parser.parse_args()
 license_text = '''MIT License
 
@@ -32,7 +33,7 @@ SOFTWARE.
 '''
 (ROOT / 'LICENSE').write_text(license_text)
 allow = {
-    'dsh-library': ['package.json', 'cordis.patch.yml', 'lib/*.mjs', 'lib/client.js', 'lib/reader.py', 'lib/licenses/*.txt', 'src/*.js', 'scripts/build-editor.mjs', 'package-lock.json'],
+    'dsh-library': ['package.json', 'cordis.patch.yml', 'lib/*.mjs', 'lib/client.js', 'lib/reader.py', 'lib/licenses/*.txt', 'src/*.js', 'src/*.css', 'scripts/build-editor.mjs', 'scripts/*.test.mjs', 'README.md', 'package-lock.json'],
     'dsh-quote-context': ['package.json', 'cordis.patch.yml', 'lib/*.mjs', 'lib/client.js'],
     'dsh-mcp-manager': ['package.json', 'cordis.patch.yml', 'LICENSE', 'lib/*.js', 'lib/*.mjs'],
     'dsh-skill-manager': ['package.json', 'cordis.patch.yml', 'LICENSE', 'lib/*.js', 'lib/*.mjs'],
@@ -57,6 +58,8 @@ export function officePython() {
 }
 '''
 for folder, patterns in allow.items():
+    if args.only and folder != args.only:
+        continue
     source, dest = args.source / folder, ROOT / 'plugins' / folder
     for pattern in patterns:
         matches = list(source.glob(pattern))
@@ -73,6 +76,9 @@ for folder, patterns in allow.items():
         manifest['version'] = manifest['version'].split('-classroom.')[0] + '-classroom.1'
         manifest['license'] = 'MIT'
         manifest['files'] = ['lib', 'LICENSE', 'cordis.patch.yml']
+        if folder == 'dsh-library':
+            manifest['files'].append('README.md')
+            manifest.setdefault('scripts', {})['test'] = 'node --test scripts/client-lifecycle.test.mjs scripts/library-model.test.mjs scripts/markdown-editor.test.mjs scripts/store.test.mjs scripts/ai-errors.test.mjs scripts/ai-context.test.mjs'
         if folder == 'dsh-wechat-digest':
             manifest['files'].append('native/LICENSE-WeChatBridge')
         (dest / 'LICENSE').write_text(license_text)
@@ -80,6 +86,11 @@ for folder, patterns in allow.items():
     if folder in {'dsh-library', 'dsh-wechat-digest'}:
         (dest / 'lib/platform.mjs').write_text(platform)
     if folder == 'dsh-library':
+        lock_path = dest / 'package-lock.json'
+        lock = json.loads(lock_path.read_text())
+        lock['version'] = lock['packages']['']['version'] = manifest['version']
+        lock['packages']['']['license'] = 'MIT'
+        lock_path.write_text(json.dumps(lock, ensure_ascii=False, indent=2) + '\n')
         path = dest / 'lib/index.mjs'
         text = path.read_text().replace("const PYTHON = '/Applications/DSH Desktop.app/Contents/Resources/office-runtime/primary-runtime/dependencies/python/bin/python3';", "import { officePython } from './platform.mjs';")
         text = text.replace("const pdfReader = fileURLToPath(new URL('./pdf-text', import.meta.url));\n", '')
@@ -88,6 +99,10 @@ for folder, patterns in allow.items():
         path.write_text(text)
         path = dest / 'lib/reader.py'
         path.write_text(path.read_text().replace('LIMIT = 300000', "sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))\nLIMIT = 300000"))
+
+if args.only:
+    print('Exported library source allowlist; other public plugins were preserved.')
+    raise SystemExit(0)
 
 # Exact prebuilt upstream sidebar snapshot, without local dependencies or build caches.
 source = args.sidebar or args.source.parent / 'profiles/web/node_modules/dsh-better-sidebar'

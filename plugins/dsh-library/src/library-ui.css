@@ -1,0 +1,200 @@
+.dlib{--lib-blue:#4269dc;--lib-line:var(--dsw-alias-border-l2,#e9edf3);--lib-soft:var(--dsw-alias-bg-module-platform,#f7f8fb);--lib-ink:var(--dsw-alias-label-primary,#29364a);--lib-muted:var(--dsw-alias-label-tertiary,#8591a3);font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;color:var(--lib-ink);isolation:isolate}
+.dlib button{font-size:12px;padding:6px 10px;line-height:1.5}
+.dlib button.primary{background:var(--lib-blue);color:#fff}
+.dlib .icon{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;vertical-align:middle;flex:none}
+.dlib .iconButton{border:0;background:transparent;width:29px;height:29px;padding:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--lib-muted)}
+.dlib .body{grid-template-columns:224px minmax(0,1fr)}
+.dlib .files{padding:0 12px 12px;background:var(--lib-soft);display:flex;flex-direction:column;min-width:0;gap:2px}
+.dlib .libraryNavHead{height:62px;display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 8px;gap:8px}
+.dlib .libraryNavHead strong{font-size:17px;font-weight:650}
+.dlib .navActions{display:flex;gap:2px}
+.dlib .navAddMenu{position:relative}
+.dlib .navAddMenu>summary{list-style:none;cursor:pointer;padding:4px 6px;border-radius:5px}
+.dlib .navAddMenu>summary::-webkit-details-marker{display:none}
+.dlib .navAddMenu[open]>.dropdown{display:flex}
+.dlib .dropdown{position:absolute;z-index:35;left:0;top:32px;min-width:166px;padding:6px;display:none;flex-direction:column;gap:2px;border:1px solid var(--lib-line);background:var(--dsw-alias-bg-base,#fff);border-radius:8px;box-shadow:0 8px 30px #20395920}
+.dlib .dropdown button{border:0;background:none;text-align:left;padding:7px 9px;white-space:nowrap}
+.dlib .files .navSearch{margin:4px 3px 12px;width:calc(100% - 6px);font-size:12px;padding:8px 10px;border-color:var(--lib-line);background:var(--dsw-alias-bg-base,#fff)}
+.dlib .navChoice{display:flex;align-items:center;gap:9px;text-align:left;border:0;background:none;padding:7px 10px;color:var(--lib-muted);width:100%;font-size:12px}
+.dlib .navChoice[aria-pressed=true]{background:color-mix(in srgb,var(--lib-blue) 9%,transparent);color:var(--lib-blue)}
+.dlib .groupLabel{display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:500;padding:18px 8px 6px;color:var(--lib-muted)}
+.dlib .file{font-size:12px;line-height:1.8;gap:7px;border-radius:5px;padding:6px 8px;color:var(--dsw-alias-label-secondary,#657288)}
+.dlib .file[aria-current=true]{background:color-mix(in srgb,var(--lib-blue) 10%,transparent);color:var(--lib-blue)}
+.dlib .fileRow{display:flex;min-width:0;align-items:center;border-radius:5px}
+.dlib .fileRow>.file{flex:1;min-width:0}
+.dlib .fileRow>.favorite{opacity:0;flex:none;border:0;padding:3px;background:transparent;color:var(--lib-muted)}
+.dlib .fileRow:hover>.favorite,.dlib .fileRow:focus-within>.favorite,.dlib .fileRow>.favorite[aria-pressed=true]{opacity:1}
+.dlib .fileRow>.favorite[aria-pressed=true]{color:#bd9551}
+.dlib .badge{min-width:23px;font-size:8px;color:#8194b0;background:color-mix(in srgb,var(--lib-blue) 6%,transparent)}
+.dlib .nested{margin-left:11px;border-color:var(--lib-line)}
+.dlib .navBottom{margin-top:auto;padding:17px 7px 4px;font-size:10px;border-top:1px solid var(--lib-line);color:var(--lib-muted);display:flex;gap:6px;align-items:center}
+.dlib .navBottom .icon{width:13px;height:13px}
+.dlib .work{position:relative;background:var(--dsw-alias-bg-base,#fff)}
+.dlib .tabs{height:38px;min-height:38px;background:transparent;order:0;padding-left:12px;border-color:var(--lib-line)}
+.dlib .tab{border:0;min-width:100px;max-width:210px;padding:6px 12px;gap:7px;font-size:11px;color:var(--lib-muted)}
+.dlib .tab[aria-selected=true]{box-shadow:inset 0 -2px #6482e6;color:var(--lib-blue)}
+.dlib .tab button{color:var(--lib-muted);font-size:12px}
+.dlib .pane{min-width:0}
+.dlib .docHeader{height:62px;min-height:62px;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:0 22px;border-bottom:1px solid var(--lib-line)}
+.dlib .docHeader .crumbs{min-width:0;display:flex;align-items:center;gap:9px;font-size:11px;color:var(--lib-muted);overflow:hidden;white-space:nowrap}
+.dlib .crumbs .docTitle{color:var(--dsw-alias-label-secondary,#5c6d88);overflow:hidden;text-overflow:ellipsis;font-weight:550}
+.dlib .docHeaderActions{display:flex;align-items:center;gap:6px;flex:none}
+.dlib .docHeaderActions>button:not(.primary):not(.referenceButton){border-color:transparent;background:transparent;color:var(--lib-muted)}
+.dlib .referenceButton{display:inline-flex;align-items:center;gap:6px;background:color-mix(in srgb,var(--lib-blue) 7%,var(--dsw-alias-bg-base,#fff));border-color:color-mix(in srgb,var(--lib-blue) 18%,var(--lib-line));color:var(--lib-blue)}
+.dlib .fileMenu{position:relative}
+.dlib .fileMenu>summary{list-style:none;cursor:pointer;color:var(--lib-muted);padding:4px 10px;letter-spacing:2px}
+.dlib .fileMenu>summary::-webkit-details-marker{display:none}
+.dlib .fileMenu .dropdown{left:auto;right:0;top:30px;display:flex;min-width:200px;max-height:70vh;overflow:auto}
+.dlib .fileMenu:not([open]) .dropdown{display:none}
+.dlib .dropdown label{font-size:11px;padding:7px;color:var(--lib-muted)}
+.dlib .dropdown select{width:100%;font-size:11px}
+.dlib .workspace{position:relative;min-width:0;display:flex;overflow:hidden}
+.dlib .workspace.withAI{display:flex}
+.dlib .document{flex:1;position:relative;padding:0 24px 32px;overscroll-behavior:contain}
+.dlib .document.markdown{padding:0 32px 40px}
+.dlib .modebar{position:sticky;top:0;z-index:4;display:flex;align-items:center;justify-content:flex-end;gap:12px;height:49px;min-height:49px;background:var(--dsw-alias-bg-base,#fff);font-size:10px;color:var(--lib-muted)}
+.dlib .modebar .saveDot{display:inline-block;width:4px;height:4px;border-radius:50%;background:#7fae9c;margin-right:5px;vertical-align:middle}
+.dlib .sourceMode{color:var(--lib-ink);padding:2px 7px;border:1px solid var(--lib-line);border-radius:4px;background:var(--lib-soft)}
+.dlib .docMeta{max-width:720px;margin:21px auto 2px;padding:0 34px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;color:var(--lib-muted);font-size:10px}
+.dlib .docMeta .kind{font:10px/1.5 -apple-system,sans-serif;letter-spacing:1px}
+.dlib .docMeta .dot{color:#b3bdca}
+.dlib .docMeta .favorite{margin-left:auto;border:0;background:transparent;padding:3px;color:var(--lib-muted)}
+.dlib .docMeta .favorite[aria-pressed=true]{color:#bd9551}
+.dlib .rich-markdown{max-width:720px;margin:auto}
+.dlib .rich-markdown .milkdown{--crepe-color-primary:var(--lib-blue);--crepe-color-on-primary:#fff;--crepe-color-inline-area:var(--lib-soft);font-family:inherit}
+.dlib .rich-markdown .milkdown .ProseMirror{padding:4px 34px 36px;min-height:420px;font:14px/1.95 -apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;color:var(--dsw-alias-label-secondary,#56667e)}
+.dlib .rich-markdown .milkdown .ProseMirror :is(h1,h2,h3,h4,h5,h6,p,li,blockquote){font-family:inherit}
+.dlib .rich-markdown .milkdown .ProseMirror h1{font-size:30px;line-height:1.4;font-weight:650;letter-spacing:-.6px;margin:15px 0 24px;color:var(--lib-ink)}
+.dlib .rich-markdown .milkdown .ProseMirror h2{font-size:22px;line-height:1.5;font-weight:620;margin:30px 0 12px;color:var(--lib-ink)}
+.dlib .rich-markdown .milkdown .ProseMirror h3{font-size:17px;line-height:1.6;font-weight:600;margin:22px 0 9px;color:var(--lib-ink)}
+.dlib .rich-markdown .milkdown .ProseMirror p{margin:9px 0}
+.dlib .rich-markdown .milkdown .ProseMirror ul,.dlib .rich-markdown .milkdown .ProseMirror ol{padding-left:22px}
+.dlib .rich-markdown .milkdown .ProseMirror blockquote{border-left:3px solid #bdcef6;padding:8px 15px;background:color-mix(in srgb,var(--lib-blue) 4%,transparent);border-radius:0 6px 6px 0;margin:16px 0;color:var(--lib-muted)}
+.dlib .rich-markdown .milkdown .ProseMirror table{font-family:inherit;font-size:12px}
+.dlib .rich-markdown .milkdown .ProseMirror :is(th,td){padding:8px 12px}
+.dlib .rich-markdown .milkdown .ProseMirror th{font-family:inherit;background:var(--lib-soft);text-align:left}
+.dlib .rich-markdown .milkdown .ProseMirror ::selection{background:#dce8ff;color:#35529b}
+.dlib .source{padding:16px;min-height:calc(100% - 55px);font-size:13px;resize:none}
+.dlib .plain{max-width:760px;margin:20px auto}
+.dlib .docFooter{min-height:29px;padding:5px 19px;border-top:1px solid var(--lib-line);font-size:10px;color:var(--lib-muted);display:flex;justify-content:space-between;flex:none;gap:12px}
+.dlib .docFooter span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dlib .tocToggle{font-size:10px;display:flex;align-items:center;gap:3px;border:0;background:transparent;color:var(--lib-muted)}
+.dlib .toc{position:sticky;top:65px;margin:-6px 0 12px auto;max-width:200px;padding:8px 12px;border-left:1px solid var(--lib-line);background:var(--dsw-alias-bg-base,#fff);font-size:10px;z-index:5;float:right;max-height:210px;overflow:auto}
+.dlib .toc button{font-size:10px;color:var(--lib-muted);display:block;border:0;padding:4px;background:none;text-align:left}
+.dlib .toc button:hover{color:var(--lib-blue)}
+.dlib .ai{width:306px;min-width:270px;flex:none;overflow:hidden;display:flex;flex-direction:column;padding:0;background:var(--lib-soft);border-left:1px solid var(--lib-line)}
+.dlib .aiHead{display:flex;align-items:center;justify-content:space-between;height:52px;min-height:52px;padding:0 16px;border-bottom:1px solid var(--lib-line)}
+.dlib .aiHead strong{font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px}
+.dlib .aiMode{display:flex;gap:8px;padding:8px 14px;align-items:center;border-bottom:1px solid var(--lib-line);font-size:10px;color:var(--lib-muted)}
+.dlib .aiMode select{font-size:11px;padding:3px 6px;background:transparent;border-color:transparent;min-width:0;max-width:170px}
+.dlib .aiHistory{flex:1;min-height:0;overflow:auto;padding:12px 15px;display:flex;flex-direction:column}
+.dlib .aiEmpty{margin:auto 0;text-align:center;padding:23px 8px;color:var(--lib-muted);font-size:11px;line-height:1.9}
+.dlib .aiEmpty .icon{width:26px;height:26px;color:#7394e5;margin-bottom:10px}
+.dlib .aiEmpty strong{display:block;font-size:13px;color:var(--dsw-alias-label-secondary,#677b9d);margin-bottom:8px;font-weight:600}
+.dlib .aiEmpty p{font-size:11px}
+.dlib .ai .answer{padding:12px 0;font-size:12px;margin-top:8px}
+.dlib .aiCompose{padding:11px;margin:0 12px 12px;border:1px solid var(--lib-line);background:var(--dsw-alias-bg-base,#fff);border-radius:9px;flex:none}
+.dlib .ai textarea{font-family:inherit;font-size:12px;line-height:1.85;resize:vertical;padding:9px 3px;min-height:64px;max-height:180px;border:0;background:transparent;border-radius:0;margin:5px 0 0}
+.dlib .aiCompose .tools{flex-wrap:nowrap;justify-content:space-between}
+.dlib .aiCompose .tools small{font-size:9px;color:var(--lib-muted)}
+.dlib .aiCompose .tools button{font-size:11px}
+.dlib .aiScope{display:flex;flex-wrap:wrap;gap:10px;border:0;padding:8px 0 4px;margin:0;color:var(--lib-ink);font-size:11px}
+.dlib .aiScope legend{font-size:10px;color:var(--lib-muted);padding:6px 0 0}
+.dlib .aiScope label{display:inline-flex;gap:5px;align-items:center;cursor:pointer}
+.dlib .aiScope input{width:14px;height:14px;padding:0;margin:0;accent-color:var(--lib-blue)}
+.dlib .aiScope:disabled label{opacity:.5;cursor:not-allowed}
+.dlib .scopeHint{font-size:10px;color:var(--lib-muted);margin:8px 0 0}
+.dlib .sourceCard{padding:9px 10px;border:1px solid color-mix(in srgb,var(--lib-blue) 15%,var(--lib-line));border-radius:7px;background:color-mix(in srgb,var(--lib-blue) 3%,var(--dsw-alias-bg-base,#fff));font-size:10px;color:var(--lib-muted);overflow-wrap:anywhere}
+.dlib .sourceCard header{display:flex;align-items:center;gap:6px;color:var(--dsw-alias-label-secondary,#627caa);font-size:11px;min-width:0}
+.dlib .sourceCard header strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;font-weight:550}
+.dlib .sourceCard header button{margin-left:auto;border:0;background:none;color:var(--lib-muted);padding:1px 4px}
+.dlib .sourceCard blockquote{margin:8px 0 6px;border-left:2px solid #cbd9f5;padding-left:8px;font-size:11px;line-height:1.85;max-height:110px;overflow:auto;white-space:pre-wrap}
+.dlib .sourceCard .sourceMeta{font-size:9px;display:flex;justify-content:space-between;gap:6px;align-items:center}
+.dlib .sourceCard .sourceMeta button{font-size:9px;border:0;background:none;color:var(--lib-blue);padding:3px}
+.dlib .sourceCard .stale{color:#a76529;font-size:10px;line-height:1.7;margin-top:5px}
+.dlib .suggestion{border:1px solid var(--lib-line);background:var(--dsw-alias-bg-base,#fff);border-radius:6px;text-align:left;margin:4px 0;color:var(--lib-muted);font-size:11px}
+.dlib .quoteFloating{position:fixed;z-index:9000;display:flex;gap:3px;padding:4px;border:1px solid var(--lib-line);border-radius:8px;background:var(--dsw-alias-bg-base,#fff);box-shadow:0 5px 25px #1b3b5c20;max-width:calc(100vw - 16px)}
+.dlib .quoteFloating button{display:inline-flex;align-items:center;gap:5px;font-size:11px;border:0;background:transparent;color:var(--lib-blue);white-space:nowrap}
+.dlib .quoteFloating button+button{border-left:1px solid var(--lib-line);border-radius:0;color:var(--lib-muted)}
+.dlib .selection{display:none}
+.dlib .error{display:flex;gap:9px;align-items:center;flex-wrap:wrap;background:color-mix(in srgb,#bb6c3f 9%,var(--dsw-alias-bg-base,#fff));padding:9px 18px;border-bottom:1px solid var(--lib-line)}
+.dlib .notice{padding:7px 18px;font-size:11px;background:var(--lib-soft)}
+.dlib .empty{width:100%;font-size:12px}
+.dlib .empty .icon{height:32px;width:32px;color:#7f9ddc;margin-bottom:16px}
+.dlib .empty h2{font-size:23px;line-height:1.5}
+.dlib .empty .tools{margin-top:18px}
+.dlib .filterCount{font-size:10px;padding:5px 9px;color:var(--lib-muted)}
+.dlib .dialog{max-height:85%;overflow:auto}
+.dlib .hiddenFiles .body{grid-template-columns:minmax(0,1fr)}
+.dlib.hiddenFiles .body{grid-template-columns:minmax(0,1fr)}
+.dlib.hiddenFiles .files{display:none}
+.dlib .openFiles{border:0;padding:4px;background:none;color:var(--lib-muted)}
+
+.dlib .work:has(.docHeader){padding-top:62px}
+.dlib .docHeader{position:absolute;inset:0 0 auto;z-index:10;background:var(--dsw-alias-bg-base,#fff)}
+.dlib .rich-markdown .milkdown{--crepe-font-default:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;--crepe-color-surface:var(--dsw-alias-bg-base,#fff);--crepe-color-selected:color-mix(in srgb,var(--lib-blue) 9%,transparent);--crepe-color-hover:color-mix(in srgb,var(--lib-blue) 6%,transparent)}
+/* The host theme's outline token can be a 10% border color. Toolbar icons
+   need foreground tokens, independently from borders, in both themes. */
+.dlib .rich-markdown .milkdown{--crepe-color-background:var(--dsw-alias-bg-base,#fff);--crepe-color-on-background:var(--lib-ink);--crepe-color-on-surface:var(--lib-ink);--crepe-color-on-surface-variant:var(--dsw-alias-label-secondary,#56667e);--crepe-color-outline:var(--lib-ink);--crepe-color-surface-low:var(--lib-soft)}
+.dlib .milkdown .milkdown-toolbar{border:1px solid var(--lib-line);max-width:calc(100vw - 24px);flex-wrap:wrap;padding:3px;box-shadow:0 4px 18px #152b4626}
+.dlib .milkdown .milkdown-toolbar .toolbar-item{display:inline-flex;align-items:center;justify-content:center;gap:4px;color:var(--lib-ink);background:transparent;border:0;width:30px;height:32px;padding:5px;margin:1px;line-height:1}
+.dlib .milkdown .milkdown-toolbar .toolbar-item svg{width:20px;height:20px;color:currentColor;fill:currentColor}
+.dlib .milkdown .milkdown-toolbar .toolbar-item:not(:disabled):hover{background:var(--crepe-color-hover)}
+.dlib .milkdown .milkdown-toolbar .toolbar-item.active{color:var(--lib-blue);background:var(--crepe-color-selected)}
+.dlib .milkdown .milkdown-toolbar .toolbar-item.active svg{color:currentColor;fill:currentColor}
+.dlib .milkdown .milkdown-toolbar .toolbar-item:focus-visible,.dlib .aiScope input:focus-visible{outline:2px solid var(--lib-blue);outline-offset:1px}
+.dlib .milkdown .milkdown-toolbar .toolbar-item:disabled,.dlib .milkdown .milkdown-toolbar .toolbar-item[aria-disabled=true]{opacity:.4;cursor:not-allowed}
+.dlib .milkdown .milkdown-toolbar .divider{height:22px;margin:6px 4px;background:var(--lib-line)}
+.dlib .milkdown .milkdown-toolbar [data-toolbar-item^=library-]{width:auto;min-width:48px;padding:5px 7px;color:var(--lib-ink);font-size:11px}
+.dlib .milkdown .milkdown-toolbar [data-toolbar-item=library-quote]::after{content:'引用'}
+.dlib .milkdown .milkdown-toolbar [data-toolbar-item=library-collaborate]::after{content:'AI'}
+/* Keep the real Milkdown drop position; only strengthen its visual marker. */
+.dlib .milkdown .crepe-drop-cursor{background-color:var(--lib-blue);opacity:1;border-radius:3px;box-shadow:0 0 0 2px var(--dsw-alias-bg-base,#fff),0 0 0 5px color-mix(in srgb,var(--lib-blue) 20%,transparent);transition:none;z-index:40}
+.dlib .milkdown .crepe-drop-cursor::before{content:'';position:absolute;left:-5px;top:50%;width:10px;height:10px;transform:translateY(-50%);border:2px solid var(--dsw-alias-bg-base,#fff);border-radius:50%;background:var(--lib-blue);box-shadow:0 0 0 1px var(--lib-blue)}
+.dlib .milkdown .crepe-drop-cursor::after{content:'放到这里';position:absolute;right:0;bottom:9px;padding:3px 8px;border-radius:5px;background:var(--lib-blue);color:#fff;font:500 11px/1.6 -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;white-space:nowrap;box-shadow:0 2px 7px #20395926}
+.dlib .milkdown .milkdown-block-handle .operation-item:last-child{cursor:grab}
+.dlib .milkdown .milkdown-block-handle .operation-item:last-child:active{cursor:grabbing}
+.dlib .milkdown .ProseMirror[data-dragging='true'] .ProseMirror-selectednode{outline:2px dashed var(--lib-blue);outline-offset:3px;border-radius:3px}
+.dlib .milkdown .milkdown-slash-menu{border:1px solid var(--lib-line);border-radius:9px;box-shadow:0 8px 30px #20395920}
+.dlib .milkdown .milkdown-slash-menu .tab-group{padding:5px 5px 0}
+.dlib .milkdown .milkdown-slash-menu .tab-group ul{padding:5px;gap:4px}
+.dlib .milkdown .milkdown-slash-menu .tab-group ul li{font-size:11px;font-weight:500;padding:3px 9px}
+.dlib .milkdown .milkdown-slash-menu .menu-groups{max-height:340px;padding:0 7px 7px}
+.dlib .milkdown .milkdown-slash-menu .menu-groups .menu-group h6{font-family:inherit;font-size:10px;font-weight:500;padding:8px;color:var(--lib-muted)}
+.dlib .milkdown .milkdown-slash-menu .menu-groups .menu-group li{min-width:205px;gap:11px;padding:9px 8px;border-radius:5px}
+.dlib .milkdown .milkdown-slash-menu .menu-groups .menu-group li>span{font-family:inherit;font-size:12px;font-weight:450}
+.dlib .milkdown .milkdown-slash-menu .menu-groups .menu-group li svg{width:19px;height:19px;color:#8da1bf;fill:#8da1bf}
+
+.dlib .sourceLocation{font-size:9px;line-height:1.7;margin:5px 0;color:var(--lib-muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+
+@media(max-width:1100px){.dlib .body{grid-template-columns:200px minmax(0,1fr)}
+.dlib .document.markdown{padding:0 16px 30px}
+.dlib .rich-markdown .milkdown .ProseMirror{padding-left:20px;padding-right:20px}
+.dlib .docMeta{padding:0 20px}
+.dlib .ai{width:284px;min-width:260px;max-height:none;border-left:1px solid var(--lib-line);border-top:0}
+.dlib .workspace.withAI{flex-direction:row}
+.dlib .docHeader{padding:0 13px}
+.dlib .crumbs .parentCrumb{display:none}
+.dlib .docHeaderActions>button{padding:5px 7px}
+}
+
+@media(max-width:820px){.dlib .body{grid-template-columns:175px minmax(0,1fr)}
+.dlib .docHeaderActions .textAI{display:none}
+.dlib .workspace.withAI{display:block}
+.dlib .workspace.withAI .document{height:100%}
+.dlib .workspace.withAI .ai{position:absolute;right:0;top:0;bottom:0;width:min(330px,94%);box-shadow:-10px 0 28px #243d5912;z-index:8}
+.dlib .rich-markdown .milkdown .ProseMirror h1{font-size:27px}
+}
+
+@media(max-width:600px){.dlib .body{display:flex;flex-direction:column}
+.dlib .files{max-height:210px;border-bottom:1px solid var(--lib-line);flex:none}
+.dlib .libraryNavHead{height:42px;min-height:42px}
+.dlib .work{flex:1}
+.dlib .docHeader{height:auto;min-height:48px;gap:4px;flex-wrap:wrap;padding:8px 10px}
+.dlib .docHeader .crumbs{font-size:10px}
+.dlib .document.markdown{padding:0 8px 20px}
+.dlib .docFooter{font-size:9px}
+.dlib .docMeta{margin-top:6px}
+.dlib .rich-markdown .milkdown .ProseMirror{padding-left:15px;padding-right:15px}
+}
+
