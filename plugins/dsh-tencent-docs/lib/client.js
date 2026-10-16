@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({ id: '@local/dsh-tencent-docs/client', factory: re
   function Panel() {
     const [status, setStatus] = R.useState(null), [busy, setBusy] = R.useState(''), [error, setError] = R.useState(''), [notice, setNotice] = R.useState('');
     const [token, setToken] = R.useState(''), [file, setFile] = R.useState(''), [result, setResult] = R.useState(null), [review, setReview] = R.useState(null);
-    const pending = R.useRef(false), alive = R.useRef(true), controllers = R.useRef(new Set()), dialog = R.useRef(null), previousFocus = R.useRef(null);
+    const pending = R.useRef(false), alive = R.useRef(true), controllers = R.useRef(new Set()), dialog = R.useRef(null), previousFocus = R.useRef(null), writing = R.useRef(false);
     const refresh = async signal => { const value = await api('status', {}, signal); if (alive.current) setStatus(value); return value; };
     const run = async (label, work) => {
       if (pending.current) return;
@@ -24,9 +24,10 @@ window.__ModuleLoader__.load({ id: '@local/dsh-tencent-docs/client', factory: re
     };
     const act = (action, args = {}) => run('正在更新', async signal => {
       try {
+        writing.current = action === 'approve';
         await api(action, args, signal);
         if (alive.current) { setReview(null); setNotice(action === 'approve' ? '官方 MCP 已返回执行结果。可在会话中要求 AI 读回核对。' : '已更新。'); }
-      } finally { if (alive.current) { setToken(''); await refresh(signal); } }
+      } finally { writing.current = false; if (alive.current) { setToken(''); await refresh(signal); } }
     });
     R.useEffect(() => {
       alive.current = true;
@@ -38,16 +39,20 @@ window.__ModuleLoader__.load({ id: '@local/dsh-tencent-docs/client', factory: re
       if (!review) return;
       previousFocus.current = document.activeElement;
       dialog.current?.querySelector('button')?.focus();
-      return () => { if (previousFocus.current?.isConnected) previousFocus.current.focus(); };
+      // Native hosts may leave keyboard focus outside a newly mounted dialog.
+      // Listen for the lifetime of this modal rather than relying on bubbling.
+      window.addEventListener('keydown', dialogKey, true);
+      return () => { window.removeEventListener('keydown', dialogKey, true); if (previousFocus.current?.isConnected) previousFocus.current.focus(); };
     }, [review]);
-    const closeReview = () => { if (!pending.current) setReview(null); };
+    const closeReview = () => { if (!writing.current) setReview(null); };
     const dialogKey = event => {
-      if (event.key === 'Escape') { event.preventDefault(); closeReview(); }
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeReview(); }
       if (event.key !== 'Tab') return;
       const fields = [...(dialog.current?.querySelectorAll('button:not(:disabled),summary') || [])];
       if (!fields.length) return;
       const first = fields[0], last = fields.at(-1);
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      if (!dialog.current?.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
+      else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
     const commands = status?.commands || [], outstanding = commands.filter(c => ['pending', 'executing', 'outcome-unknown'].includes(c.state));
@@ -79,7 +84,7 @@ window.__ModuleLoader__.load({ id: '@local/dsh-tencent-docs/client', factory: re
           command.state === 'pending' ? h('div', { className: 'tdActions' }, h('button', { className: 'tdPrimary', disabled: !!busy || !status.allowWrite, onClick: () => setReview(command) }, '审阅修改'), h('button', { disabled: !!busy, onClick: () => act('reject', { id: command.id }) }, '拒绝')) : h('p', { className: 'tdMuted' }, '请打开官网或让 AI 只读核对。本插件不会自动重试。'))),
         h('details', null, h('summary', null, '最近处理记录'), commands.filter(c => !outstanding.includes(c)).slice(0, 10).map(command => h('p', { key: command.id }, stateName(command.state) + ' · ' + command.tool + ' · ' + when(command.completedAt || command.at))))),
       (busy || notice) && h('p', { role: 'status', className: 'tdNotice' }, busy || notice), error && h('p', { role: 'alert', className: 'tdError' }, error)),
-      review && h('div', { className: 'tdOverlay', onMouseDown: e => { if (e.target === e.currentTarget) closeReview(); } }, h('section', { ref: dialog, className: 'tdDialog', role: 'dialog', 'aria-modal': true, 'aria-label': '审阅腾讯文档修改', onKeyDown: dialogKey },
+      review && h('div', { className: 'tdOverlay', onMouseDown: e => { if (e.target === e.currentTarget) closeReview(); } }, h('section', { ref: dialog, className: 'tdDialog', role: 'dialog', 'aria-modal': true, 'aria-label': '审阅腾讯文档修改' },
         h('header', null, h('h2', null, '审阅这一次修改'), h('button', { disabled: !!busy, onClick: closeReview }, '关闭')),
         h('p', null, '官方工具：' + review.tool), h('p', null, review.fileId ? '目标文档：' + review.fileId : '此工具的目标由下方参数确定，请逐项核对。'),
         h('h3', null, '将提交的完整参数'), h('pre', null, JSON.stringify(review.arguments, null, 2)),

@@ -13,9 +13,9 @@
 
 ## 当前版本
 
-教学包 **0.4.0** · 清单更新 **2026-10-16** · Desktop 固定 **0.11.1** · macOS 最低 **12.0**。
+教学包 **0.4.1** · 清单更新 **2026-10-16** · Desktop 固定 **0.11.1** · macOS 最低 **12.0**。
 
-插件源码指纹：`0bdfad33d352`。任何插件源码变化都会使 README 需要重新生成。
+插件源码指纹：`ab50c66b0b7f`。任何插件源码变化都会使 README 需要重新生成。
 
 | 平台 | 支持状态 |
 | --- | --- |
@@ -33,7 +33,7 @@
 | [下一轮提示词预测](https://github.com/studyzy/dsh-suggest-prompt) | 1.2.2-desktop.2 | 灰色候选、Tab 填入、Esc 忽略 | 需自行连接 Ollama Cloud，默认 deepseek-v4.1-flash |
 | 资料库 | 0.3.0-classroom.1 | 文件树、多标签、Markdown 所见即所得、HTML 交互、Office/PDF 正文提取、AI 修改预览 | 需本人选择资料目录；扫描 PDF 无 OCR |
 | 选区引用与评论 | 0.3.0-classroom.1 | 回复或产出物选区工具栏、引用卡片、逐条评论、侧栏提问 | 0.3 引用卡片仍需学员在 Desktop 中验收 |
-| 腾讯文档 | 0.4.0-classroom.1 | 腾讯官方 MCP 读写、本人登录授权、修改提案与逐笔确认 | 会话粘贴文档链接；原版式在官网查看；能力取决于官方工具与本人权限 |
+| 腾讯文档 | 0.4.0-classroom.2 | 腾讯官方 MCP 读写、本人登录授权、修改提案与逐笔确认 | 会话粘贴文档链接；原版式在官网查看；能力取决于官方工具与本人权限 |
 | 群聊简报 | 0.5.0-classroom.1 | 本人授权与选群、微信群数据库自动接收、手动导入、备注和时间、一段话总结 | 默认关闭；数据库连接器需macOS 13+，微信4.1.13布局实验适配，学员自行授权 |
 | [MCP 管理](https://github.com/Yinxe/deepseek-harness-plugins) | 0.4.0-desktop.1 | 查看和管理 MCP 服务配置 | 添加第三方服务时使用学员自己的凭据 |
 | [Skills 管理](https://github.com/Yinxe/deepseek-harness-plugins) | 0.4.0-desktop.1 | 查看和管理技能目录 | 只操作学员本人技能文件 |

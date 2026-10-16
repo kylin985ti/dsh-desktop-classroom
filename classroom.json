@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "updated": "2026-10-16",
   "repository": "https://github.com/kylin985ti/dsh-desktop-classroom",
   "desktop": {
@@ -75,7 +75,7 @@
     {
       "path": "plugins/dsh-tencent-docs",
       "name": "@local/dsh-tencent-docs",
-      "version": "0.4.0-classroom.1",
+      "version": "0.4.0-classroom.2",
       "title": "腾讯文档",
       "capability": "腾讯官方 MCP 读写、本人登录授权、修改提案与逐笔确认",
       "setup": "会话粘贴文档链接；原版式在官网查看；能力取决于官方工具与本人权限"

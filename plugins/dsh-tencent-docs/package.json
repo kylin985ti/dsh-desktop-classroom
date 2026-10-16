@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-tencent-docs",
-  "version": "0.4.0-classroom.1",
+  "version": "0.4.0-classroom.2",
   "private": true,
   "type": "module",
   "description": "腾讯官方 MCP 读写、本人 OAuth 授权和逐笔确认修改",
