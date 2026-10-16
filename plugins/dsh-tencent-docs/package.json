@@ -1,9 +1,9 @@
 {
   "name": "@local/dsh-tencent-docs",
-  "version": "0.3.0-classroom.1",
+  "version": "0.4.0-classroom.1",
   "private": true,
   "type": "module",
-  "description": "腾讯文档工作区、结构化表格范围、网页画面图片草稿、选区评论与确认后修改",
+  "description": "腾讯官方 MCP 读写、本人 OAuth 授权和逐笔确认修改",
   "main": "./lib/index.mjs",
   "exports": {
     ".": "./lib/index.mjs",
@@ -36,8 +36,7 @@
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-mcp-client": "0.2.0-rc.2",
     "@deepseek-ai/dsh-credentials": "0.2.0-rc.2",
-    "react": "*",
-    "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.2"
+    "react": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-client-ui-layout": {
@@ -56,9 +55,6 @@
       "optional": true
     },
     "react": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-client-ui-primitives": {
       "optional": true
     }
   },
