@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const sources = {
-  '@modelcontextprotocol/client': `export class Client { constructor(){this.f=globalThis.__tencentApiFixture;this.f.clients++;} async connect(wire){this.f.wires.push(wire);} async close(){} async listTools(){return {tools:this.f.tools};} async callTool(q,options){this.f.calls.push(q);return this.f.answer(q,options);} } export class StreamableHTTPClientTransport {constructor(url,options){this.url=url.href;this.options=options;}}`,
+  '@modelcontextprotocol/client': `export class Client { constructor(){this.f=globalThis.__tencentApiFixture;this.f.clients++;} async connect(wire){this.f.wires.push(wire);if(this.f.failConnect)throw Error('synthetic connection failure');} async close(){} async listTools(){return {tools:this.f.tools};} async callTool(q,options){this.f.calls.push(q);return this.f.answer(q,options);} } export class StreamableHTTPClientTransport {constructor(url,options){this.url=url.href;this.options=options;}}`,
   '@deepseek-ai/dsh-mcp-client': `export const createMcpToolDefinition=(_ctx,value)=>value;`,
 };
 const hook = registerHooks({ resolve(specifier, context, next) { return sources[specifier] ? { url: 'data:text/javascript,' + encodeURIComponent(sources[specifier]), shortCircuit: true } : next(specifier, context); } });
@@ -29,13 +29,13 @@ async function fixture({ granted = true, saved = {} } = {}) {
   };
   let record = granted ? { kind: 'grant', payload: { mode: 'personal-token', accessToken: 'synthetic-only-token' } } : null;
   const credentials = { readRecord: async () => record, modifyRecord: async (_key, fn) => { const next = await fn(record); if (next !== undefined) record = next; }, deleteRecord: async () => { record = null; } };
-  globalThis.__tencentApiFixture = state; let route; const cleanup = [], tools = new Map(); process.env.DSH_HOME = home;
+  globalThis.__tencentApiFixture = state; const routes = new Map(), cleanup = [], tools = new Map(); process.env.DSH_HOME = home;
   try {
-    await apply({ effect: fn => { const dispose = fn(); if (typeof dispose === 'function') cleanup.push(dispose); }, credentials, tools: { register: value => { tools.set(value.rawName, value); return () => tools.delete(value.rawName); } }, connection: { fetch: { register: value => { route = value; return () => {}; } } } });
+    await apply({ effect: fn => { const dispose = fn(); if (typeof dispose === 'function') cleanup.push(dispose); }, credentials, tools: { register: value => { tools.set(value.rawName, value); return () => tools.delete(value.rawName); } }, connection: { fetch: { register: value => { routes.set(value.path, value); return () => {}; } } } });
   } finally { if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous; }
-  const request = async body => { const r = await route.fetch(new Request('http://localhost/api/tencent-docs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })); return { status: r.status, value: await r.json() }; };
+  const request = async body => { const r = await routes.get('/api/tencent-docs').fetch(new Request('http://localhost/api/tencent-docs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })); return { status: r.status, value: await r.json() }; };
   if (granted) assert.equal((await request({ action: 'discover' })).status, 200);
-  return { state, home, tools, request, stored: async () => JSON.parse(await fs.readFile(path, 'utf8')), tool: (name, args) => tools.get(name).call(args, { signal: new AbortController().signal }), async close() { for (const fn of cleanup.reverse()) fn(); delete globalThis.__tencentApiFixture; await fs.rm(home, { recursive: true, force: true }); } };
+  return { state, home, tools, request, events: signal => { const route = routes.get('/api/tencent-docs/events'); assert.equal(route.requestBody, 'buffered', 'Desktop HTTP bridge must not attach a request body to GET'); return route.fetch(new Request('http://localhost/api/tencent-docs/events', { signal })); }, stored: async () => JSON.parse(await fs.readFile(path, 'utf8')), tool: (name, args, sessionId) => tools.get(name).call(args, { signal: new AbortController().signal, ...(sessionId ? { agent: { session: { id: sessionId } } } : {}) }), async close() { for (const fn of cleanup.reverse()) fn(); delete globalThis.__tencentApiFixture; await fs.rm(home, { recursive: true, force: true }); } };
 }
 const propose = async f => { await f.request({ action: 'allowWrite', enabled: true }); const r = await f.tool('doc.update_content', { file_id: 'synthetic', content: '新内容' }); return JSON.parse(r.content[0].text).operationId; };
 test('without authorization status does not contact Tencent or expose credentials; old browser routes are gone', async () => {
@@ -123,5 +123,57 @@ test('structured-only content participates in conflicts and structured business 
     assert.equal((await f.request({ action: 'approve', id })).status, 400); assert.equal(f.state.writes, 0);
     assert.throws(() => checkedResult({ content: [], structuredContent: { error_code: 400006 } }), /授权失效/);
     assert.throws(() => checkedResult({ content: [], structuredContent: { retcode: 7, message: 'synthetic error' } }), /返回错误/);
+  } finally { await f.close(); }
+});
+test('saving authorization immediately connects and registers conversation tools without a second discovery action', async () => {
+  const f = await fixture({ granted: false });
+  try {
+    assert.equal((await f.request({ action: 'token', token: 'synthetic-new-connector-token' })).status, 200);
+    const status = (await f.request({ action: 'status' })).value;
+    assert.equal(status.authorized, true); assert.equal(status.connected, true); assert.equal(status.allowWrite, false);
+    assert.ok(f.tools.has('get_content')); assert.equal(f.state.calls.length, 0); assert.equal(f.state.writes, 0);
+  } finally { await f.close(); }
+});
+test('a failed post-authorization connection remains authorized, reports an error and can retry without another login', async () => {
+  const f = await fixture({ granted: false });
+  try {
+    f.state.failConnect = true;
+    assert.equal((await f.request({ action: 'token', token: 'synthetic-new-connector-token' })).status, 200);
+    const status = (await f.request({ action: 'status' })).value;
+    assert.equal(status.authorized, true); assert.equal(status.connected, false); assert.match(status.error, /连接失败/);
+    f.state.failConnect = false; assert.equal((await f.request({ action: 'discover' })).status, 200);
+    assert.equal((await f.request({ action: 'status' })).value.connected, true); assert.equal(f.state.writes, 0);
+  } finally { await f.close(); }
+});
+test('conversation proposals use the trusted runtime SessionId, isolate other sessions and retain legacy proposals', async () => {
+  const f = await fixture();
+  try {
+    await f.request({ action: 'allowWrite', enabled: true });
+    const idOf = r => JSON.parse(r.content[0].text).operationId;
+    const own = idOf(await f.tool('doc.update_content', { file_id: 'synthetic', content: 'own', sessionId: 'forged' }, 'session-own'));
+    const other = idOf(await f.tool('doc.update_content', { file_id: 'synthetic', content: 'other' }, 'session-other'));
+    const legacy = idOf(await f.tool('doc.update_content', { file_id: 'synthetic', content: 'legacy' }));
+    const status = (await f.request({ action: 'status', scope: 'session', sessionId: 'session-own' })).value;
+    assert.deepEqual(status.commands.map(c => c.id), [own]); assert.equal(status.commands[0].sessionId, 'session-own'); assert.equal(status.otherPendingCount, 2);
+    assert.equal((await f.request({ action: 'approve', id: other, scope: 'session', sessionId: 'session-own' })).status, 400);
+    assert.equal((await f.request({ action: 'reject', id: legacy, scope: 'session', sessionId: 'session-own' })).status, 400);
+    assert.equal((await f.request({ action: 'status', scope: 'session' })).status, 400);
+    assert.equal(f.state.writes, 0);
+    assert.equal((await f.request({ action: 'reject', id: own, scope: 'session', sessionId: 'session-own' })).status, 200);
+    assert.equal((await f.request({ action: 'status' })).value.commands.length, 3);
+  } finally { await f.close(); }
+});
+test('connector events push only invalidation revisions and terminate on request cancellation', async () => {
+  const f = await fixture(); const abort = new AbortController();
+  try {
+    const stream = await f.events(abort.signal), reader = stream.body.getReader();
+    assert.equal(stream.headers.get('content-type'), 'text/event-stream');
+    const first = new TextDecoder().decode((await reader.read()).value);
+    assert.match(first, /^event: changed\ndata: \{"revision":\d+\}\n\n$/);
+    await f.request({ action: 'allowWrite', enabled: true });
+    const second = new TextDecoder().decode((await reader.read()).value);
+    assert.match(second, /^event: changed\ndata: \{"revision":\d+\}\n\n$/);
+    assert.equal((first + second).includes('synthetic'), false); assert.equal(f.state.calls.length, 0);
+    abort.abort(); assert.equal((await reader.read()).done, true);
   } finally { await f.close(); }
 });

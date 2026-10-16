@@ -49,6 +49,8 @@ python3 -B tests/wechat-reader.py --app '/private/tmp/dsh-wechat-build/arm64/DSH
 
 ## 腾讯文档 MCP 更新
 
+0.5.0 起以腾讯文档连接器交付：保留包名、插件 ID、凭据 namespace、存储目录和官方工具名，侧边栏“连接器”管理账号，原生 `conversation.input.dock` 承载当前会话的状态和确认。导航使用 `layout.selectPanel(null)` / `uiWorkspace.startSession()`，不操作或自动发送草稿。提案的 SessionId 只读取 `execution.agent.session.id`，子会话不推断为父会话；历史无归属项留在管理页。事件端点仅推送失效版本号，不包含凭据、文档内容或会话 ID。
+
 腾讯文档只维护 `plugins/dsh-tencent-docs` 的官方 MCP 适配、本人授权和修改确认；不发布独立浏览器资产，不复制腾讯或 WorkBuddy 的私有协议。OAuth 保留既有凭据 namespace；断开/换账号会关闭修改建议并使旧提案失效。新工具默认需确认，明确只读工具才直接调用，删除工具不注册。不要添加一个可绕过提案确认的通用写入 API。
 
 修改后测试授权刷新、业务错误、并发确认/拒绝/断开、文档冲突和结果不明不重试。使用临时 home 检查原生 generation 安装和重复安装。维护者本机只以 `--only @local/dsh-tencent-docs` 安装，核对其他 generation 和配置哈希不变；资料库等独立开发中的插件不从本仓库覆盖或降级。
