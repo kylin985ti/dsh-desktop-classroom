@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 
 export const name = 'tencent-docs';
-export const inject = ['connection', 'credentials', 'tools'];
+export const inject = ['connection', 'credentials', 'tools', 'agents'];
 const SAFE_TOOLS = new Set(['query_space_node', 'query_space_list', 'get_user_info', 'manage.search_file', 'manage.recent_online_file', 'manage.folder_list', 'manage.query_file_info', 'search_space_file', 'get_content', 'slide_get_info', 'slide_get_page_info', 'slide_get_shape_info', 'slide_get_text', 'slide_get_chart_info', 'smartcanvas.get_element_info', 'smartcanvas.get_page_info', 'smartcanvas.get_top_level_pages', 'smartsheet.list_tables', 'smartsheet.list_views', 'smartsheet.list_fields', 'smartsheet.list_records']);
 const mutation = /(?:^|[._-])(?:set|update|create|add|insert|append|replace|edit|write|delete|remove|move|copy|upload|share|grant|revoke|rename|clear|batch)(?:[._-]|$)/;
 // An annotation alone must never turn a new/renamed mutating tool into a read.
@@ -69,13 +69,50 @@ export async function apply(ctx) {
   const save = () => { const text = JSON.stringify(saved); const task = saving.then(async () => { const temp = path + '.' + randomUUID(); await writeFile(temp, text, { mode: 0o600 }); await rename(temp, path); changed(); }); saving = task.catch(() => {}); return task; };
   saved.commands ||= []; for (const command of saved.commands) if (command.state === 'executing') command.state = 'outcome-unknown';
   if (saved.commands.some(command => command.state === 'outcome-unknown')) await save();
+  // Authorization belongs to the account; use of that account is opt-in per Session.
+  saved.sessionConnections = Object.assign(Object.create(null), saved.sessionConnections || {});
+  const sessionVersions = new Map(), operations = new Map(), registered = new Map(), bindings = new Map();
+  const sessionEnabled = id => typeof id === 'string' && Object.hasOwn(saved.sessionConnections, id) && saved.sessionConnections[id] === true;
+  const sessionError = () => new Error('请先在当前会话的连接器中启用腾讯文档');
+  const clearBinding = id => { const binding = bindings.get(id); if (!binding) return; bindings.delete(id); for (const dispose of binding.disposers.reverse()) dispose(); };
+  const syncAgent = agent => {
+    const id = agent.session.id;
+    clearBinding(id);
+    if (!registered.size) return;
+    const disposers = [];
+    try {
+      // Keep inherited names known for old history, but never expose another
+      // Session's tools. Own scoped registrations survive an ancestor's mask.
+      disposers.push(agent.ctx.tools.restrict({ deny: [...registered.keys()] }));
+      if (sessionEnabled(id)) for (const definition of registered.values()) disposers.push(agent.ctx.tools.register(definition));
+      bindings.set(id, { agent, disposers });
+    } catch (error) { for (const dispose of disposers.reverse()) dispose(); throw error; }
+  };
+  const syncAgents = () => { for (const agent of ctx.agents.list()) syncAgent(agent); };
+  const invalidateSession = id => {
+    sessionVersions.set(id, (sessionVersions.get(id) || 0) + 1);
+    for (const controller of operations.get(id) || []) controller.abort();
+    const agent = ctx.agents.get(id); if (agent) syncAgent(agent);
+  };
+  const inSession = async (id, signal, work) => {
+    if (!sessionEnabled(id)) throw sessionError();
+    const version = sessionVersions.get(id) || 0, accountVersion = grantRevision, controller = new AbortController();
+    const active = operations.get(id) || new Set(); operations.set(id, active); active.add(controller);
+    const guard = () => !disposed && sessionEnabled(id) && version === (sessionVersions.get(id) || 0) && accountVersion === grantRevision;
+    try { return await work({ guard, signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal }); }
+    finally { active.delete(controller); if (!active.size) operations.delete(id); }
+  };
+  ctx.on('agent/created', ({ agent }) => syncAgent(agent));
+  ctx.on('agent/disposed', ({ agent }) => { if (bindings.get(agent.session.id)?.agent === agent) clearBinding(agent.session.id); });
+  ctx.effect(() => ctx.tools.guard(execution => execution.name.startsWith('mcp__tencent_docs__') && !sessionEnabled(execution.agent?.session?.id) ? sessionError().message : undefined));
   let client = null, connecting = null, authorization = '', definitions = [], disposers = [], disposed = false, grantRevision = 0, connectionError = '';
-  const disconnect = async () => { for (const dispose of disposers) dispose(); disposers = []; definitions = []; const old = client; client = null; authorization = ''; if (old) await old.close().catch(() => {}); };
+  const disconnect = async () => { for (const id of [...bindings.keys()]) clearBinding(id); for (const dispose of disposers) dispose(); disposers = []; registered.clear(); definitions = []; const old = client; client = null; authorization = ''; if (old) await old.close().catch(() => {}); };
   const auth = new TencentAuth({ credentials: ctx.credentials, client: saved.client, saveClient: async value => { saved.client = value; await save(); }, onGrant: async () => {
     grantRevision++; await disconnect(); connectionError = ''; delete saved.verified; delete saved.identity; saved.allowWrite = false;
+    for (const id of Object.keys(saved.sessionConnections)) { delete saved.sessionConnections[id]; invalidateSession(id); }
     for (const command of saved.commands) if (command.state === 'pending') command.state = 'account-changed';
     await save();
-    // A successful login immediately makes tools available in the conversation.
+    // A successful login prepares the account; each Session still opts in.
     // Connection failure remains distinct from saved authorization and is retryable.
     if (connecting) await connecting.catch(() => {});
     if (await auth.grant()) await connect().catch(() => {});
@@ -99,15 +136,17 @@ export async function apply(ctx) {
           if (tool.execution?.taskSupport === 'required' || deletion(tool)) continue;
           const cleaned = tool.name.replace(/[^A-Za-z0-9_-]/g, '_');
           const publicName = ('mcp__tencent_docs__' + cleaned).slice(0, 50) + '_' + createHash('sha256').update(tool.name).digest('hex').slice(0, 8);
-          const definition = createMcpToolDefinition(ctx, { name: publicName, rawName: tool.name, description: (tool.description || tool.name) + (isReadOnly(tool) ? '' : '\n此操作只生成待确认修改；用户在腾讯文档插件审阅并确认后才真正执行，确认前不可声称已修改。'), inputSchema: nativeInputSchema(tool.inputSchema), outputSchema: isReadOnly(tool) ? tool.outputSchema : undefined, call: async (args, execution) => {
+          const definition = createMcpToolDefinition(ctx, { name: publicName, rawName: tool.name, description: (tool.description || tool.name) + (isReadOnly(tool) ? '' : '\n此操作只生成待确认修改；用户在腾讯文档连接器审阅并确认后才真正执行，确认前不可声称已修改。'), inputSchema: nativeInputSchema(tool.inputSchema), outputSchema: isReadOnly(tool) ? tool.outputSchema : undefined, call: async (args, execution) => inSession(execution.agent?.session?.id, execution.signal, async options => {
             if (!isReadOnly(tool)) {
-              const command = await propose(tool.name, args, execution.agent?.session?.id);
+              const command = await propose(tool.name, args, execution.agent.session.id, options);
               return { content: [{ type: 'text', text: JSON.stringify({ status: 'pending-user-confirmation', operationId: command.id, tool: command.tool, message: '修改尚未执行，请在会话输入区的腾讯文档连接器中审阅并确认。' }) }] };
             }
-            return call(tool.name, args, { signal: execution.signal, readOnly: true });
-          } });
+            return call(tool.name, args, { ...options, readOnly: true });
+          }) });
           disposers.push(ctx.tools.register(definition));
+          registered.set(publicName, definition);
         }
+        syncAgents();
         return next;
       } catch { await next.close().catch(() => {}); await disconnect(); connectionError = '腾讯文档连接失败：请检查登录授权、网络或可用额度'; throw new Error(connectionError); }
     })().finally(() => { connecting = null; changed(); });
@@ -115,12 +154,15 @@ export async function apply(ctx) {
     return connecting;
   };
   const call = async (toolName, args, { signal, readOnly = false, guard } = {}) => {
+    if (guard && !guard()) throw Object.assign(sessionError(), { notExecuted: true });
     const ready = await connect(), tool = definitions.find(tool => tool.name === toolName);
     if (!tool || deletion(tool) || tool.execution?.taskSupport === 'required') throw new Error('腾讯文档未提供所需工具');
     if (readOnly && !isReadOnly(tool)) throw new Error('腾讯文档未提供所需只读工具');
     // Run after all awaits, immediately before invoking the official write tool.
     if (guard && !guard()) throw Object.assign(new Error('腾讯文档连接或修改权限已变化，未执行写入'), { notExecuted: true });
-    return checkedResult(await ready.callTool({ name: toolName, arguments: args }, { signal, timeout: 60000, toolDefinition: tool }));
+    const result = checkedResult(await ready.callTool({ name: toolName, arguments: args }, { signal, timeout: 60000, toolDefinition: tool }));
+    if (readOnly && guard && !guard()) throw new Error('腾讯文档已在当前会话关闭，未返回读取内容');
+    return result;
   };
   const read = async (toolName, args, signal) => {
     const result = await call(toolName, args, { signal, readOnly: true });
@@ -148,12 +190,12 @@ export async function apply(ctx) {
     }
     return plan;
   };
-  const readBefore = async plan => {
+  const readBefore = async (plan, options = {}) => {
     if (!plan.length) return null;
-    const snapshots = []; for (const item of plan) snapshots.push({ name: item.name, result: await call(item.name, item.arguments, { readOnly: true }) });
+    const snapshots = []; for (const item of plan) snapshots.push({ name: item.name, result: await call(item.name, item.arguments, { ...options, readOnly: true }) });
     return snapshots.length === 1 ? snapshots[0].result : { content: snapshots.flatMap(item => [{ type: 'text', text: item.name }, ...item.result.content]) };
   };
-  const propose = async (toolName, args, sessionId) => {
+  const propose = async (toolName, args, sessionId, options) => {
     if (!saved.allowWrite) throw new Error('腾讯文档写入尚未开启，请在腾讯文档插件中开启后再修改');
     const revision = grantRevision;
     const snapshot = JSON.parse(JSON.stringify(args)); if (Buffer.byteLength(JSON.stringify(snapshot)) > 512000) throw new Error('腾讯文档修改内容过长，请分批处理');
@@ -161,8 +203,8 @@ export async function apply(ctx) {
     const fileId = ['file_id', 'doc_id', 'document_id'].map(key => snapshot[key]).find(value => typeof value === 'string') || null;
     // Existing-document changes require a successful read for a conflict check.
     const readPlan = beforePlan(toolName, snapshot, fileId);
-    const before = await readBefore(readPlan);
-    if (revision !== grantRevision || !saved.allowWrite || disposed) throw new Error('腾讯文档连接或修改权限已变化，请重新提出修改');
+    const before = await readBefore(readPlan, options);
+    if (revision !== grantRevision || !saved.allowWrite || disposed || !options.guard()) throw new Error('腾讯文档连接或修改权限已变化，请重新提出修改');
     const command = { id: randomUUID(), tool: toolName, arguments: snapshot, fileId, ...(typeof sessionId === 'string' && sessionId ? { sessionId } : {}), readPlan, before, beforeHash: before ? digest(before) : null, state: 'pending', at: new Date().toISOString() };
     saved.commands.unshift(command); saved.commands = saved.commands.filter((command, index) => command.state === 'pending' || command.state === 'executing' || command.state === 'outcome-unknown' || index < 50); await save(); return command;
   };
@@ -171,17 +213,20 @@ export async function apply(ctx) {
     const command = saved.commands.find(command => command.id === id);
     if (!command || command.state !== 'pending' || approving.has(id)) throw new Error('腾讯文档修改请求已处理或正在执行');
     if (!saved.allowWrite) throw new Error('腾讯文档写入尚未开启');
-    const revision = grantRevision;
-    approving.add(id);
-    try {
-      if (command.fileId && digest(await readBefore(command.readPlan || [{ name: 'get_content', arguments: { file_id: command.fileId } }])) !== command.beforeHash) throw new Error('腾讯文档已在别处变化，请重新生成修改建议并核对');
-      if (command.state !== 'pending' || revision !== grantRevision || !saved.allowWrite || disposed) throw new Error('腾讯文档连接或修改权限已变化，未执行写入');
-      command.state = 'executing'; await save();
-      try { command.result = await call(command.tool, command.arguments, { guard: () => command.state === 'executing' && revision === grantRevision && saved.allowWrite && !disposed }); command.state = 'completed'; command.completedAt = new Date().toISOString(); await save(); return command; }
-      catch (error) { command.state = error.notExecuted ? (revision === grantRevision ? 'pending' : 'account-changed') : 'outcome-unknown'; await save(); if (error.notExecuted) throw error; throw new Error('腾讯文档未返回明确写入结果。请先打开文档核对，本插件不会自动重复执行。'); }
-    } finally { approving.delete(id); }
+    const perform = async (options = {}) => {
+      const revision = grantRevision;
+      approving.add(id);
+      try {
+        if (command.fileId && digest(await readBefore(command.readPlan || [{ name: 'get_content', arguments: { file_id: command.fileId } }], options)) !== command.beforeHash) throw new Error('腾讯文档已在别处变化，请重新生成修改建议并核对');
+        if (command.state !== 'pending' || revision !== grantRevision || !saved.allowWrite || disposed || options.guard && !options.guard()) throw new Error('腾讯文档连接或修改权限已变化，未执行写入');
+        command.state = 'executing'; await save();
+        try { command.result = await call(command.tool, command.arguments, { signal: options.signal, guard: () => command.state === 'executing' && revision === grantRevision && saved.allowWrite && !disposed && (!options.guard || options.guard()) }); command.state = 'completed'; command.completedAt = new Date().toISOString(); await save(); return command; }
+        catch (error) { command.state = error.notExecuted ? (revision === grantRevision ? 'pending' : 'account-changed') : 'outcome-unknown'; await save(); if (error.notExecuted) throw error; throw new Error('腾讯文档未返回明确写入结果。请先打开文档核对，本插件不会自动重复执行。'); }
+      } finally { approving.delete(id); }
+    };
+    return command.sessionId ? inSession(command.sessionId, undefined, perform) : perform();
   };
-  ctx.effect(() => () => { disposed = true; auth.dispose(); for (const close of [...streams]) close(); void disconnect(); });
+  ctx.effect(() => () => { disposed = true; auth.dispose(); for (const active of operations.values()) for (const controller of active) controller.abort(); for (const close of [...streams]) close(); void disconnect(); });
   // Desktop's HTTP bridge otherwise attaches a streaming body to this GET.
   ctx.effect(() => ctx.connection.fetch.register({ path: '/api/tencent-docs/events', methods: ['GET'], requestBody: 'buffered', fetch(request) {
     const encoder = new TextEncoder(); let stop = () => {};
@@ -210,7 +255,18 @@ export async function apply(ctx) {
         return command;
       };
       switch (body.action) {
-        case 'status': return Response.json({ connector: 'tencent-docs', authorized: !!(await auth.grant()), connected: !!client, connecting: !!connecting, toolCount: definitions.filter(tool => !deletion(tool) && tool.execution?.taskSupport !== 'required').length, verified: saved.verified || null, allowWrite: !!saved.allowWrite, login: auth.publicPending(), error: auth.lastError || connectionError, otherPendingCount: scoped ? saved.commands.filter(command => command.state === 'pending' && command.sessionId !== body.sessionId).length : 0, commands: saved.commands.filter(command => !scoped || command.sessionId === body.sessionId).map(({ result, ...command }) => command) });
+        case 'status': return Response.json({ connector: 'tencent-docs', authorized: !!(await auth.grant()), connected: !!client, connecting: !!connecting, toolCount: registered.size, conversationEnabled: scoped ? sessionEnabled(body.sessionId) : null, sessionToolCount: scoped && ctx.agents.get(body.sessionId) ? ctx.tools.schemas(ctx.agents.get(body.sessionId)).filter(tool => tool.name.startsWith('mcp__tencent_docs__')).length : 0, verified: saved.verified || null, allowWrite: !!saved.allowWrite, login: auth.publicPending(), error: auth.lastError || connectionError, otherPendingCount: scoped ? saved.commands.filter(command => command.state === 'pending' && command.sessionId !== body.sessionId).length : 0, commands: saved.commands.filter(command => !scoped || command.sessionId === body.sessionId).map(({ result, ...command }) => ({ ...command, sessionEnabled: command.sessionId ? sessionEnabled(command.sessionId) : null })) });
+        case 'sessionConnection': {
+          if (!scoped) throw new Error('请在会话内选择腾讯文档连接器');
+          if (body.enabled !== true && body.enabled !== false) throw new Error('请选择是否在本会话使用腾讯文档');
+          if (body.enabled && !(await auth.grant())) throw new Error('请先登录腾讯文档');
+          if (sessionEnabled(body.sessionId) !== body.enabled) {
+            if (body.enabled) saved.sessionConnections[body.sessionId] = true; else delete saved.sessionConnections[body.sessionId];
+            invalidateSession(body.sessionId); await save();
+          }
+          if (body.enabled) await connect();
+          return Response.json({ conversationEnabled: sessionEnabled(body.sessionId) });
+        }
         case 'login': return Response.json({ login: await auth.begin() });
         case 'token': await auth.setPersonalToken(body.token); return Response.json({ ok: true });
         case 'logout': await auth.logout(); return Response.json({ ok: true });
@@ -221,7 +277,8 @@ export async function apply(ctx) {
           const command = scopedCommand(body.id); if (!command || command.state !== 'pending') throw new Error('腾讯文档修改请求已处理'); command.state = 'rejected'; await save(); return Response.json({ ok: true });
         }
         case 'read': {
-          const result = await read('get_content', { file_id: documentId(body.fileId) });
+          const args = { file_id: documentId(body.fileId) };
+          const result = scoped ? await inSession(body.sessionId, undefined, options => call('get_content', args, { ...options, readOnly: true })) : await read('get_content', args);
           return Response.json({ result, verified: saved.verified });
         }
         default: throw new Error('未知操作');

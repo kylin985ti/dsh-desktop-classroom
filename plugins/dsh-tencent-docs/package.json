@@ -1,9 +1,9 @@
 {
   "name": "@local/dsh-tencent-docs",
-  "version": "0.5.0-classroom.1",
+  "version": "0.6.0-classroom.1",
   "private": true,
   "type": "module",
-  "description": "腾讯文档连接器：本人授权后在会话读写，原位审阅并确认修改",
+  "description": "腾讯文档连接器：会话独立选择启用、本人授权与修改前确认",
   "main": "./lib/index.mjs",
   "exports": {
     ".": "./lib/index.mjs",
@@ -43,7 +43,9 @@
     "@deepseek-ai/dsh-client-ui-conversation": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-session": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-workspace": "0.2.0-rc.2",
-    "react-dom": "*"
+    "react-dom": "*",
+    "@deepseek-ai/dsh-agent": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-client-ui-layout": {
@@ -74,6 +76,12 @@
       "optional": true
     },
     "react-dom": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-primitives": {
       "optional": true
     }
   },

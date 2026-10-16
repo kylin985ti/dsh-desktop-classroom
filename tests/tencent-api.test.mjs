@@ -12,7 +12,7 @@ const hook = registerHooks({ resolve(specifier, context, next) { return sources[
 const { apply, isReadOnly, documentId, checkedResult, nativeInputSchema } = await import('../plugins/dsh-tencent-docs/lib/index.mjs'); hook.deregister();
 const response = data => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
-async function fixture({ granted = true, saved = {} } = {}) {
+async function fixture({ granted = true, saved = {}, enableDefault = true } = {}) {
   const home = await fs.mkdtemp(join(tmpdir(), 'dsh-tencent-api-')), previous = process.env.DSH_HOME;
   const path = join(home, 'storages/tencent_docs/connection.json');
   await fs.mkdir(join(home, 'storages/tencent_docs'), { recursive: true }); await fs.writeFile(path, JSON.stringify(saved));
@@ -29,13 +29,29 @@ async function fixture({ granted = true, saved = {} } = {}) {
   };
   let record = granted ? { kind: 'grant', payload: { mode: 'personal-token', accessToken: 'synthetic-only-token' } } : null;
   const credentials = { readRecord: async () => record, modifyRecord: async (_key, fn) => { const next = await fn(record); if (next !== undefined) record = next; }, deleteRecord: async () => { record = null; } };
-  globalThis.__tencentApiFixture = state; const routes = new Map(), cleanup = [], tools = new Map(); process.env.DSH_HOME = home;
+  globalThis.__tencentApiFixture = state; const routes = new Map(), cleanup = [], tools = new Map(), agents = new Map(), handlers = new Map(), guards = new Set(); process.env.DSH_HOME = home;
+  const schemas = agent => {
+    const chain = []; for (let a = agent; a; a = a.parent) chain.unshift(a);
+    const inherited = new Map([...tools.values()].map(d => [d.name, d]));
+    for (const a of chain.slice(0, -1)) for (const d of a.own.values()) inherited.set(d.name, d);
+    const visible = new Map([...inherited].filter(([name]) => chain.every(a => [...a.masks].every(mask => !mask.has(name)))));
+    for (const d of agent?.own.values() || []) visible.set(d.name, d);
+    return [...visible.values()];
+  };
+  const addAgent = (id, parent) => {
+    const a = { session: { id }, parent: agents.get(parent), own: new Map(), masks: new Set() };
+    a.ctx = { tools: { restrict({ deny }) { const mask = new Set(deny); a.masks.add(mask); return () => a.masks.delete(mask); }, register(d) { assert.equal(a.own.has(d.name), false); a.own.set(d.name, d); return () => a.own.delete(d.name); } } };
+    agents.set(id, a); handlers.get('agent/created')?.({ agent: a }); return a;
+  };
+  addAgent('session-fixture');
   try {
-    await apply({ effect: fn => { const dispose = fn(); if (typeof dispose === 'function') cleanup.push(dispose); }, credentials, tools: { register: value => { tools.set(value.rawName, value); return () => tools.delete(value.rawName); } }, connection: { fetch: { register: value => { routes.set(value.path, value); return () => {}; } } } });
+    await apply({ on: (name, fn) => handlers.set(name, fn), agents: { list: () => [...agents.values()], get: id => agents.get(id) }, effect: fn => { const dispose = fn(); if (typeof dispose === 'function') cleanup.push(dispose); }, credentials, tools: { schemas, guard: fn => { guards.add(fn); return () => guards.delete(fn); }, register: value => { tools.set(value.rawName, value); return () => tools.delete(value.rawName); } }, connection: { fetch: { register: value => { routes.set(value.path, value); return () => {}; } } } });
   } finally { if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous; }
   const request = async body => { const r = await routes.get('/api/tencent-docs').fetch(new Request('http://localhost/api/tencent-docs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })); return { status: r.status, value: await r.json() }; };
   if (granted) assert.equal((await request({ action: 'discover' })).status, 200);
-  return { state, home, tools, request, events: signal => { const route = routes.get('/api/tencent-docs/events'); assert.equal(route.requestBody, 'buffered', 'Desktop HTTP bridge must not attach a request body to GET'); return route.fetch(new Request('http://localhost/api/tencent-docs/events', { signal })); }, stored: async () => JSON.parse(await fs.readFile(path, 'utf8')), tool: (name, args, sessionId) => tools.get(name).call(args, { signal: new AbortController().signal, ...(sessionId ? { agent: { session: { id: sessionId } } } : {}) }), async close() { for (const fn of cleanup.reverse()) fn(); delete globalThis.__tencentApiFixture; await fs.rm(home, { recursive: true, force: true }); } };
+  const enable = (sessionId, enabled = true) => request({ action: 'sessionConnection', scope: 'session', sessionId, enabled });
+  if (granted && enableDefault) assert.equal((await enable('session-fixture')).status, 200);
+  return { state, home, tools, request, enable, addAgent, schemas: id => schemas(agents.get(id)).map(d => d.name), guards, agents, events: signal => { const route = routes.get('/api/tencent-docs/events'); assert.equal(route.requestBody, 'buffered', 'Desktop HTTP bridge must not attach a request body to GET'); return route.fetch(new Request('http://localhost/api/tencent-docs/events', { signal })); }, stored: async () => JSON.parse(await fs.readFile(path, 'utf8')), tool: (name, args, sessionId = 'session-fixture') => tools.get(name).call(args, { signal: new AbortController().signal, ...(sessionId ? { agent: agents.get(sessionId) || addAgent(sessionId) } : {}) }), async close() { for (const fn of cleanup.reverse()) fn(); delete globalThis.__tencentApiFixture; await fs.rm(home, { recursive: true, force: true }); } };
 }
 const propose = async f => { await f.request({ action: 'allowWrite', enabled: true }); const r = await f.tool('doc.update_content', { file_id: 'synthetic', content: '新内容' }); return JSON.parse(r.content[0].text).operationId; };
 test('without authorization status does not contact Tencent or expose credentials; old browser routes are gone', async () => {
@@ -146,13 +162,14 @@ test('a failed post-authorization connection remains authorized, reports an erro
   } finally { await f.close(); }
 });
 test('conversation proposals use the trusted runtime SessionId, isolate other sessions and retain legacy proposals', async () => {
-  const f = await fixture();
+  const legacy = 'synthetic-legacy-proposal';
+  const f = await fixture({ saved: { commands: [{ id: legacy, state: 'pending', tool: 'doc.update_content', arguments: { content: 'legacy' } }] } });
   try {
     await f.request({ action: 'allowWrite', enabled: true });
+    await f.enable('session-own'); await f.enable('session-other');
     const idOf = r => JSON.parse(r.content[0].text).operationId;
     const own = idOf(await f.tool('doc.update_content', { file_id: 'synthetic', content: 'own', sessionId: 'forged' }, 'session-own'));
     const other = idOf(await f.tool('doc.update_content', { file_id: 'synthetic', content: 'other' }, 'session-other'));
-    const legacy = idOf(await f.tool('doc.update_content', { file_id: 'synthetic', content: 'legacy' }));
     const status = (await f.request({ action: 'status', scope: 'session', sessionId: 'session-own' })).value;
     assert.deepEqual(status.commands.map(c => c.id), [own]); assert.equal(status.commands[0].sessionId, 'session-own'); assert.equal(status.otherPendingCount, 2);
     assert.equal((await f.request({ action: 'approve', id: other, scope: 'session', sessionId: 'session-own' })).status, 400);
@@ -175,5 +192,68 @@ test('connector events push only invalidation revisions and terminate on request
     assert.match(second, /^event: changed\ndata: \{"revision":\d+\}\n\n$/);
     assert.equal((first + second).includes('synthetic'), false); assert.equal(f.state.calls.length, 0);
     abort.abort(); assert.equal((await reader.read()).done, true);
+  } finally { await f.close(); }
+});
+
+test('saved account authorization leaves conversations off by default and cannot be enabled by model arguments', async () => {
+  const f = await fixture({ enableDefault: false });
+  try {
+    const status = (await f.request({ action: 'status', scope: 'session', sessionId: 'session-fixture' })).value;
+    assert.equal(status.authorized, true); assert.equal(status.conversationEnabled, false); assert.equal(status.sessionToolCount, 0);
+    assert.equal(f.schemas('session-fixture').length, 0);
+    await assert.rejects(f.tool('get_content', { file_id: 'synthetic', sessionId: 'forged', enabled: true }), /当前会话/);
+    await assert.rejects(f.tool('get_content', { file_id: 'synthetic' }, null), /当前会话/);
+    assert.match([...f.guards][0]({ name: f.tools.get('get_content').name, agent: f.agents.get('session-fixture') }), /当前会话/);
+    assert.equal((await f.request({ action: 'read', scope: 'session', sessionId: 'session-fixture', fileId: 'synthetic' })).status, 400);
+    assert.equal((await f.request({ action: 'sessionConnection', sessionId: 'session-fixture', enabled: true })).status, 400);
+    assert.equal(f.state.calls.length, 0); assert.equal(f.state.writes, 0);
+  } finally { await f.close(); }
+});
+test('conversation choices isolate parents, children and unrelated agents while retaining authorization', async () => {
+  const f = await fixture();
+  try {
+    const count = f.tools.size;
+    f.addAgent('child', 'session-fixture'); f.addAgent('other');
+    assert.equal(f.schemas('session-fixture').length, count); assert.equal(f.schemas('child').length, 0); assert.equal(f.schemas('other').length, 0);
+    await f.enable('child'); assert.equal(f.schemas('child').length, count);
+    await f.enable('session-fixture', false);
+    assert.equal(f.schemas('session-fixture').length, 0); assert.equal(f.schemas('child').length, count); assert.equal(f.schemas('other').length, 0);
+    assert.equal((await f.request({ action: 'status' })).value.authorized, true);
+    assert.equal((await f.request({ action: 'status' })).value.connected, true);
+    assert.deepEqual((await f.stored()).sessionConnections, { child: true });
+    await f.tool('get_content', { file_id: 'synthetic' }, 'child'); assert.equal(f.state.calls.length, 1);
+  } finally { await f.close(); }
+});
+test('saved opt-in is restored only for the exact session, including agents created after connection', async () => {
+  const f = await fixture({ enableDefault: false, saved: { sessionConnections: { remembered: true } } });
+  try {
+    f.addAgent('remembered'); f.addAgent('new-conversation');
+    assert.equal(f.schemas('remembered').length, f.tools.size); assert.equal(f.schemas('new-conversation').length, 0);
+    await f.enable('remembered', false); assert.equal(f.schemas('remembered').length, 0);
+    assert.equal((await f.request({ action: 'status' })).value.authorized, true);
+  } finally { await f.close(); }
+});
+test('closing then reopening during a read aborts the old operation and never returns stale document contents', async () => {
+  const f = await fixture();
+  try {
+    const entered = deferred(), release = deferred(); let signal;
+    f.state.answer = async (_q, options) => { signal = options.signal; entered.resolve(); await release.promise; return response({ content: 'must not reach caller' }); };
+    const result = f.tool('get_content', { file_id: 'synthetic' }); await entered.promise;
+    await f.enable('session-fixture', false); assert.equal(signal.aborted, true); await f.enable('session-fixture'); release.resolve();
+    await assert.rejects(result, /已在当前会话关闭/); assert.equal(f.state.calls.length, 1); assert.equal(f.state.writes, 0);
+  } finally { await f.close(); }
+});
+test('disabled conversations cannot approve a pending proposal or finish an in-flight conflict check', async () => {
+  const f = await fixture();
+  try {
+    const id = await propose(f); const reads = f.state.calls.length;
+    await f.enable('session-fixture', false);
+    assert.equal((await f.request({ action: 'approve', id })).status, 400); assert.equal(f.state.calls.length, reads);
+    await f.enable('session-fixture'); const entered = deferred(), release = deferred();
+    f.state.beforeRead = async () => { entered.resolve(); await release.promise; };
+    const approval = f.request({ action: 'approve', id }); await entered.promise;
+    await f.enable('session-fixture', false); await f.enable('session-fixture'); release.resolve();
+    assert.equal((await approval).status, 400); assert.equal(f.state.writes, 0); assert.equal((await f.stored()).commands[0].state, 'pending');
+    assert.equal((await f.request({ action: 'reject', id })).status, 200);
   } finally { await f.close(); }
 });
