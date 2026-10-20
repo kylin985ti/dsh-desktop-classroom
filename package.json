@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop-classroom",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -12,6 +12,6 @@
     "check": "node scripts/refresh.mjs --check && node scripts/verify.mjs",
     "test": "npm run check && node --test tests/*.test.mjs && npm run test:library && npm run test:taskboard",
     "test:library": "npm --prefix plugins/dsh-library test",
-    "test:taskboard": "node workbenches/task-board/scripts/test-ai-schedule-model.mjs && node workbenches/task-board/scripts/test-gantt-edit-workspace.mjs && node workbenches/task-board/scripts/test-client.mjs && node workbenches/task-board/scripts/test-native-directory.mjs && node workbenches/task-board/scripts/check-workbench-package.mjs"
+    "test:taskboard": "node workbenches/task-board/scripts/test-ai-planning.mjs && node workbenches/task-board/scripts/test-loader-contract.mjs && node workbenches/task-board/scripts/test-schedule-model.mjs && node workbenches/task-board/scripts/test-calendar-model.mjs && node workbenches/task-board/scripts/test-calendar-window.mjs && node workbenches/task-board/scripts/test-ai-schedule-model.mjs && node workbenches/task-board/scripts/test-gantt-edit-workspace.mjs && node workbenches/task-board/scripts/test-client.mjs && node workbenches/task-board/scripts/test-native-directory.mjs && node workbenches/task-board/scripts/check-workbench-package.mjs"
   }
 }

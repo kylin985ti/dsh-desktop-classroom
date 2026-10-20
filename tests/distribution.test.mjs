@@ -15,7 +15,7 @@ test('public payload hashes, licenses and plugin versions agree', async () => {
 test('task-board source stays optional and retains the existing host identity', async () => {
   const config = JSON.parse(await fs.readFile(join(root, 'classroom.json'), 'utf8'));
   const workbench = config.workbenches.find(p => p.name === 'dsh-task-board');
-  assert.equal(workbench.version, '1.7.1');
+  assert.equal(workbench.version, '1.8.1');
   assert.equal(workbench.distribution, 'source-only');
   assert.ok(!config.plugins.some(p => p.name === workbench.name));
   const pkg = JSON.parse(await fs.readFile(join(root, workbench.path, 'package.json'), 'utf8'));

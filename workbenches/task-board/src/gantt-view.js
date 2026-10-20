@@ -95,7 +95,8 @@ export function createGanttView(React) {
       (paths[name] || []).map((d, index) => h('path', { key: index, d })))
   }
 
-  function GanttView({ tasks = [], scopeId = null, onTask, onEditPlan, onAI, onScopeAll, commit, active = true, disabled = false, stateRef }) {
+  function GanttView({ tasks = [], scopeId = null, onTask: onTaskProp, onEditPlan: onEditPlanProp, onAI, onScopeAll, commit, active = true, disabled = false, stateRef, proposal = null, planning = false }) {
+    const onTask = planning ? undefined : onTaskProp, onEditPlan = planning ? undefined : onEditPlanProp
     const localStateRef = React.useRef(null)
     const holder = stateRef || localStateRef
     if (!(holder.current instanceof Map)) holder.current = new Map()
@@ -105,7 +106,7 @@ export function createGanttView(React) {
     const state = scopeState(store, scopeKey)
     const showCompleted = state.showCompleted === true
     const rootRef = React.useRef(null), viewportRef = React.useRef(null), leftHeadRef = React.useRef(null)
-    const tooltipRef = React.useRef(null), frameRef = React.useRef(null), pendingJumpRef = React.useRef(null)
+    const tooltipRef = React.useRef(null), frameRef = React.useRef(null), pendingJumpRef = React.useRef(null), proposalFocusRef = React.useRef(null)
     const latestScopeRef = React.useRef(scopeKey)
     latestScopeRef.current = scopeKey
     const [, redraw] = React.useReducer(value => value + 1, 0)
@@ -116,29 +117,45 @@ export function createGanttView(React) {
     const gestureRef = React.useRef(null), clickBlockRef = React.useRef(null), mountedRef = React.useRef(true)
     const liveRef = React.useRef(null)
     const tooltipId = `tb-gantt-tooltip-${React.useId()}`
-    const allTasks = Array.isArray(tasks) ? tasks : []
-    liveRef.current = { tasks: allTasks, commit, disabled: disabled || editBusy || !active }
+    const allTasks = proposal?.tasks || (Array.isArray(tasks) ? tasks : [])
+    liveRef.current = { tasks: allTasks, commit, disabled: disabled || editBusy || !active || planning }
     const scopedTasks = React.useMemo(() => {
       if (scopeKey === null) return allTasks
       const ids = subtreeIds(allTasks, scopeKey)
       return allTasks.filter(task => ids.has(task.id))
     }, [allTasks, scopeKey])
     const tree = React.useMemo(() => buildTree(scopedTasks), [scopedTasks])
-    const schedules = React.useMemo(() => getSchedules(scopedTasks), [scopedTasks])
+    const schedules = React.useMemo(() => proposal?.schedules || getSchedules(scopedTasks), [scopedTasks, proposal])
     const drawingSchedules = React.useMemo(() => editPreview?.candidate ? getSchedules(editPreview.candidate) : schedules, [schedules, editPreview])
     const displayedTasks = React.useMemo(() => visibleRows(tree, new Set(), showCompleted).map(row => row.task), [tree, showCompleted])
     const rows = visibleRows(tree, state.collapsed, showCompleted)
     const hiddenCount = scopedTasks.length - displayedTasks.length
     const today = dateToDay(todayDate())
-    const range = React.useMemo(() => chartRange(displayedTasks, schedules, today), [displayedTasks, schedules, today])
+    const range = React.useMemo(() => {
+      const value = chartRange(displayedTasks, schedules, today)
+      if (proposal) for (const task of displayedTasks) {
+        const difference = proposal.differences.get(task.id)
+        for (const plan of [difference?.before, difference?.after]) for (const date of [plan?.start, plan?.end]) {
+          const day = dateToDay(date)
+          if (day !== null) { value.start = Math.max(MIN_DAY, Math.min(value.start, day - 7)); value.end = Math.min(MAX_DAY, Math.max(value.end, day + 7)) }
+        }
+      }
+      return value
+    }, [displayedTasks, schedules, today, proposal])
     const visibleWidth = Math.max(0, geometry.width - geometry.sticky)
-    const dayCount = Math.min(MAX_DAY - range.start + 1, Math.max(range.end - range.start + 1, Math.ceil(visibleWidth / DAY_WIDTH), 1))
-    const trackWidth = Math.min(dayCount * DAY_WIDTH, MAX_TRACK_WIDTH)
+    const preferredDayWidth = planning ? 42 : DAY_WIDTH, rowHeight = planning ? 72 : ROW_HEIGHT
+    const dayCount = Math.min(MAX_DAY - range.start + 1, Math.max(range.end - range.start + 1, Math.ceil(visibleWidth / preferredDayWidth), 1))
+    const trackWidth = Math.min(dayCount * preferredDayWidth, MAX_TRACK_WIDTH)
     const dayWidth = trackWidth / dayCount
     const endDay = range.start + dayCount - 1
     const hasOwners = displayedTasks.some(task => ownerOf(task))
     const scopedTask = scopeKey === null ? null : scopedTasks.find(task => task.id === scopeKey)
     const scopeLabel = scopeKey === null ? '全部任务' : scopedTask ? titleOf(scopedTask) : '当前任务'
+    const planningDays = planning ? displayedTasks.filter(task => {
+      const change = proposal?.differences.get(task.id)
+      return change?.kind !== 'new' || change.selected
+    }).flatMap(task => { const schedule = schedules.get(task.id); return [dateToDay(schedule?.start), dateToDay(schedule?.end)].filter(day => day !== null) }) : []
+    const planningRangeLabel = planningDays.length ? `${dayParts(Math.min(...planningDays)).date} — ${dayParts(Math.max(...planningDays)).date}` : '尚未安排日期'
     const parentById = React.useMemo(() => new Map(scopedTasks.map(task => [task.id, task.parentId])), [scopedTasks])
 
     function clearGesture() {
@@ -298,18 +315,18 @@ export function createGanttView(React) {
 
     function savePosition() {
       const element = viewportRef.current
-      if (!element) return
+      if (!element?.clientWidth) return
       state.scrollLeft = element.scrollLeft
       state.scrollTop = element.scrollTop
       state.anchorDay = range.start + element.scrollLeft / dayWidth
     }
     function scrollToDay(day, rowIndex = null) {
       const element = viewportRef.current
-      if (!element || day === null) return
+      if (!element?.clientWidth || day === null) return
       const leftWidth = leftHeadRef.current?.getBoundingClientRect().width || 0
       const available = Math.max(0, element.clientWidth - leftWidth)
       element.scrollLeft = clamp((day - range.start) * dayWidth - available * 0.2, 0, trackWidth - available)
-      if (rowIndex !== null) element.scrollTop = Math.max(0, rowIndex * ROW_HEIGHT)
+      if (rowIndex !== null) element.scrollTop = Math.max(0, rowIndex * rowHeight)
       savePosition()
       measure()
       setTooltip(null)
@@ -373,7 +390,7 @@ export function createGanttView(React) {
 
     useLayoutEffect(() => {
       const element = viewportRef.current
-      if (!element) return undefined
+      if (!element?.clientWidth) return undefined
       const leftWidth = leftHeadRef.current?.getBoundingClientRect().width || 0
       const available = Math.max(0, element.clientWidth - leftWidth)
       const savedDay = Number.isFinite(state.anchorDay) ? state.anchorDay : null
@@ -389,7 +406,7 @@ export function createGanttView(React) {
       return () => {
         // A scope switch may already have changed the DOM's scrollable dimensions.
         // Its previous scope was saved on every scroll and before navigation.
-        if (latestScopeRef.current === scopeKey && element.isConnected) {
+        if (latestScopeRef.current === scopeKey && element.isConnected && element.clientWidth) {
           state.scrollLeft = element.scrollLeft
           state.scrollTop = element.scrollTop
         }
@@ -401,6 +418,19 @@ export function createGanttView(React) {
       if (!jump || jump.key !== scopeKey) return
       pendingJumpRef.current = null
       scrollToDay(jump.day, Math.max(0, rows.findIndex(row => row.task.id === jump.id)))
+    })
+
+    useLayoutEffect(() => {
+      if (!planning || !proposal) { proposalFocusRef.current = null; return }
+      const key = JSON.stringify([scopeKey, proposal.version])
+      if (proposalFocusRef.current === key || !viewportRef.current?.clientWidth) return
+      const days = [...proposal.differences.values()].filter(change => change.selected && change.kind !== 'rollup')
+        .flatMap(change => [change.before?.start, change.before?.end, change.after?.start, change.after?.end])
+        .map(dateToDay).filter(day => day !== null)
+      proposalFocusRef.current = key
+      // Bring each new version's changes into view once. Checkbox selection and
+      // manual panning keep their position; a hidden mobile chart saves no zero.
+      if (days.length) scrollToDay(Math.min(...days))
     })
 
     function tooltipPosition(anchor) {
@@ -492,9 +522,10 @@ export function createGanttView(React) {
     const todayX = (today - range.start + 0.5) * dayWidth
     const weekShift = -((dayParts(range.start).weekday + 6) % 7) * dayWidth
     const chartStyle = { '--tb-gantt-track': `${trackWidth}px`, '--tb-gantt-day': `${dayWidth}px`,
-      '--tb-gantt-week': `${dayWidth * 7}px`, '--tb-gantt-week-shift': `${weekShift}px`, '--tb-gantt-row-height': `${ROW_HEIGHT}px` }
+      '--tb-gantt-week': `${dayWidth * 7}px`, '--tb-gantt-week-shift': `${weekShift}px`, '--tb-gantt-row-height': `${rowHeight}px` }
 
     function renderRow({ task, depth, outline, group, parentTitle }, rowIndex) {
+      const difference = proposal?.differences.get(task.id)
       const schedule = drawingSchedules.get(task.id), plan = planOf(schedule)
       const meta = STATUS_META[task.status] || STATUS_META.todo
       const owner = ownerOf(task), title = titleOf(task), children = task.children || []
@@ -506,7 +537,7 @@ export function createGanttView(React) {
       const startText = schedule?.start || '', endText = schedule?.end || ''
       const dateLabel = `编辑排期：${title}。开始：${startText || '未设置'}，完成：${endText || '未设置'}${auto ? '，当前为子任务自动汇总' : ''}`
       const rowStyle = { '--tb-gantt-status': meta.color, '--tb-gantt-depth': depth }
-      const editable = typeof commit === 'function' && !disabled && !editBusy && active
+      const editable = typeof commit === 'function' && !disabled && !editBusy && active && !planning
       const editing = editPreview?.session.id === task.id
       const controlProps = kind => ({
         onPointerDown: event => startPointerEdit(event, task, kind),
@@ -520,7 +551,7 @@ export function createGanttView(React) {
         const width = Math.max(1, plan.duration * dayWidth - gutter * 2)
         const tag = typeof onTask === 'function' ? 'button' : 'span'
         graphic = h(React.Fragment, null, h(tag, { className: auto ? 'tbGanttSummary' : 'tbGanttBar', type: tag === 'button' ? 'button' : undefined,
-          style: { left, width }, 'aria-label': `打开任务：${title}，${startText}至${endText}，${plan.duration}天，${meta.label}${auto ? '，子任务自动汇总' : ''}`,
+          style: { left, width }, 'aria-label': `${planning ? '预览任务' : '打开任务'}：${title}，${startText}至${endText}，${plan.duration}天，${meta.label}${auto ? '，子任务自动汇总' : ''}`,
           'data-editable': editable ? 'true' : 'false', title: editable ? '拖动横条平移计划；Alt + 左右键调整，Enter 保存，Esc 取消' : undefined,
           onClick: tag === 'button' ? event => barClick(event, task.id) : undefined,
           ...tooltipProps(task, schedule), ...(editable ? controlProps('move') : {}) },
@@ -537,7 +568,7 @@ export function createGanttView(React) {
         const hintOnLeft = left + 112 > trackWidth
         graphic = h(React.Fragment, null,
           h(tag, { className: 'tbGanttDeadline', type: tag === 'button' ? 'button' : undefined, style: { left },
-            'aria-label': `打开截止任务：${title}，截止${endText}，${meta.label}`,
+            'aria-label': `${planning ? '预览截止任务' : '打开截止任务'}：${title}，截止${endText}，${meta.label}`,
             'data-editable': editable ? 'true' : 'false', onClick: tag === 'button' ? event => barClick(event, task.id) : undefined,
             ...tooltipProps(task, schedule), ...(editable ? controlProps('move') : {}) }, h('span', { className: 'tbGanttDiamond', 'aria-hidden': true })),
           h(editTag, { className: 'tbGanttDeadlineHint', type: editTag === 'button' ? 'button' : undefined,
@@ -552,10 +583,13 @@ export function createGanttView(React) {
       }
       const titleTag = typeof onTask === 'function' ? 'button' : 'span'
       const dateTag = typeof onEditPlan === 'function' ? 'button' : 'span'
+      const ghost = difference && (difference.selected ? difference.before : difference.after)
+      const ghostPlan = ghost ? planOf(ghost) : null
       return h('div', { key: task.id, role: 'row', className: 'tbGanttRow', 'aria-rowindex': rowIndex + 2,
         'aria-label': `${outline} ${title}${parentTitle ? `，上级：${parentTitle}` : '，顶层任务'}`,
         'data-outline': outline, 'data-group': group, 'data-parent': children.length ? 'true' : 'false', 'data-editing': editing ? 'true' : 'false',
         'data-task-id': task.id, 'data-plan-kind': plan.kind, 'data-status': task.status, 'data-depth': depth,
+        'data-proposal': difference?.kind, 'data-proposal-selected': difference ? String(difference.selected) : undefined,
         'data-auto': auto ? 'true' : 'false', style: rowStyle },
       h('div', { className: 'tbGanttLeft' },
         h('div', { className: 'tbGanttTask', role: 'rowheader' },
@@ -566,8 +600,9 @@ export function createGanttView(React) {
           h('span', { className: 'tbGanttStatusDot', role: 'img', 'aria-label': meta.label, title: meta.label }),
           h('span', { className: 'tbGanttOutline', title: `层级编号 ${outline}${parentTitle ? ` · 上级：${parentTitle}` : ' · 顶层任务'}` }, outline),
           h(titleTag, { className: 'tbGanttTaskTitle', type: titleTag === 'button' ? 'button' : undefined,
-            'aria-label': `打开任务：${title}`, onClick: titleTag === 'button' ? () => navigate(onTask, task.id) : undefined,
+            'aria-label': `${planning ? '预览任务' : '打开任务'}：${title}`, onClick: titleTag === 'button' ? () => navigate(onTask, task.id) : undefined,
             ...tooltipProps(task, schedule) }, title),
+          difference?.kind === 'new' ? h('span', { className: 'tbGanttProposalTag' }, difference.selected ? '新增' : '未选') : null,
           children.length ? h('span', { className: 'tbGanttParentBadge', title: `${children.length} 个直接下级；折叠箭头可展开或收起` }, '项目') : null,
           partialChildren ? h('span', { className: 'tbGanttPartialBadge',
             title: partialLabel, 'aria-label': partialLabel }, missing ? `缺 ${missing}` : '不完整') : null),
@@ -580,7 +615,11 @@ export function createGanttView(React) {
             startText ? h('time', { dateTime: startText }, startText) : h('span', { className: 'tbGanttDateEmpty' }, '—')),
           h('span', { className: 'tbGanttDate' }, h('span', { className: 'tbGanttDateKey', 'aria-hidden': true }, '终'),
             endText ? h('time', { dateTime: endText }, endText) : h('span', { className: 'tbGanttDateEmpty' }, '—'))))),
-      h('div', { className: 'tbGanttTimeline', role: 'cell' }, graphic,
+      h('div', { className: 'tbGanttTimeline', role: 'cell' },
+        ghostPlan?.kind === 'bar' || ghostPlan?.kind === 'deadline' ? h('span', { className: 'tbGanttProposalGhost', 'data-deadline': ghostPlan.kind === 'deadline' ? 'true' : undefined,
+          'aria-label': `${difference.selected ? '原计划' : '未接受建议'}：${title}，${ghost.start || '未设置'}至${ghost.end || '未设置'}`,
+          style: { left: ((ghostPlan.start ?? ghostPlan.end) - range.start) * dayWidth + 3,
+            width: Math.max(6, (ghostPlan.duration || 1) * dayWidth - 6) } }) : null, graphic,
         editing && editPreview.error && editPreview.range ? h('span', { className: 'tbGanttInvalidGhost', 'aria-hidden': true,
           style: { left: ((dateToDay(editPreview.range.start || editPreview.range.end)) - range.start) * dayWidth,
             width: Math.max(dayWidth, ((dateToDay(editPreview.range.end) - dateToDay(editPreview.range.start || editPreview.range.end)) + 1) * dayWidth) } }) : null))
@@ -596,22 +635,27 @@ export function createGanttView(React) {
       onKeyDown: event => { if (event.key === 'Escape' && tooltip) { setTooltip(null); event.stopPropagation() } } },
     h('div', { className: 'tbGanttToolbar' },
       h('div', { className: 'tbGanttScope' },
-        h('div', { className: 'tbGanttScopeLine' }, h('h2', { className: 'tbGanttScopeTitle', title: `范围：${scopeLabel}` }, `范围：${scopeLabel}`),
+        h('div', { className: 'tbGanttScopeLine' }, h('h2', { className: 'tbGanttScopeTitle', title: `范围：${scopeLabel}` }, planning ? scopeLabel : `范围：${scopeLabel}`),
           h('span', { className: 'tbGanttCount' }, `${displayedTasks.length} 项`)),
-        h('div', { className: 'tbGanttRange' }, h('span', null, showCompleted ? scopeKey === null ? '含全部历史记录' : '当前任务与全部下级' : '已隐藏已完成任务及其下级'),
-          h('span', { 'aria-hidden': true }, '·'), h('span', null, `${dayParts(range.start).date} — ${dayParts(endDay).date}`))),
+        h('div', { className: 'tbGanttRange' }, h('span', null, planning ? proposal ? '所选方案' : '当前计划' : showCompleted ? scopeKey === null ? '含全部历史记录' : '当前任务与全部下级' : '已隐藏已完成任务及其下级'),
+          h('span', { 'aria-hidden': true }, '·'), h('span', null, planning ? planningRangeLabel : `${dayParts(range.start).date} — ${dayParts(endDay).date}`))),
       h('div', { className: 'tbGanttActions' },
         h('button', { type: 'button', className: 'tbGanttControl tbGanttCompletedToggle', 'aria-pressed': showCompleted,
           title: '显示或隐藏已完成任务及其下级；不修改任务状态和计划', onClick: toggleCompleted }, '显示已完成'),
-        scopeKey !== null && typeof onScopeAll === 'function' ? h('button', { type: 'button', className: 'tbGanttControl tbGanttScopeAll',
+        scopeKey !== null && typeof onScopeAll === 'function' && !planning ? h('button', { type: 'button', className: 'tbGanttControl tbGanttScopeAll',
           'aria-label': '返回全部任务甘特图', onClick: () => navigate(onScopeAll) }, h(Icon, { name: 'back' }), '全部任务') : null,
         h('button', { type: 'button', className: 'tbGanttControl', 'aria-label': '今天', title: '定位今天，不修改任务排期', onClick: () => scrollToDay(today) }, h(Icon, { name: 'today' }), '今天'),
         h('button', { type: 'button', className: 'tbGanttControl', 'aria-label': '定位排期', title: '定位当前范围最早的排期，并展开其上级任务',
           disabled: range.firstDay === null, onClick: locatePlan }, h(Icon, { name: 'locate' }), '定位排期'),
-        typeof onAI === 'function' ? h('button', { type: 'button', className: 'tbGanttControl tbGanttAI', 'aria-label': 'AI辅助排期',
+        typeof onAI === 'function' && !planning ? h('button', { type: 'button', className: 'tbGanttControl tbGanttAI', 'aria-label': 'AI辅助排期',
           disabled: disabled || editBusy, onClick: () => navigate(onAI) }, h(Icon, { name: 'ai' }), 'AI辅助排期') : null)),
+    proposal ? h('div', { className: 'tbGanttProposalBanner', 'aria-label': '图上方案预览' },
+      h('strong', null, `AI 方案预览 · 第 ${proposal.version} 版`), h('span', null, `已选 ${proposal.selectedCount} / ${proposal.totalCount} 项`),
+      h('span', null, proposal.errors.length ? '请先处理方案冲突' : '未确认，尚未修改任务'),
+      h('div', { className: 'tbGanttProposalLegend' }, h('span', null, h('i', { 'data-kind': 'before' }), '原计划'),
+        h('span', null, h('i'), '建议改期'), h('span', null, h('i', { 'data-kind': 'new' }), '新增任务'))) : null,
     h('div', { className: 'tbGanttHowTo' },
-      h('span', null, '拖动横条移动计划 · 拖动两端改起止 · 编号与连线表示上下级'),
+      h('span', null, planning ? '先生成预览，在侧栏选择接受；确认后才保存计划。' : '拖动横条移动计划 · 拖动两端改起止 · 编号与连线表示上下级'),
       h('details', { className: 'tbGanttGuide' }, h('summary', null, '操作与层级示意'),
         h('div', { className: 'tbGanttGuideBody' },
           h('div', { className: 'tbGanttGuideTree', 'aria-label': '层级示例' },
@@ -629,7 +673,7 @@ export function createGanttView(React) {
       'aria-label': '甘特图任务树与每日时间轴，可横向和纵向滚动',
       onScroll: () => { savePosition(); retainFocusedTooltip(); queueMeasure() } },
       h('div', { className: 'tbGanttCanvas', role: 'table', 'aria-label': '任务排期', 'aria-rowcount': rows.length + 1,
-        'aria-colcount': hasOwners ? 4 : 3 },
+        'aria-colcount': planning ? 2 : hasOwners ? 4 : 3 },
       h('div', { className: 'tbGanttTodayLine', style: { left: `calc(var(--tb-gantt-left) + ${todayX}px)` }, 'aria-hidden': true }),
       h('div', { className: 'tbGanttHeader', role: 'row', 'aria-rowindex': 1 },
         h('div', { ref: leftHeadRef, className: 'tbGanttLeft tbGanttLeftHead' },

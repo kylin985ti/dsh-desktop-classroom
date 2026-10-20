@@ -70,4 +70,4 @@ ELECTRON_RUN_AS_NODE=1 '/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop
 
 任务栏位于 `workbenches/task-board`，版本与能力列在 `classroom.json.workbenches`，不加入默认 `plugins` 安装列表。同步只允许源码、锁文件、许可、必要客户端构建产物与可分发验证摘要；不导出 `.verification`、本机任务/会话或运行日志。保留既有工作台身份。
 
-先在工作台目录执行 `pnpm install --frozen-lockfile && pnpm build`，再回根目录 `npm run refresh && npm test`。工作台包自检和 139 项定向检查纳入根测试，CI 同时检查客户端构建可重复。不要为同步源码而安装到运行中的 DSH。
+先在工作台目录执行 `pnpm install --frozen-lockfile && pnpm build`，再回根目录 `npm run refresh && npm test`。工作台包自检、规划/会话/客户端契约和计划/月历模型检查纳入根测试，CI 同时检查客户端构建可重复。不要为同步源码而安装到运行中的 DSH。

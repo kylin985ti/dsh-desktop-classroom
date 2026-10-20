@@ -1,7 +1,8 @@
 import { validateScheduleState } from '../dsh/schedule-model.js'
 import { createGanttView } from './gantt-view.js'
 import { createScheduleEditor } from './schedule-editor.js'
-import { createAISchedulePanel } from './ai-schedule-panel.js'
+import { createAIPlanningPanel } from './ai-planning-panel.js'
+import { releaseOwnedPlanningSession } from './ai-native-bridge.js'
 import { createCalendarView } from './calendar-view.js'
 import {
   STATUS_META, STATUS_KEYS, SETTLED, newId, visibleInBoard, buildTree, findNode,
@@ -11,7 +12,7 @@ import {
 /** Create stable component types once, using the host's shared React instance. */
 export function createTaskBoard(React, { ensureStyle, loadTasks, saveTasks, DomainPanel }) {
   const h = React.createElement
-  const GanttView = createGanttView(React), ScheduleEditor = createScheduleEditor(React), AISchedulePanel = createAISchedulePanel(React), CalendarView = createCalendarView(React)
+  const GanttView = createGanttView(React), ScheduleEditor = createScheduleEditor(React), AISchedulePanel = createAIPlanningPanel(React), CalendarView = createCalendarView(React)
   const paths = {
     plus: ['M12 5v14M5 12h14'], close: ['m6 6 12 12M18 6 6 18'],
     grid: ['M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z'],
@@ -159,10 +160,12 @@ export function createTaskBoard(React, { ensureStyle, loadTasks, saveTasks, Doma
     const planGuardRef = React.useRef(null), ganttState = React.useRef(new Map()), calendarState = React.useRef({})
     const [planAutoOpen, setPlanAutoOpen] = React.useState(false), [aiScope, setAIScope] = React.useState(undefined)
     const [aiImportNonce, setAIImportNonce] = React.useState(0)
+    const aiPlanningState = React.useRef(null), [aiChart, setAIChart] = React.useState(null)
+    const aiChartScope = React.useCallback(scopeId => setView({ name: 'gantt', scopeId }), [])
 
     React.useEffect(() => {
       mounted.current = true
-      return () => { mounted.current = false; dragCleanup.current?.(); }
+      return () => { mounted.current = false; dragCleanup.current?.(); releaseOwnedPlanningSession(aiPlanningState.current) }
     }, [])
     React.useEffect(() => {
       let alive = true
@@ -303,11 +306,13 @@ export function createTaskBoard(React, { ensureStyle, loadTasks, saveTasks, Doma
     }
     const openGantt = async (scopeId = null) => {
       if (!await canLeave()) return false
+      setAIScope(undefined); setAIChart(null)
       dragCleanup.current?.(); setMenu(null); setView({ name: 'gantt', scopeId: scopeId || null })
       return true
     }
     const openCalendar = async (scopeId = null) => {
       if (!await canLeave()) return false
+      setAIScope(undefined); setAIChart(null)
       dragCleanup.current?.(); setMenu(null); setView({ name: 'calendar', scopeId: scopeId || null })
       return true
     }
@@ -315,9 +320,11 @@ export function createTaskBoard(React, { ensureStyle, loadTasks, saveTasks, Doma
       if (!await canLeave()) return
       dragCleanup.current?.(); setMenu(null); returnFocus.current = document.activeElement
       setAIImportNonce(value => importReply ? value + 1 : 0); setAIScope(scopeId || null)
+      setChatOpen(false); setView({ name: 'gantt', scopeId: scopeId || null })
     }
     const goBoard = async () => {
       if (!await canLeave()) return
+      setAIScope(undefined); setAIChart(null)
       dragCleanup.current?.(); setMenu(null); setView({ name: 'board' })
     }
     const showAdd = id => {
@@ -667,7 +674,7 @@ export function createTaskBoard(React, { ensureStyle, loadTasks, saveTasks, Doma
       try { await provider.newWorkspaceSession() } catch (problem) { setError(problem.message || '创建会话失败。') } finally { setChatBusy(false) }
     }
     const noVisibleConversation = !conversation || conversation?.props?.style?.display === 'none'
-    return h('div', { className: `tbRoot${view.name === 'task' ? ' tbRootDetail' : ''}`, ref: rootRef },
+    return h('div', { className: `tbRoot${view.name === 'task' ? ' tbRootDetail' : ''}${aiScope !== undefined ? ' tbRootPlanning' : ''}`, ref: rootRef },
       h('header', { className: 'tbBar', ref: barRef }, h('strong', { className: 'tbBarTitle' }, entry?.panelTitle || entry?.title || '任务栏'),
         h('nav', { className: 'tbViewNav', 'aria-label': '任务栏视图' },
           h('button', { type: 'button', className: `tbViewTab${view.name === 'board' ? ' tbViewTabActive' : ''}`, 'aria-current': view.name === 'board' ? 'page' : undefined, onClick: goBoard }, '总览'),
@@ -676,13 +683,13 @@ export function createTaskBoard(React, { ensureStyle, loadTasks, saveTasks, Doma
         view.name === 'task' ? h('span', { className: 'tbBarPage' }, '任务详情') : null, h('span', { className: 'tbGrow' }),
         pending ? h('span', { className: 'tbSub', role: 'status' }, '保存中…') : null,
         h('div', { className: 'tbBarActions' }, view.name === 'board' ? h('button', { className: 'tbBtn tbGhost', type: 'button', 'aria-pressed': showHistory, onClick: () => setShowHistory(value => !value) }, icon('history'), showHistory ? '隐藏往日结算' : '查询历史') : null,
-          h('button', { className: 'tbBtn', type: 'button', 'aria-expanded': chatOpen, 'aria-controls': 'tb-native-chat', onClick: () => setChatOpen(value => !value) }, icon('chat'), 'AI 会话'),
+          h('button', { className: 'tbBtn', type: 'button', 'aria-expanded': chatOpen, 'aria-controls': 'tb-native-chat', onClick: () => { if (!chatOpen) { setAIScope(undefined); setAIChart(null) } setChatOpen(value => !value) } }, icon('chat'), 'AI 会话'),
           h('button', { className: 'tbBtn tbBtnPrimary', type: 'button', disabled, onClick: () => startCreate() }, icon('plus'), '新建任务'))),
       view.name === 'board' ? renderBoard() : view.name === 'gantt' ? h('div', { className: 'tbGanttPage' },
         error && !dialog ? h('div', { className: 'tbErr', role: 'alert' }, error) : null,
         loading ? h('div', { className: 'tbEmpty' }, '正在读取任务…') : null,
         !loading && !hydrated ? h('button', { className: 'tbBtn', type: 'button', onClick: () => setLoadKey(value => value + 1) }, '重新加载') : null,
-        h(GanttView, { tasks, commit, active, scopeId: view.scopeId || null, onTask: id => openTask(id), onEditPlan: id => openTask(id, { editPlan: true }),
+        h(GanttView, { tasks, commit, active, planning: aiScope !== undefined, proposal: aiScope !== undefined ? aiChart : null, scopeId: view.scopeId || null, onTask: id => openTask(id), onEditPlan: id => openTask(id, { editPlan: true }),
           onAI: () => openAI(view.scopeId), onScopeAll: () => openGantt(null), disabled, stateRef: ganttState }))
         : view.name === 'calendar' ? h('div', { className: 'tbCalendarPage' },
           error && !dialog ? h('div', { className: 'tbErr', role: 'alert' }, error) : null,
@@ -701,7 +708,9 @@ export function createTaskBoard(React, { ensureStyle, loadTasks, saveTasks, Doma
             h('button', { className: 'tbBtn', type: 'button', disabled: chatBusy, onClick: startChat }, chatBusy ? '正在创建…' : '新建工作区并开始会话')) : null)),
       renderPopover(), renderDialog(),
       aiScope !== undefined ? h(AISchedulePanel, { tasks, initialScopeId: aiScope, service: aiService || service, commit, disabled, importNonce: aiImportNonce,
-        onOpenChat: () => setChatOpen(true), onClose: () => { setAIScope(undefined); requestAnimationFrame(() => returnFocus.current?.isConnected && returnFocus.current.focus()) } }) : null,
+        stateRef: aiPlanningState, onPreviewChange: setAIChart, onScopeChange: aiChartScope,
+        onOpenChat: () => { setChatOpen(true); setAIScope(undefined); setAIChart(null) },
+        onClose: () => { setAIScope(undefined); setAIChart(null); requestAnimationFrame(() => returnFocus.current?.isConnected && returnFocus.current.focus()) } }) : null,
     )
   }
 }

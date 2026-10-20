@@ -1,5 +1,6 @@
 import { GANTT_CSS } from './gantt-styles.js'
 import { AI_SCHEDULE_CSS } from './ai-schedule-styles.js'
+import { AI_PLANNING_CSS } from './ai-planning-styles.js'
 import { CALENDAR_CSS } from './calendar-styles.js'
 
 export const WORKBENCH_CSS = `
@@ -129,6 +130,7 @@ export const WORKBENCH_CSS = `
 @container tb-body (max-width:520px){.tbViewTab{padding:1px 7px}.tbPlanDates{grid-template-columns:minmax(0,1fr)}.tbPlanOverview{flex-wrap:wrap}.tbPlanCard{padding:12px}}
 ${GANTT_CSS}
 ${AI_SCHEDULE_CSS}
+${AI_PLANNING_CSS}
 ${CALENDAR_CSS}
 @media(prefers-reduced-motion:reduce){.tbRoot *{scroll-behavior:auto!important}}
 `

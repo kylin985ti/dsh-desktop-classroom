@@ -87,4 +87,4 @@ Tavily：通过 DSH 凭据/设置界面配置自己的 `TAVILY_API_KEY`，将原
 
 ## 可选：任务栏工作台源码
 
-`classroom.json.workbenches` 另列任务栏工作台 1.7.1，源码与必要前端构建产物位于 `workbenches/task-board`；默认九插件安装器不会安装或启用它。需要时按 [单独构建与安装](docs/TASK_BOARD.md) 操作，不改用户现有任务、profile 或运行中的 DSH。
+`classroom.json.workbenches` 另列任务栏工作台 1.8.1，源码与必要前端构建产物位于 `workbenches/task-board`；默认九插件安装器不会安装或启用它。需要时按 [单独构建与安装](docs/TASK_BOARD.md) 操作，不改用户现有任务、profile 或运行中的 DSH。
