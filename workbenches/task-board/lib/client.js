@@ -231,6 +231,53 @@ button.tbGanttEmptyPlan:hover:not([disabled]){background:var(--tb-accent-soft);c
 @container tb-body (max-width:600px){.tbAIShade{padding:10px}.tbAIHeader{padding:16px;gap:10px}.tbAIBody{padding:14px 16px 18px;gap:15px}.tbAIFields{grid-template-columns:minmax(0,1fr)}.tbAIHeader h2{font-size:16px}}
 `;
 
+  // src/ai-planning-styles.js
+  var AI_PLANNING_CSS = `
+.tbRootPlanning{--tb-planning-width:370px}
+.tbRootPlanning>.tbGanttPage{margin-right:var(--tb-planning-width)}
+.tbPlanning{position:absolute;right:0;top:var(--tb-bar-h,60px);bottom:0;width:var(--tb-planning-width,370px);z-index:55;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--tb-surface);border-left:1px solid var(--tb-line);font-size:14px;line-height:1.7;overflow:hidden}
+.tbPlanningHeader{display:flex;align-items:center;gap:8px;padding:20px 20px 12px;flex:0 0 auto}
+.tbPlanningHeader h2{font-size:20px;line-height:1.5;margin:0;font-weight:650;letter-spacing:-.3px}.tbPlanningHeader h2:focus{outline:none}
+.tbPlanningHeader>.tbBtn{margin-left:auto}.tbPlanningBadge{font-size:11px;color:var(--tb-accent);background:var(--tb-accent-soft);padding:1px 7px;border-radius:5px;white-space:nowrap}
+.tbPlanningBody{padding:0 20px 20px;display:flex;flex-direction:column;gap:16px;min-height:0;min-width:0;overflow:auto;flex:1;overscroll-behavior:contain;overflow-wrap:anywhere;scrollbar-width:thin}.tbPlanningBody>*{flex-shrink:0}
+.tbPlanning[data-phase=idle] .tbPlanningBody{flex:0 1 auto}
+.tbPlanning p{margin:0}.tbPlanningWelcome{padding:7px 0 3px}.tbPlanningWelcome h3{font-size:17px;font-weight:600;margin:0 0 7px}.tbPlanningWelcome p{font-size:13px;color:var(--tb-secondary)}
+.tbPlanningLabel{display:flex;flex-direction:column;gap:8px;font-weight:550;font-size:13px;min-width:0}.tbPlanning .tbSelect,.tbPlanning .tbInput{width:100%;min-height:39px;font-size:13px!important}
+.tbPlanningHelp{font-size:12px;line-height:1.7;color:var(--tb-muted);font-weight:400;white-space:normal}
+.tbPlanningWorkspace{display:flex;flex-direction:column;gap:8px;padding:15px 0;border-top:1px solid var(--tb-line);border-bottom:1px solid var(--tb-line)}
+.tbPlanningCheck{display:flex;align-items:center;gap:9px;font-size:13px}.tbPlanning input[type=checkbox]{accent-color:var(--tb-accent);width:17px;height:17px;flex-shrink:0;margin:2px 0;cursor:pointer}
+.tbPlanningScanActions,.tbPlanningVersion{display:flex;align-items:center;gap:10px}.tbPlanningVersion .tbSelect{width:auto;min-width:110px}
+.tbPlanningLink{padding:4px 0;border:0;background:transparent;color:var(--tb-accent)!important;font-size:12px!important;line-height:1.6;text-align:left}
+.tbPlanningDetails{font-size:12px;color:var(--tb-secondary);min-width:0}.tbPlanningDetails summary{cursor:pointer;padding:4px 0;line-height:1.6}.tbPlanningDetails[open]>:not(summary){margin-top:9px}.tbPlanningDetails p{white-space:pre-wrap;font-size:12px;line-height:1.85}
+.tbPlanningDetails pre{max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:8px;background:var(--tb-canvas);font-size:11px}
+.tbPlanningMessages{display:flex;flex-direction:column;gap:12px}.tbPlanningMessage{white-space:pre-wrap;font-size:13px;line-height:1.8}.tbPlanningMessage-user{padding:9px 12px;background:var(--tb-hover);border-radius:8px;margin-left:18px!important}.tbPlanningMessage-assistant{padding-left:0;color:var(--tb-ink)}.tbPlanningMessage-system{color:var(--tb-secondary);font-size:12px}
+.tbPlanningErrors{padding:10px 12px;border-radius:6px;background:color-mix(in srgb,var(--tb-danger) 7%,var(--tb-surface));border:1px solid color-mix(in srgb,var(--tb-danger) 25%,var(--tb-line));color:var(--tb-danger);font-size:12px}.tbPlanningErrors p+p{margin-top:7px}.tbPlanningProgress,.tbPlanningNotice{font-size:12px;line-height:1.8;color:var(--tb-accent)}
+.tbPlanningSuggestions{display:flex;flex-direction:column;min-width:0}.tbPlanningSuggestions>header{display:flex;align-items:center;justify-content:space-between;gap:7px;padding:10px 0;border-top:1px solid var(--tb-line);border-bottom:1px solid var(--tb-line);font-size:13px}
+.tbPlanningSuggestion{display:flex;align-items:flex-start;gap:12px;min-width:0;padding:12px 0;border-bottom:1px solid var(--tb-subtle);cursor:pointer}.tbPlanningSuggestion>span{flex:1;min-width:0}.tbPlanningSuggestion[data-selected=false]{color:var(--tb-secondary)}
+.tbPlanningSuggestionName{display:flex;align-items:baseline;gap:10px;font-size:13px;line-height:1.7;overflow-wrap:anywhere}.tbPlanningSuggestionName small{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--tb-accent-soft);color:var(--tb-accent);white-space:nowrap;flex-shrink:0}.tbPlanningSuggestionName small[data-kind=\u65B0\u589E]{background:var(--tb-success-soft);color:var(--tb-success)}
+.tbPlanningSuggestionRange{display:block;font-size:11px;line-height:1.8;color:var(--tb-muted);margin-top:3px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.tbPlanningSuggestions>.tbPlanningDetails{padding-top:9px}.tbPlanningValid{padding-top:9px;font-size:12px;color:var(--tb-success)}
+.tbPlanningComposer{display:flex;flex:0 0 auto;flex-direction:column;gap:10px;min-width:0;padding:14px 20px 16px;border-top:1px solid var(--tb-line);background:var(--tb-surface)}.tbPlanningComposer .tbArea{width:100%;font-size:13px!important;line-height:1.85;min-height:78px;max-height:160px;resize:vertical;background:var(--tb-surface);padding:12px;border:1px solid var(--tb-line);border-radius:7px}.tbPlanning[data-phase=idle] .tbPlanningComposer .tbArea{min-height:130px}.tbPlanningComposer .tbArea::placeholder{color:var(--tb-muted)}
+.tbPlanningExamples{display:flex;gap:8px;flex-wrap:wrap}.tbPlanningExamples .tbBtn{border-radius:18px;font-size:11px!important}.tbPlanningGenerate{width:100%;min-height:42px;font-size:14px!important}.tbPlanning .tbPlanningGenerate:disabled{background:var(--tb-accent-soft);border-color:var(--tb-accent-soft);color:var(--tb-secondary)!important;opacity:1}
+.tbPlanningUpdate{align-self:flex-end}.tbPlanningComparison{padding:10px 12px;background:var(--tb-canvas);border-radius:6px;font-size:12px;display:flex;flex-direction:column;gap:7px}.tbPlanningAdvanced{padding-top:9px;border-top:1px solid var(--tb-subtle)}.tbPlanningAdvanced .tbBtn{margin:4px 6px 4px 0}.tbPlanningAdvanced textarea{width:100%;font-size:12px!important}
+.tbPlanningFooter{padding:14px 20px 17px;border-top:1px solid var(--tb-line);background:var(--tb-surface);display:flex;flex-direction:column;gap:10px;flex:0 0 auto}.tbPlanningFooter>.tbBtn{width:100%;min-height:44px;font-size:14px!important}.tbPlanningFooter>div{display:flex;justify-content:space-between;gap:10px}.tbPlanningFooter .tbPlanningLink{color:var(--tb-secondary)!important}
+.tbPlanningHeader h2{font-size:22px}.tbPlanningWelcome h3{font-size:18px}.tbPlanningWelcome p,.tbPlanningLabel,.tbPlanningCheck{font-size:14px}.tbPlanning .tbSelect{font-size:14px!important;min-height:42px}.tbPlanningMessage{font-size:14px}.tbPlanningSuggestionName{font-size:14px}.tbPlanningSuggestionRange{font-size:12px}.tbPlanningSuggestions>header{font-size:14px}.tbPlanning input[type=checkbox]{width:19px;height:19px}.tbPlanningComposer .tbArea{font-size:14px!important;max-height:220px}.tbPlanning[data-phase=idle] .tbPlanningComposer .tbArea{min-height:180px}.tbPlanningFooter>.tbBtn{min-height:46px;font-size:15px!important}
+/* Keep the graph useful next to the planning sidebar: dates remain in bars/tooltips. */
+.tbRootPlanning .tbGantt,.tbRootPlanning .tbGantt[data-has-owners=false]{--tb-gantt-left:220px;padding:18px 18px 14px}
+.tbRootPlanning .tbGantt .tbGanttCanvas{--tb-gantt-left:220px}
+.tbRootPlanning .tbGanttLeft,.tbRootPlanning .tbGantt[data-has-owners=false] .tbGanttLeft{grid-template-columns:minmax(0,1fr);grid-template-areas:"task"}
+.tbRootPlanning .tbGanttOwner,.tbRootPlanning .tbGanttOwnerHead,.tbRootPlanning .tbGanttDatesCell,.tbRootPlanning .tbGanttDatesHead,.tbRootPlanning .tbGanttCompactOwnerHead{display:none}
+.tbRootPlanning .tbGanttScopeTitle{font-size:24px;line-height:36px}.tbRootPlanning .tbGanttRange{font-size:11px}.tbRootPlanning .tbGanttActions{gap:5px}.tbRootPlanning .tbGanttHowTo,.tbRootPlanning .tbGanttEditSlot{display:none}.tbRootPlanning .tbGanttTaskTitle{font-size:14px!important}
+.tbRootPlanning .tbGanttDayNumber{font-size:12px;line-height:17px}.tbRootPlanning .tbGanttWeekday{font-size:10px;line-height:13px}.tbRootPlanning .tbGanttMonth{font-size:11px}.tbRootPlanning .tbGanttBar,.tbRootPlanning .tbGanttSummary{top:calc((var(--tb-gantt-row-height) - 25px)/2);font-size:12px!important}.tbRootPlanning .tbGanttSummary{--tb-gantt-status:var(--tb-accent)}.tbRootPlanning .tbGanttSummary .tbGanttBarLabel{display:none}
+.tbGanttProposalBanner{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 12px;margin-bottom:10px;background:var(--tb-accent-soft);border-radius:6px;font-size:11px;color:var(--tb-accent)}.tbGanttProposalBanner strong{font-size:12px}.tbGanttProposalLegend{display:flex;gap:10px;margin-left:auto;color:var(--tb-secondary);font-size:10px}.tbGanttProposalLegend i{display:inline-block;width:19px;height:6px;margin-right:4px;border-radius:2px;background:var(--tb-accent)}.tbGanttProposalLegend i[data-kind=new]{background:var(--tb-success)}.tbGanttProposalLegend i[data-kind=before]{height:0;border-top:1px dashed var(--tb-muted);background:none}
+.tbGanttRow[data-proposal=change] .tbGanttBar,.tbGanttRow[data-proposal=rollup] .tbGanttSummary{background:color-mix(in srgb,var(--tb-accent) 48%,var(--tb-surface));border-color:var(--tb-accent);color:var(--tb-ink)}
+.tbGanttRow[data-proposal=new]{--tb-gantt-status:var(--tb-success)!important}.tbGanttRow[data-proposal=new] .tbGanttBar{background:var(--tb-success);border-color:var(--tb-success);color:white}.tbGanttRow[data-proposal=new] .tbGanttSummary{--tb-gantt-status:var(--tb-success);border-color:var(--tb-success);background:color-mix(in srgb,var(--tb-success) 25%,var(--tb-surface))}
+.tbGanttRow[data-proposal-selected=false] .tbGanttBar,.tbGanttRow[data-proposal-selected=false] .tbGanttSummary{opacity:.4;border-style:dashed;background:var(--tb-hover);color:var(--tb-secondary)}.tbGanttRow[data-proposal-selected=false] .tbGanttTaskTitle{color:var(--tb-secondary)}
+.tbGanttProposalGhost{position:absolute;height:18px;top:6px;border:1px dashed var(--tb-muted);border-radius:3px;background:transparent;pointer-events:none;opacity:.8}.tbGanttProposalGhost[data-deadline=true]{width:9px!important;height:9px;transform:rotate(45deg);top:8px}.tbGanttProposalTag{font-size:9px;line-height:15px;border-radius:3px;padding:0 3px;flex:0 0 auto;color:var(--tb-success);background:var(--tb-success-soft)}
+@container tb-body (max-width:1050px){.tbRootPlanning>.tbGanttPage{margin-right:340px}.tbPlanning{width:340px}.tbRootPlanning .tbGantt,.tbRootPlanning .tbGantt[data-has-owners=false]{--tb-gantt-left:180px;padding-left:12px;padding-right:12px}.tbRootPlanning .tbGantt .tbGanttCanvas{--tb-gantt-left:180px}.tbPlanningHeader{padding:16px 16px 10px}.tbPlanningBody{padding:0 16px 16px;gap:13px}.tbPlanningComposer{padding:12px 16px}.tbPlanningFooter{padding:12px 16px}.tbPlanningHeader h2{font-size:18px}}
+@container tb-body (max-width:760px){.tbRootPlanning>.tbGanttPage{margin-right:0}.tbPlanning{width:min(360px,100%);box-shadow:-5px 0 20px #26365a12}.tbPlanningBody{gap:12px}.tbPlanningHeader h2{font-size:18px}}
+@container tb-body (max-width:420px){.tbPlanning{width:100%;border-left:0}.tbPlanningHeader{padding-top:12px}.tbPlanningFooter{padding-top:10px;padding-bottom:10px}}
+`;
+
   // dsh/schedule-model.js
   var DAY_MS = 864e5;
   var own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
@@ -1194,6 +1241,7 @@ button.tbGanttEmptyPlan:hover:not([disabled]){background:var(--tb-accent-soft);c
 @container tb-body (max-width:520px){.tbViewTab{padding:1px 7px}.tbPlanDates{grid-template-columns:minmax(0,1fr)}.tbPlanOverview{flex-wrap:wrap}.tbPlanCard{padding:12px}}
 ${GANTT_CSS}
 ${AI_SCHEDULE_CSS}
+${AI_PLANNING_CSS}
 ${CALENDAR_CSS}
 @media(prefers-reduced-motion:reduce){.tbRoot *{scroll-behavior:auto!important}}
 `;
@@ -1493,7 +1541,8 @@ ${CALENDAR_CSS}
         (paths[name] || []).map((d, index) => h("path", { key: index, d }))
       );
     }
-    function GanttView({ tasks = [], scopeId = null, onTask, onEditPlan, onAI, onScopeAll, commit, active = true, disabled = false, stateRef }) {
+    function GanttView({ tasks = [], scopeId = null, onTask: onTaskProp, onEditPlan: onEditPlanProp, onAI, onScopeAll, commit, active = true, disabled = false, stateRef, proposal = null, planning = false }) {
+      const onTask = planning ? void 0 : onTaskProp, onEditPlan = planning ? void 0 : onEditPlanProp;
       const localStateRef = React.useRef(null);
       const holder = stateRef || localStateRef;
       if (!(holder.current instanceof Map)) holder.current = /* @__PURE__ */ new Map();
@@ -1502,7 +1551,7 @@ ${CALENDAR_CSS}
       const state = scopeState(store, scopeKey);
       const showCompleted = state.showCompleted === true;
       const rootRef = React.useRef(null), viewportRef = React.useRef(null), leftHeadRef = React.useRef(null);
-      const tooltipRef = React.useRef(null), frameRef = React.useRef(null), pendingJumpRef = React.useRef(null);
+      const tooltipRef = React.useRef(null), frameRef = React.useRef(null), pendingJumpRef = React.useRef(null), proposalFocusRef = React.useRef(null);
       const latestScopeRef = React.useRef(scopeKey);
       latestScopeRef.current = scopeKey;
       const [, redraw] = React.useReducer((value) => value + 1, 0);
@@ -1513,29 +1562,51 @@ ${CALENDAR_CSS}
       const gestureRef = React.useRef(null), clickBlockRef = React.useRef(null), mountedRef = React.useRef(true);
       const liveRef = React.useRef(null);
       const tooltipId = `tb-gantt-tooltip-${React.useId()}`;
-      const allTasks = Array.isArray(tasks) ? tasks : [];
-      liveRef.current = { tasks: allTasks, commit, disabled: disabled || editBusy || !active };
+      const allTasks = proposal?.tasks || (Array.isArray(tasks) ? tasks : []);
+      liveRef.current = { tasks: allTasks, commit, disabled: disabled || editBusy || !active || planning };
       const scopedTasks = React.useMemo(() => {
         if (scopeKey === null) return allTasks;
         const ids = subtreeIds(allTasks, scopeKey);
         return allTasks.filter((task) => ids.has(task.id));
       }, [allTasks, scopeKey]);
       const tree = React.useMemo(() => buildTree(scopedTasks), [scopedTasks]);
-      const schedules = React.useMemo(() => getSchedules(scopedTasks), [scopedTasks]);
+      const schedules = React.useMemo(() => proposal?.schedules || getSchedules(scopedTasks), [scopedTasks, proposal]);
       const drawingSchedules = React.useMemo(() => editPreview?.candidate ? getSchedules(editPreview.candidate) : schedules, [schedules, editPreview]);
       const displayedTasks = React.useMemo(() => visibleRows(tree, /* @__PURE__ */ new Set(), showCompleted).map((row) => row.task), [tree, showCompleted]);
       const rows = visibleRows(tree, state.collapsed, showCompleted);
       const hiddenCount = scopedTasks.length - displayedTasks.length;
       const today2 = dateToDay(todayDate());
-      const range = React.useMemo(() => chartRange(displayedTasks, schedules, today2), [displayedTasks, schedules, today2]);
+      const range = React.useMemo(() => {
+        const value = chartRange(displayedTasks, schedules, today2);
+        if (proposal) for (const task of displayedTasks) {
+          const difference = proposal.differences.get(task.id);
+          for (const plan of [difference?.before, difference?.after]) for (const date3 of [plan?.start, plan?.end]) {
+            const day = dateToDay(date3);
+            if (day !== null) {
+              value.start = Math.max(MIN_DAY2, Math.min(value.start, day - 7));
+              value.end = Math.min(MAX_DAY2, Math.max(value.end, day + 7));
+            }
+          }
+        }
+        return value;
+      }, [displayedTasks, schedules, today2, proposal]);
       const visibleWidth = Math.max(0, geometry.width - geometry.sticky);
-      const dayCount = Math.min(MAX_DAY2 - range.start + 1, Math.max(range.end - range.start + 1, Math.ceil(visibleWidth / DAY_WIDTH), 1));
-      const trackWidth = Math.min(dayCount * DAY_WIDTH, MAX_TRACK_WIDTH);
+      const preferredDayWidth = planning ? 42 : DAY_WIDTH, rowHeight = planning ? 72 : ROW_HEIGHT;
+      const dayCount = Math.min(MAX_DAY2 - range.start + 1, Math.max(range.end - range.start + 1, Math.ceil(visibleWidth / preferredDayWidth), 1));
+      const trackWidth = Math.min(dayCount * preferredDayWidth, MAX_TRACK_WIDTH);
       const dayWidth = trackWidth / dayCount;
       const endDay = range.start + dayCount - 1;
       const hasOwners = displayedTasks.some((task) => ownerOf(task));
       const scopedTask = scopeKey === null ? null : scopedTasks.find((task) => task.id === scopeKey);
       const scopeLabel = scopeKey === null ? "\u5168\u90E8\u4EFB\u52A1" : scopedTask ? titleOf(scopedTask) : "\u5F53\u524D\u4EFB\u52A1";
+      const planningDays = planning ? displayedTasks.filter((task) => {
+        const change = proposal?.differences.get(task.id);
+        return change?.kind !== "new" || change.selected;
+      }).flatMap((task) => {
+        const schedule = schedules.get(task.id);
+        return [dateToDay(schedule?.start), dateToDay(schedule?.end)].filter((day) => day !== null);
+      }) : [];
+      const planningRangeLabel = planningDays.length ? `${dayParts(Math.min(...planningDays)).date} \u2014 ${dayParts(Math.max(...planningDays)).date}` : "\u5C1A\u672A\u5B89\u6392\u65E5\u671F";
       const parentById = React.useMemo(() => new Map(scopedTasks.map((task) => [task.id, task.parentId])), [scopedTasks]);
       function clearGesture() {
         const gesture = gestureRef.current;
@@ -1759,18 +1830,18 @@ ${CALENDAR_CSS}
       }, [measure]);
       function savePosition() {
         const element = viewportRef.current;
-        if (!element) return;
+        if (!element?.clientWidth) return;
         state.scrollLeft = element.scrollLeft;
         state.scrollTop = element.scrollTop;
         state.anchorDay = range.start + element.scrollLeft / dayWidth;
       }
       function scrollToDay(day, rowIndex = null) {
         const element = viewportRef.current;
-        if (!element || day === null) return;
+        if (!element?.clientWidth || day === null) return;
         const leftWidth = leftHeadRef.current?.getBoundingClientRect().width || 0;
         const available = Math.max(0, element.clientWidth - leftWidth);
         element.scrollLeft = clamp((day - range.start) * dayWidth - available * 0.2, 0, trackWidth - available);
-        if (rowIndex !== null) element.scrollTop = Math.max(0, rowIndex * ROW_HEIGHT);
+        if (rowIndex !== null) element.scrollTop = Math.max(0, rowIndex * rowHeight);
         savePosition();
         measure();
         setTooltip(null);
@@ -1832,7 +1903,7 @@ ${CALENDAR_CSS}
       }, [measure, queueMeasure]);
       useLayoutEffect(() => {
         const element = viewportRef.current;
-        if (!element) return void 0;
+        if (!element?.clientWidth) return void 0;
         const leftWidth = leftHeadRef.current?.getBoundingClientRect().width || 0;
         const available = Math.max(0, element.clientWidth - leftWidth);
         const savedDay = Number.isFinite(state.anchorDay) ? state.anchorDay : null;
@@ -1844,7 +1915,7 @@ ${CALENDAR_CSS}
         measure();
         setTooltip(null);
         return () => {
-          if (latestScopeRef.current === scopeKey && element.isConnected) {
+          if (latestScopeRef.current === scopeKey && element.isConnected && element.clientWidth) {
             state.scrollLeft = element.scrollLeft;
             state.scrollTop = element.scrollTop;
           }
@@ -1855,6 +1926,17 @@ ${CALENDAR_CSS}
         if (!jump || jump.key !== scopeKey) return;
         pendingJumpRef.current = null;
         scrollToDay(jump.day, Math.max(0, rows.findIndex((row) => row.task.id === jump.id)));
+      });
+      useLayoutEffect(() => {
+        if (!planning || !proposal) {
+          proposalFocusRef.current = null;
+          return;
+        }
+        const key = JSON.stringify([scopeKey, proposal.version]);
+        if (proposalFocusRef.current === key || !viewportRef.current?.clientWidth) return;
+        const days = [...proposal.differences.values()].filter((change) => change.selected && change.kind !== "rollup").flatMap((change) => [change.before?.start, change.before?.end, change.after?.start, change.after?.end]).map(dateToDay).filter((day) => day !== null);
+        proposalFocusRef.current = key;
+        if (days.length) scrollToDay(Math.min(...days));
       });
       function tooltipPosition(anchor) {
         const root = rootRef.current;
@@ -1959,9 +2041,10 @@ ${CALENDAR_CSS}
         "--tb-gantt-day": `${dayWidth}px`,
         "--tb-gantt-week": `${dayWidth * 7}px`,
         "--tb-gantt-week-shift": `${weekShift}px`,
-        "--tb-gantt-row-height": `${ROW_HEIGHT}px`
+        "--tb-gantt-row-height": `${rowHeight}px`
       };
       function renderRow({ task, depth, outline, group, parentTitle }, rowIndex) {
+        const difference = proposal?.differences.get(task.id);
         const schedule = drawingSchedules.get(task.id), plan = planOf(schedule);
         const meta = STATUS_META[task.status] || STATUS_META.todo;
         const owner = ownerOf(task), title = titleOf(task), children = task.children || [];
@@ -1973,7 +2056,7 @@ ${CALENDAR_CSS}
         const startText = schedule?.start || "", endText = schedule?.end || "";
         const dateLabel2 = `\u7F16\u8F91\u6392\u671F\uFF1A${title}\u3002\u5F00\u59CB\uFF1A${startText || "\u672A\u8BBE\u7F6E"}\uFF0C\u5B8C\u6210\uFF1A${endText || "\u672A\u8BBE\u7F6E"}${auto ? "\uFF0C\u5F53\u524D\u4E3A\u5B50\u4EFB\u52A1\u81EA\u52A8\u6C47\u603B" : ""}`;
         const rowStyle = { "--tb-gantt-status": meta.color, "--tb-gantt-depth": depth };
-        const editable = typeof commit === "function" && !disabled && !editBusy && active;
+        const editable = typeof commit === "function" && !disabled && !editBusy && active && !planning;
         const editing = editPreview?.session.id === task.id;
         const controlProps = (kind) => ({
           onPointerDown: (event) => startPointerEdit(event, task, kind),
@@ -1998,7 +2081,7 @@ ${CALENDAR_CSS}
                 className: auto ? "tbGanttSummary" : "tbGanttBar",
                 type: tag === "button" ? "button" : void 0,
                 style: { left, width },
-                "aria-label": `\u6253\u5F00\u4EFB\u52A1\uFF1A${title}\uFF0C${startText}\u81F3${endText}\uFF0C${plan.duration}\u5929\uFF0C${meta.label}${auto ? "\uFF0C\u5B50\u4EFB\u52A1\u81EA\u52A8\u6C47\u603B" : ""}`,
+                "aria-label": `${planning ? "\u9884\u89C8\u4EFB\u52A1" : "\u6253\u5F00\u4EFB\u52A1"}\uFF1A${title}\uFF0C${startText}\u81F3${endText}\uFF0C${plan.duration}\u5929\uFF0C${meta.label}${auto ? "\uFF0C\u5B50\u4EFB\u52A1\u81EA\u52A8\u6C47\u603B" : ""}`,
                 "data-editable": editable ? "true" : "false",
                 title: editable ? "\u62D6\u52A8\u6A2A\u6761\u5E73\u79FB\u8BA1\u5212\uFF1BAlt + \u5DE6\u53F3\u952E\u8C03\u6574\uFF0CEnter \u4FDD\u5B58\uFF0CEsc \u53D6\u6D88" : void 0,
                 onClick: tag === "button" ? (event) => barClick(event, task.id) : void 0,
@@ -2033,7 +2116,7 @@ ${CALENDAR_CSS}
               className: "tbGanttDeadline",
               type: tag === "button" ? "button" : void 0,
               style: { left },
-              "aria-label": `\u6253\u5F00\u622A\u6B62\u4EFB\u52A1\uFF1A${title}\uFF0C\u622A\u6B62${endText}\uFF0C${meta.label}`,
+              "aria-label": `${planning ? "\u9884\u89C8\u622A\u6B62\u4EFB\u52A1" : "\u6253\u5F00\u622A\u6B62\u4EFB\u52A1"}\uFF1A${title}\uFF0C\u622A\u6B62${endText}\uFF0C${meta.label}`,
               "data-editable": editable ? "true" : "false",
               onClick: tag === "button" ? (event) => barClick(event, task.id) : void 0,
               ...tooltipProps(task, schedule),
@@ -2062,6 +2145,8 @@ ${CALENDAR_CSS}
         }
         const titleTag = typeof onTask === "function" ? "button" : "span";
         const dateTag = typeof onEditPlan === "function" ? "button" : "span";
+        const ghost = difference && (difference.selected ? difference.before : difference.after);
+        const ghostPlan = ghost ? planOf(ghost) : null;
         return h(
           "div",
           {
@@ -2078,6 +2163,8 @@ ${CALENDAR_CSS}
             "data-plan-kind": plan.kind,
             "data-status": task.status,
             "data-depth": depth,
+            "data-proposal": difference?.kind,
+            "data-proposal-selected": difference ? String(difference.selected) : void 0,
             "data-auto": auto ? "true" : "false",
             style: rowStyle
           },
@@ -2104,10 +2191,11 @@ ${CALENDAR_CSS}
               h(titleTag, {
                 className: "tbGanttTaskTitle",
                 type: titleTag === "button" ? "button" : void 0,
-                "aria-label": `\u6253\u5F00\u4EFB\u52A1\uFF1A${title}`,
+                "aria-label": `${planning ? "\u9884\u89C8\u4EFB\u52A1" : "\u6253\u5F00\u4EFB\u52A1"}\uFF1A${title}`,
                 onClick: titleTag === "button" ? () => navigate(onTask, task.id) : void 0,
                 ...tooltipProps(task, schedule)
               }, title),
+              difference?.kind === "new" ? h("span", { className: "tbGanttProposalTag" }, difference.selected ? "\u65B0\u589E" : "\u672A\u9009") : null,
               children.length ? h("span", { className: "tbGanttParentBadge", title: `${children.length} \u4E2A\u76F4\u63A5\u4E0B\u7EA7\uFF1B\u6298\u53E0\u7BAD\u5934\u53EF\u5C55\u5F00\u6216\u6536\u8D77` }, "\u9879\u76EE") : null,
               partialChildren ? h("span", {
                 className: "tbGanttPartialBadge",
@@ -2147,6 +2235,15 @@ ${CALENDAR_CSS}
           h(
             "div",
             { className: "tbGanttTimeline", role: "cell" },
+            ghostPlan?.kind === "bar" || ghostPlan?.kind === "deadline" ? h("span", {
+              className: "tbGanttProposalGhost",
+              "data-deadline": ghostPlan.kind === "deadline" ? "true" : void 0,
+              "aria-label": `${difference.selected ? "\u539F\u8BA1\u5212" : "\u672A\u63A5\u53D7\u5EFA\u8BAE"}\uFF1A${title}\uFF0C${ghost.start || "\u672A\u8BBE\u7F6E"}\u81F3${ghost.end || "\u672A\u8BBE\u7F6E"}`,
+              style: {
+                left: ((ghostPlan.start ?? ghostPlan.end) - range.start) * dayWidth + 3,
+                width: Math.max(6, (ghostPlan.duration || 1) * dayWidth - 6)
+              }
+            }) : null,
             graphic,
             editing && editPreview.error && editPreview.range ? h("span", {
               className: "tbGanttInvalidGhost",
@@ -2189,15 +2286,15 @@ ${CALENDAR_CSS}
             h(
               "div",
               { className: "tbGanttScopeLine" },
-              h("h2", { className: "tbGanttScopeTitle", title: `\u8303\u56F4\uFF1A${scopeLabel}` }, `\u8303\u56F4\uFF1A${scopeLabel}`),
+              h("h2", { className: "tbGanttScopeTitle", title: `\u8303\u56F4\uFF1A${scopeLabel}` }, planning ? scopeLabel : `\u8303\u56F4\uFF1A${scopeLabel}`),
               h("span", { className: "tbGanttCount" }, `${displayedTasks.length} \u9879`)
             ),
             h(
               "div",
               { className: "tbGanttRange" },
-              h("span", null, showCompleted ? scopeKey === null ? "\u542B\u5168\u90E8\u5386\u53F2\u8BB0\u5F55" : "\u5F53\u524D\u4EFB\u52A1\u4E0E\u5168\u90E8\u4E0B\u7EA7" : "\u5DF2\u9690\u85CF\u5DF2\u5B8C\u6210\u4EFB\u52A1\u53CA\u5176\u4E0B\u7EA7"),
+              h("span", null, planning ? proposal ? "\u6240\u9009\u65B9\u6848" : "\u5F53\u524D\u8BA1\u5212" : showCompleted ? scopeKey === null ? "\u542B\u5168\u90E8\u5386\u53F2\u8BB0\u5F55" : "\u5F53\u524D\u4EFB\u52A1\u4E0E\u5168\u90E8\u4E0B\u7EA7" : "\u5DF2\u9690\u85CF\u5DF2\u5B8C\u6210\u4EFB\u52A1\u53CA\u5176\u4E0B\u7EA7"),
               h("span", { "aria-hidden": true }, "\xB7"),
-              h("span", null, `${dayParts(range.start).date} \u2014 ${dayParts(endDay).date}`)
+              h("span", null, planning ? planningRangeLabel : `${dayParts(range.start).date} \u2014 ${dayParts(endDay).date}`)
             )
           ),
           h(
@@ -2210,7 +2307,7 @@ ${CALENDAR_CSS}
               title: "\u663E\u793A\u6216\u9690\u85CF\u5DF2\u5B8C\u6210\u4EFB\u52A1\u53CA\u5176\u4E0B\u7EA7\uFF1B\u4E0D\u4FEE\u6539\u4EFB\u52A1\u72B6\u6001\u548C\u8BA1\u5212",
               onClick: toggleCompleted
             }, "\u663E\u793A\u5DF2\u5B8C\u6210"),
-            scopeKey !== null && typeof onScopeAll === "function" ? h("button", {
+            scopeKey !== null && typeof onScopeAll === "function" && !planning ? h("button", {
               type: "button",
               className: "tbGanttControl tbGanttScopeAll",
               "aria-label": "\u8FD4\u56DE\u5168\u90E8\u4EFB\u52A1\u7518\u7279\u56FE",
@@ -2225,7 +2322,7 @@ ${CALENDAR_CSS}
               disabled: range.firstDay === null,
               onClick: locatePlan
             }, h(Icon, { name: "locate" }), "\u5B9A\u4F4D\u6392\u671F"),
-            typeof onAI === "function" ? h("button", {
+            typeof onAI === "function" && !planning ? h("button", {
               type: "button",
               className: "tbGanttControl tbGanttAI",
               "aria-label": "AI\u8F85\u52A9\u6392\u671F",
@@ -2234,10 +2331,24 @@ ${CALENDAR_CSS}
             }, h(Icon, { name: "ai" }), "AI\u8F85\u52A9\u6392\u671F") : null
           )
         ),
+        proposal ? h(
+          "div",
+          { className: "tbGanttProposalBanner", "aria-label": "\u56FE\u4E0A\u65B9\u6848\u9884\u89C8" },
+          h("strong", null, `AI \u65B9\u6848\u9884\u89C8 \xB7 \u7B2C ${proposal.version} \u7248`),
+          h("span", null, `\u5DF2\u9009 ${proposal.selectedCount} / ${proposal.totalCount} \u9879`),
+          h("span", null, proposal.errors.length ? "\u8BF7\u5148\u5904\u7406\u65B9\u6848\u51B2\u7A81" : "\u672A\u786E\u8BA4\uFF0C\u5C1A\u672A\u4FEE\u6539\u4EFB\u52A1"),
+          h(
+            "div",
+            { className: "tbGanttProposalLegend" },
+            h("span", null, h("i", { "data-kind": "before" }), "\u539F\u8BA1\u5212"),
+            h("span", null, h("i"), "\u5EFA\u8BAE\u6539\u671F"),
+            h("span", null, h("i", { "data-kind": "new" }), "\u65B0\u589E\u4EFB\u52A1")
+          )
+        ) : null,
         h(
           "div",
           { className: "tbGanttHowTo" },
-          h("span", null, "\u62D6\u52A8\u6A2A\u6761\u79FB\u52A8\u8BA1\u5212 \xB7 \u62D6\u52A8\u4E24\u7AEF\u6539\u8D77\u6B62 \xB7 \u7F16\u53F7\u4E0E\u8FDE\u7EBF\u8868\u793A\u4E0A\u4E0B\u7EA7"),
+          h("span", null, planning ? "\u5148\u751F\u6210\u9884\u89C8\uFF0C\u5728\u4FA7\u680F\u9009\u62E9\u63A5\u53D7\uFF1B\u786E\u8BA4\u540E\u624D\u4FDD\u5B58\u8BA1\u5212\u3002" : "\u62D6\u52A8\u6A2A\u6761\u79FB\u52A8\u8BA1\u5212 \xB7 \u62D6\u52A8\u4E24\u7AEF\u6539\u8D77\u6B62 \xB7 \u7F16\u53F7\u4E0E\u8FDE\u7EBF\u8868\u793A\u4E0A\u4E0B\u7EA7"),
           h(
             "details",
             { className: "tbGanttGuide" },
@@ -2292,7 +2403,7 @@ ${CALENDAR_CSS}
               role: "table",
               "aria-label": "\u4EFB\u52A1\u6392\u671F",
               "aria-rowcount": rows.length + 1,
-              "aria-colcount": hasOwners ? 4 : 3
+              "aria-colcount": planning ? 2 : hasOwners ? 4 : 3
             },
             h("div", { className: "tbGanttTodayLine", style: { left: `calc(var(--tb-gantt-left) + ${todayX}px)` }, "aria-hidden": true }),
             h(
@@ -2788,8 +2899,8 @@ ${JSON.stringify(schema, null, 2)}
   var settled = /* @__PURE__ */ new Set(["done", "dropped"]);
   var empty = (value) => value === null || value === "";
   var normalizedTitle = (value) => value.trim().normalize("NFKC").toLowerCase();
-  function creationId(requestId, ref) {
-    const text2 = JSON.stringify([requestId, ref]);
+  function creationId(requestId2, ref) {
+    const text2 = JSON.stringify([requestId2, ref]);
     const hashes = [2166136261, 3335557771, 1234567891, 374761393];
     for (let index = 0; index < text2.length; index++) {
       for (let seed = 0; seed < hashes.length; seed++) hashes[seed] = Math.imul(hashes[seed] ^ text2.charCodeAt(index), 16777619) >>> 0;
@@ -3023,21 +3134,21 @@ ${JSON.stringify(schema, null, 2)}
     const scope = resolveScope(tasks, options2);
     const deadline = options2.deadline ?? "";
     const constraints = options2.constraints ?? "";
-    const requestId = options2.requestId ?? "taskboard-schedule-v1";
+    const requestId2 = options2.requestId ?? "taskboard-schedule-v1";
     const proposalVersion = options2.proposalVersion ?? 2;
     if (![1, 2].includes(proposalVersion)) throw new Error("\u4E0D\u652F\u6301\u8FD9\u6B21\u63D0\u6848\u7248\u672C\uFF0C\u8BF7\u91CD\u65B0\u9884\u89C8\u4E0A\u4E0B\u6587\u3002");
     if (deadline !== "" && !isPlanDate(deadline)) throw new Error("\u7528\u6237\u622A\u6B62\u65E5\u671F\u5FC5\u987B\u662F\u6709\u6548\u7684 YYYY-MM-DD\uFF0C\u6216\u7559\u7A7A\u3002");
     if (typeof constraints !== "string" || constraints.length > AI_SCHEDULE_LIMITS.constraints) {
       throw new Error(`\u5DE5\u4F5C\u91CF/\u7EA6\u675F\u8BF4\u660E\u6700\u591A ${AI_SCHEDULE_LIMITS.constraints} \u5B57\u3002`);
     }
-    if (typeof requestId !== "string" || !requestId || requestId.length > 120) throw new Error("\u63D0\u6848\u8BF7\u6C42\u6807\u8BC6\u65E0\u6548\u3002");
+    if (typeof requestId2 !== "string" || !requestId2 || requestId2.length > 120) throw new Error("\u63D0\u6848\u8BF7\u6C42\u6807\u8BC6\u65E0\u6548\u3002");
     const normalizedOptions = {
       scopeId: scope.chosen,
       allTasks: scope.allTasks,
       allowOngoing: options2.allowOngoing === true,
       deadline,
       constraints,
-      requestId,
+      requestId: requestId2,
       proposalVersion
     };
     const scheduled = getSchedules(tasks);
@@ -3060,7 +3171,7 @@ ${JSON.stringify(schema, null, 2)}
       };
     };
     const context = {
-      requestId,
+      requestId: requestId2,
       scope: scope.allTasks ? { kind: "all-explicit" } : { kind: "branch", id: scope.chosen },
       userDeadline: deadline || null,
       userWorkloadAndConstraints: constraints,
@@ -3076,7 +3187,7 @@ ${JSON.stringify(schema, null, 2)}
     }
     const schema = {
       version: proposalVersion,
-      requestId,
+      requestId: requestId2,
       changes: [{
         id: "\u4EC5 editable=true \u7684\u53F6\u4EFB\u52A1 ID",
         planStartDate: "YYYY-MM-DD \u6216 null/\u7A7A\u5B57\u7B26\u4E32",
@@ -3105,7 +3216,7 @@ ${JSON.stringify(schema, null, 2)}
     if (prompt.length > AI_SCHEDULE_LIMITS.prompt) throw new Error("\u4E0A\u4E0B\u6587\u4ECD\u8FC7\u957F\uFF0C\u8BF7\u9009\u62E9\u8F83\u5C0F\u5206\u652F\u6216\u7F29\u77ED\u7EA6\u675F\u8BF4\u660E\u3002");
     return deepFreeze({
       protocol: "taskboard-ai-schedule/1",
-      requestId,
+      requestId: requestId2,
       proposalVersion,
       prompt,
       context,
@@ -3147,18 +3258,18 @@ ${JSON.stringify(schema, null, 2)}
     finish();
     return sections;
   }
-  function restoreNativeRequest(tasks, { prompt, requestId, scopeId = null, allTasks = false }) {
+  function restoreNativeRequest(tasks, { prompt, requestId: requestId2, scopeId = null, allTasks = false }) {
     if (typeof prompt !== "string" || !prompt.startsWith("# \u6392\u671F\u4E0E\u5DE5\u4F5C\u57DF\u5EFA\u8BAE\n") || prompt.length > AI_SCHEDULE_LIMITS.prompt) throw new Error("\u8FD9\u6761\u56DE\u590D\u7F3A\u5C11\u53EF\u6838\u5BF9\u7684\u6392\u671F\u4E0A\u4E0B\u6587\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u3002");
     const sections = readableSections(prompt);
     const schema = sections.get("\u56DE\u590D\u65B9\u5F0F")?.match(/```json\n([\s\S]*?)\n```$/);
     const format = schema && JSON.parse(schema[1]);
-    if (!format || format.requestId !== requestId) throw new Error("AI \u56DE\u590D\u4E0E\u539F\u751F\u8BF7\u6C42\u6807\u8BC6\u4E0D\u7B26\uFF0C\u672A\u5BFC\u5165\u3002");
+    if (!format || format.requestId !== requestId2) throw new Error("AI \u56DE\u590D\u4E0E\u539F\u751F\u8BF7\u6C42\u6807\u8BC6\u4E0D\u7B26\uFF0C\u672A\u5BFC\u5165\u3002");
     const data = sections.get("\u672C\u8F6E\u7528\u6237\u7EA6\u675F")?.match(/^(~{3,})text\n([\s\S]*)\n\1$/)?.[2];
     const inputs = data?.match(/^用户给定截止：([^\n]+)\n工作量与约束：\n([\s\S]*)\n允许为未设截止的持续性工作建议日期：(是|否)$/);
     if (!inputs) throw new Error("\u65E0\u6CD5\u6062\u590D\u672C\u6B21\u7528\u6237\u7EA6\u675F\uFF0C\u8BF7\u91CD\u65B0\u9884\u89C8\u4E0A\u4E0B\u6587\u3002");
     const deadline = inputs[1] === "\u672A\u77E5\uFF08\u672A\u586B\u5199\uFF0C\u4E0D\u662F\u5DF2\u6709\u627F\u8BFA\uFF09" ? "" : inputs[1];
     const constraints = inputs[2] === "\u672A\u586B\u5199\uFF0C\u5DE5\u4F5C\u91CF\u672A\u77E5" ? "" : inputs[2];
-    const request2 = buildPrompt(tasks, { scopeId, allTasks, requestId, deadline, constraints, allowOngoing: inputs[3] === "\u662F", proposalVersion: format.version });
+    const request2 = buildPrompt(tasks, { scopeId, allTasks, requestId: requestId2, deadline, constraints, allowOngoing: inputs[3] === "\u662F", proposalVersion: format.version });
     const current = readableSections(request2.prompt);
     for (const name of ["\u4EFB\u52A1\u8D44\u6599", "\u7236\u7EA7\u8FB9\u754C\u53C2\u8003\uFF08\u4E0D\u5141\u8BB8\u4FEE\u6539\uFF09"]) {
       if (sections.get(name) !== current.get(name)) throw new Error("\u4EFB\u52A1\u8303\u56F4\u3001\u65E5\u671F\u3001\u72B6\u6001\u6216\u8D44\u6599\u4E0E\u539F\u751F\u5EFA\u8BAE\u4E0D\u7B26\uFF0C\u53EF\u80FD\u5DF2\u5E94\u7528\u6216\u5DF2\u8FC7\u671F\uFF1B\u8BF7\u9009\u62E9\u5BF9\u5E94\u8303\u56F4\uFF0C\u6216\u91CD\u65B0\u751F\u6210\u5EFA\u8BAE\u3002");
@@ -3386,7 +3497,235 @@ ${JSON.stringify(schema, null, 2)}
     return `${displayDate(plan?.planStartDate)} \u2192 ${displayDate(plan?.planEndDate)}`;
   }
 
+  // src/ai-planning-model.js
+  var PLANNING_LIMITS = Object.freeze({ message: 2e3, conversation: 16e3, revisions: 12 });
+  var changeKey = (id) => `change:${id}`;
+  var newTaskKey = (ref) => `new:${ref}`;
+  var proposalKeys = (proposal) => [
+    ...proposal.changes.map((item) => changeKey(item.id)),
+    ...(proposal.newTasks || []).map((item) => newTaskKey(item.ref))
+  ];
+  function togglePlanningSelection(proposal, keys, key, checked) {
+    const allowed = new Set(proposalKeys(proposal)), selected = new Set(keys.filter((value) => allowed.has(value)));
+    if (!allowed.has(key)) return [...selected];
+    const items = new Map((proposal.newTasks || []).map((item) => [item.ref, item]));
+    if (checked) {
+      selected.add(key);
+      if (key.startsWith("new:")) {
+        const visited = /* @__PURE__ */ new Set();
+        let item = items.get(key.slice(4));
+        while (item?.parentRef && !visited.has(item.parentRef)) {
+          visited.add(item.parentRef);
+          selected.add(newTaskKey(item.parentRef));
+          item = items.get(item.parentRef);
+        }
+      }
+    } else {
+      selected.delete(key);
+      if (key.startsWith("new:")) {
+        const rejected = /* @__PURE__ */ new Set([key.slice(4)]);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const item of items.values()) if (rejected.has(item.parentRef) && !rejected.has(item.ref)) {
+            rejected.add(item.ref);
+            changed = true;
+          }
+        }
+        for (const ref of rejected) selected.delete(newTaskKey(ref));
+      }
+    }
+    return proposalKeys(proposal).filter((value) => selected.has(value));
+  }
+  function selectedPlanningProposal(proposal, keys) {
+    const selected = new Set(keys), items = new Map((proposal.newTasks || []).map((item) => [item.ref, item]));
+    for (const item of items.values()) if (selected.has(newTaskKey(item.ref)) && item.parentRef && !selected.has(newTaskKey(item.parentRef))) {
+      throw new Error("\u8BF7\u540C\u65F6\u63A5\u53D7\u65B0\u7236\u4EFB\u52A1\uFF0C\u6216\u53D6\u6D88\u5B83\u7684\u5B50\u4EFB\u52A1\u3002");
+    }
+    return {
+      ...proposal,
+      changes: proposal.changes.filter((item) => selected.has(changeKey(item.id))),
+      ...proposal.version === 2 ? { newTasks: proposal.newTasks.filter((item) => selected.has(newTaskKey(item.ref))) } : {}
+    };
+  }
+  var candidateOf = (tasks, preview) => {
+    const patches = new Map(preview.changes.map((item) => [item.id, item]));
+    return [...tasks.map((task) => patches.has(task.id) ? { ...task, ...patches.get(task.id) } : task), ...preview.newTasks];
+  };
+  function planningPreview(tasks, revision, keys) {
+    const all = previewProposal(tasks, revision.proposal, revision.request);
+    const selected = previewProposal(tasks, selectedPlanningProposal(revision.proposal, keys), revision.request);
+    const candidate = candidateOf(tasks, selected), complete = candidateOf(tasks, all);
+    const selectedIds = new Set(candidate.map((task) => task.id)), chosen = new Set(keys);
+    const displayTasks = [...candidate, ...complete.filter((task) => !selectedIds.has(task.id))];
+    const schedules = getSchedules(candidate), completeSchedules = getSchedules(complete), before = getSchedules(tasks);
+    for (const task of displayTasks) if (!schedules.has(task.id)) schedules.set(task.id, completeSchedules.get(task.id));
+    const differences = /* @__PURE__ */ new Map();
+    for (const row of all.rows) if (row.changed) differences.set(row.id, {
+      kind: "change",
+      selected: chosen.has(changeKey(row.id)),
+      before: before.get(row.id),
+      after: completeSchedules.get(row.id)
+    });
+    for (const row of all.creationRows) differences.set(row.id, {
+      kind: "new",
+      selected: chosen.has(newTaskKey(row.ref)),
+      before: null,
+      after: completeSchedules.get(row.id)
+    });
+    for (const row of selected.parentRows) if (!differences.has(row.id)) differences.set(row.id, {
+      kind: "rollup",
+      selected: true,
+      before: before.get(row.id),
+      after: schedules.get(row.id)
+    });
+    return { all, selected, candidate, chart: {
+      tasks: displayTasks,
+      schedules,
+      differences,
+      selectedCount: keys.length,
+      totalCount: proposalKeys(revision.proposal).length,
+      version: revision.number,
+      errors: selected.errors
+    } };
+  }
+  function buildPlanningRequest(tasks, {
+    scopeId = null,
+    allTasks = false,
+    messages = [],
+    message,
+    priorRevision,
+    priorState = "idle",
+    selectedKeys = [],
+    workspaceScan,
+    requestId: requestId2,
+    allowOngoing = false,
+    deadline = ""
+  }) {
+    if (typeof message !== "string" || !message.trim() || message.length > PLANNING_LIMITS.message) {
+      throw new Error(`\u8BF7\u7528 1\u2013${PLANNING_LIMITS.message} \u5B57\u8BF4\u660E\u8FD9\u6B21\u76EE\u6807\u6216\u8C03\u6574\u3002`);
+    }
+    const userMessages = [...messages.filter((item) => item.role === "user").map((item) => item.text), message.trim()];
+    const constraints = userMessages.map((text2, index) => `\u7B2C ${index + 1} \u8F6E\u8981\u6C42\uFF1A${text2}`).join("\n");
+    if (constraints.length > PLANNING_LIMITS.conversation) throw new Error("\u672C\u8F6E\u5BF9\u8BDD\u7EA6\u675F\u5DF2\u8F83\u957F\uFF0C\u8BF7\u5F00\u59CB\u65B0\u7684\u89C4\u5212\u5E76\u5408\u5E76\u9700\u8981\u4FDD\u7559\u7684\u8981\u6C42\u3002\u539F\u65B9\u6848\u4ECD\u4FDD\u7559\u3002");
+    const request2 = buildPrompt(tasks, { scopeId, allTasks, constraints: message.trim(), workspaceScan, requestId: requestId2, allowOngoing, deadline });
+    const fence = "~~~~~~~~~~~~";
+    const selected = priorRevision ? selectedPlanningProposal(priorRevision.proposal, selectedKeys) : null;
+    const prior = selected ? JSON.stringify({ ...selected, requestId: "\u4E0A\u4E00\u7248\uFF08\u672C\u8F6E\u987B\u4F7F\u7528\u65B0\u8BF7\u6C42\u6807\u8BC6\uFF09" }, null, 2) : "\u5C1A\u65E0\u65B9\u6848\u3002";
+    const lastQuestion = messages.findLast((item) => item.role === "assistant" && item.clarification)?.text || "";
+    const iteration = [
+      "## \u8FDE\u7EED\u89C4\u5212\u4E0E\u56FE\u4E0A\u9884\u89C8",
+      "\u8FD9\u662F\u4E00\u8F6E\u7531\u7528\u6237\u4E3B\u52A8\u53D1\u9001\u7684\u89C4\u5212\u8BF7\u6C42\u3002\u53EA\u8FD4\u56DE\u5EFA\u8BAE\uFF0C\u4E0D\u8C03\u7528\u6587\u4EF6\u5DE5\u5177\u3001\u4E0D\u4FEE\u6539\u4EFB\u52A1\u6216\u6587\u4EF6\uFF1B\u5DE5\u4F5C\u57DF\u8D44\u6599\u4EE5\u672C\u6B21\u660E\u786E\u63D0\u4F9B\u7684\u7247\u6BB5\u4E3A\u51C6\u3002",
+      "\u56DE\u590D\u4F1A\u76F4\u63A5\u663E\u793A\u5728\u7518\u7279\u56FE\u4FA7\u680F\u3002\u4E2D\u6587\u8BF4\u660E\u7B80\u77ED\uFF1B\u8BE6\u7EC6\u7406\u7531\u653E\u5728\u5404\u9879\u6570\u636E\u4E2D\uFF0C\u4E0D\u91CD\u590D\u957F\u7BC7\u4EFB\u52A1\u8D44\u6599\u3002",
+      "\u6240\u6709\u7528\u6237\u8F6E\u6B21\u7684\u8981\u6C42\u7EE7\u7EED\u6709\u6548\uFF1B\u672C\u8F6E\u660E\u786E\u4FEE\u6B63\u65E7\u8981\u6C42\u65F6\u4EE5\u672C\u8F6E\u4E3A\u51C6\u3002\u201C\u4E0D\u8981\u52A8\u201D\u7684\u4EFB\u52A1\u4FDD\u6301\u539F\u59CB\u65E5\u671F\u3002",
+      "\u5386\u8F6E\u7528\u6237\u8981\u6C42\uFF08\u672C\u8F6E\u5DF2\u660E\u786E\u53D1\u51FA\uFF0C\u4F9D\u987A\u5E8F\u7406\u89E3\uFF09\uFF1A",
+      `${fence}text`,
+      constraints,
+      fence,
+      priorState === "applied" ? "\u4E0A\u4E00\u6279\u5DF2\u7ECF\u786E\u8BA4\u5E94\u7528\u3002\u672C\u6B21\u4EFB\u52A1\u8D44\u6599\u662F\u5E94\u7528\u540E\u7684\u5F53\u524D\u72B6\u6001\uFF1B\u8BF7\u57FA\u4E8E\u5F53\u524D\u8BB0\u5F55\u91CD\u65B0\u5EFA\u8BAE\uFF0C\u4E0D\u8981\u91CD\u590D\u521B\u5EFA\u5DF2\u7ECF\u5B58\u5728\u7684\u4EFB\u52A1\u3002" : priorState === "undone" ? "\u4E0A\u4E00\u6279\u5E94\u7528\u5DF2\u64A4\u9500\u3002\u672C\u6B21\u4EFB\u52A1\u8D44\u6599\u662F\u64A4\u9500\u540E\u7684\u5F53\u524D\u72B6\u6001\uFF1B\u4E0D\u8981\u628A\u5386\u53F2\u56DE\u590D\u4E2D\u7684\u65B0\u589E\u6216\u6539\u671F\u5F53\u4F5C\u5DF2\u7ECF\u4FDD\u5B58\u3002" : priorRevision ? "\u4E0A\u4E00\u7248\u5C1A\u672A\u5E94\u7528\u3002\u8BF7\u57FA\u4E8E\u539F\u59CB\u4EFB\u52A1\u8D44\u6599\u8FD4\u56DE\u5B8C\u6574\u66FF\u4EE3\u65B9\u6848\uFF08\u4E0D\u662F\u4EC5\u8FD4\u56DE\u672C\u8F6E\u5DEE\u91CF\uFF09\uFF1B\u4FDD\u7559\u4ECD\u9002\u7528\u7684\u5DF2\u9009\u65B0\u589E\u4EFB\u52A1\u53CA\u6539\u671F\u3002" : "\u5F53\u524D\u5C1A\u65E0\u5F85\u5E94\u7528\u65B9\u6848\uFF0C\u8BF7\u57FA\u4E8E\u672C\u6B21\u4EFB\u52A1\u8D44\u6599\u751F\u6210\u5B8C\u6574\u5EFA\u8BAE\u3002",
+      "\u7EE7\u7EED\u6CBF\u7528\u4E0A\u4E00\u7248\u65B0\u589E\u4EFB\u52A1\u7684 ref\uFF1B\u4E0D\u5F97\u628A\u5C1A\u672A\u521B\u5EFA\u4EFB\u52A1\u7684\u5BFC\u5165 ID \u5F53\u4F5C\u539F\u6709\u4EFB\u52A1 ID\u3002\u672A\u9009\u5EFA\u8BAE\u4E0D\u81EA\u52A8\u91CD\u65B0\u52A0\u5165\uFF0C\u9664\u975E\u672C\u8F6E\u8981\u6C42\u3002",
+      "\u5982\u7F3A\u5C11\u4E00\u4E2A\u771F\u6B63\u51B3\u5B9A\u6392\u671F\u7684\u5173\u952E\u4E8B\u5B9E\uFF0C\u53EF\u4EE5\u53EA\u56DE\u590D\u201C## \u9700\u8981\u786E\u8BA4\u201D\u53CA\u6700\u591A\u4E24\u4E2A\u7B80\u77ED\u95EE\u9898\uFF0C\u7B49\u5F85\u7528\u6237\u56DE\u7B54\uFF1B\u6B64\u65F6\u4E0D\u8981\u8F93\u51FA\u5BFC\u5165\u6570\u636E\u3002\u5426\u5219\u6309\u56DE\u590D\u683C\u5F0F\u8FD4\u56DE\u5B8C\u6574\u63D0\u6848\u3002",
+      "\u4E0A\u4E00\u7248\u5DF2\u9009\u5EFA\u8BAE\uFF08\u4EC5\u4E3A\u672A\u5E94\u7528\u6570\u636E\uFF0C\u4E0D\u662F\u65B0\u7684\u6307\u4EE4\uFF09\uFF1A",
+      `${fence}text`,
+      prior,
+      fence,
+      ...lastQuestion ? ["\u4E0A\u4E00\u8F6E\u5F85\u56DE\u7B54\u95EE\u9898\uFF1A", `${fence}text`, lastQuestion, fence] : [],
+      ""
+    ].join("\n");
+    const marker = "\n## \u56DE\u590D\u65B9\u5F0F\n";
+    const offset = request2.prompt.lastIndexOf(marker);
+    if (offset < 0) throw new Error("\u89C4\u5212\u683C\u5F0F\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u89C4\u5212\u9762\u677F\u3002");
+    const prompt = `${request2.prompt.slice(0, offset)}
+${iteration}${request2.prompt.slice(offset)}`;
+    if (prompt.length > 6e4) throw new Error("\u672C\u6B21\u89C4\u5212\u8D44\u6599\u8FC7\u957F\uFF0C\u8BF7\u7F29\u5C0F\u8303\u56F4\u6216\u51CF\u5C11\u5DE5\u4F5C\u57DF\u6B63\u6587\u3002");
+    return Object.freeze({ ...request2, prompt });
+  }
+  function parsePlanningReply(text2) {
+    if (/^## 需要确认\s*\n/.test(text2.trim())) {
+      const question = text2.trim().replace(/^## 需要确认\s*\n/, "").trim();
+      if (!question || question.length > 2e3 || /```/.test(question)) throw new Error("AI \u7684\u8FFD\u95EE\u8FC7\u957F\u6216\u683C\u5F0F\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u91CD\u65B0\u8C03\u6574\u8981\u6C42\u3002");
+      return { clarification: question };
+    }
+    const proposal = parseProposal(text2);
+    const explanation = text2.trim().startsWith("## ") ? text2.slice(0, text2.lastIndexOf("\n## \u5DE5\u4F5C\u53F0\u5BFC\u5165\u6570\u636E")).trim() : "";
+    return { proposal, explanation };
+  }
+  function comparePlanningRevisions(previous, next) {
+    const items = (revision) => new Map([
+      ...revision.proposal.changes.map((item) => [changeKey(item.id), item]),
+      ...(revision.proposal.newTasks || []).map((item) => [newTaskKey(item.ref), item])
+    ]);
+    const before = items(previous), after = items(next), keys = /* @__PURE__ */ new Set([...before.keys(), ...after.keys()]);
+    return [...keys].flatMap((key) => {
+      const left = before.get(key), right = after.get(key);
+      const fields = ["title", "note", "parentId", "parentRef", "planStartDate", "planEndDate"];
+      const selectionChanged = previous.selected.includes(key) !== next.selected.includes(key);
+      if (left && right && fields.every((field2) => left[field2] === right[field2]) && !selectionChanged) return [];
+      return [{
+        key,
+        before: left,
+        after: right,
+        selectionChanged,
+        beforeSelected: previous.selected.includes(key),
+        afterSelected: next.selected.includes(key)
+      }];
+    });
+  }
+  var stable = (value) => JSON.stringify(value, (_, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item);
+  function createPlanningUndo(before, after) {
+    const previous = new Map(before.map((task) => [task.id, task]));
+    const records = after.filter((task) => !previous.has(task.id) || stable(previous.get(task.id)) !== stable(task)).map((task) => ({ id: task.id, before: previous.get(task.id) ? structuredClone(previous.get(task.id)) : null, after: structuredClone(task) }));
+    return {
+      records,
+      createdCount: records.filter((item) => !item.before).length,
+      changedCount: records.filter((item) => item.before).length
+    };
+  }
+  function undoPlanningBatch(tasks, receipt) {
+    if (!receipt?.records?.length) throw new Error("\u6CA1\u6709\u53EF\u64A4\u9500\u7684\u89C4\u5212\u5E94\u7528\u3002");
+    const current = new Map(tasks.map((task) => [task.id, task])), records = new Map(receipt.records.map((item) => [item.id, item]));
+    for (const item of records.values()) if (stable(current.get(item.id)) !== stable(item.after)) {
+      throw new Error("\u672C\u6279\u4EFB\u52A1\u5728\u5E94\u7528\u540E\u53C8\u88AB\u4FEE\u6539\u6216\u5220\u9664\uFF0C\u4E0D\u80FD\u76F4\u63A5\u64A4\u9500\uFF1B\u5F53\u524D\u4EFB\u52A1\u5DF2\u4FDD\u7559\u3002");
+    }
+    const created = new Set(receipt.records.filter((item) => !item.before).map((item) => item.id));
+    if (tasks.some((task) => created.has(task.parentId) && !created.has(task.id))) {
+      throw new Error("\u65B0\u589E\u4EFB\u52A1\u4E0B\u5DF2\u6709\u672C\u6279\u4EE5\u5916\u7684\u5B50\u4EFB\u52A1\uFF0C\u4E0D\u80FD\u6574\u6279\u64A4\u9500\uFF1B\u8BF7\u5148\u5904\u7406\u65B0\u589E\u7684\u4E0B\u7EA7\u3002");
+    }
+    const candidate = tasks.filter((task) => !created.has(task.id)).map((task) => records.get(task.id)?.before || task);
+    const issues = validateScheduleState(candidate);
+    if (issues.length) throw new Error(`\u64A4\u9500\u4F1A\u4E0E\u5F53\u524D\u8BA1\u5212\u51B2\u7A81\uFF1A${issues.map((issue) => issue.message).join(" ")}`);
+    return candidate;
+  }
+
   // src/ai-native-bridge.js
+  var HOST_CONTEXT_SOURCES = /* @__PURE__ */ new Set(["runtime-context", "skill-catalog"]);
+  var isAuthoredUserEvent = (event) => event?.type === "user/message" && event.data?.role === "user" && !HOST_CONTEXT_SOURCES.has(event.data.source?.kind);
+  function keepOwnedPlanningSession(cache, service, sessionId) {
+    const host = inspectNativeDraftHost(service);
+    if (!host.supported || !host.owned || host.sessionId !== sessionId) throw new Error("\u89C4\u5212\u4F1A\u8BDD\u5F52\u5C5E\u5DF2\u53D8\u5316\uFF0C\u672A\u4FDD\u7559\u5176\u4ED6\u4F1A\u8BDD\u3002");
+    if (cache.nativeLease?.sessionId === sessionId && cache.nativeLease.service === service) return;
+    const reference = service.ctx.sessions.retain(sessionId, { source: "taskboardPlanningLifetime" });
+    let released = false;
+    const next = { sessionId, service, release: () => {
+      if (!released) {
+        released = true;
+        reference.release();
+      }
+    } };
+    const previous = cache.nativeLease;
+    cache.nativeLease = next;
+    Promise.resolve(reference.ready).then(() => previous?.release(), () => {
+      if (cache.nativeLease === next) cache.nativeLease = null;
+      next.release();
+      previous?.release();
+    });
+  }
+  function releaseOwnedPlanningSession(cache) {
+    if (!cache) return;
+    const current = cache.nativeLease;
+    cache.nativeLease = null;
+    current?.release();
+  }
   function inspectNativeDraftHost(service) {
     try {
       if (!service || typeof service.currentSession !== "function" || typeof service.ownsSession !== "function" || typeof service.isActive !== "function") return { supported: false, reason: "\u5F53\u524D\u5BBF\u4E3B\u672A\u63D0\u4F9B\u53EF\u9A8C\u8BC1\u7684\u5DE5\u4F5C\u53F0\u4F1A\u8BDD API\u3002" };
@@ -3451,7 +3790,7 @@ ${JSON.stringify(schema, null, 2)}
         return text3.trim();
       };
       const text2 = textOf(reply.data.message, 15e4);
-      const prompt = durable.slice(0, last).findLast((entry) => entry.event.type === "user/message" && entry.event.data?.role === "user" && entry.event.data.content?.some((block) => block.type === "text" && block.text?.startsWith("# \u6392\u671F\u4E0E\u5DE5\u4F5C\u57DF\u5EFA\u8BAE")));
+      const prompt = durable.slice(0, last).findLast((entry) => isAuthoredUserEvent(entry.event) && entry.event.data.content?.some((block) => block.type === "text" && block.text?.startsWith("# \u6392\u671F\u4E0E\u5DE5\u4F5C\u57DF\u5EFA\u8BAE")));
       if (!prompt) throw new Error("\u6CA1\u6709\u627E\u5230\u8FD9\u6761\u5EFA\u8BAE\u5BF9\u5E94\u7684\u6392\u671F\u4E0A\u4E0B\u6587\uFF0C\u8BF7\u4F7F\u7528\u672C\u6B21\u63D0\u793A\u8BCD\u91CD\u65B0\u751F\u6210\u3002");
       const promptText = textOf(prompt.event.data, 6e4);
       verify();
@@ -3461,705 +3800,875 @@ ${JSON.stringify(schema, null, 2)}
       reference?.release();
     }
   }
-  async function placeOwnedNativeDraft({ service, sessionId, prompt, isCurrent = () => true, validate = () => {
-  } }) {
-    if (typeof prompt !== "string" || !prompt || prompt.length > 6e4) throw new Error("\u539F\u751F\u8349\u7A3F\u5FC5\u987B\u662F\u5DF2\u9884\u89C8\u7684\u6709\u754C\u63D0\u793A\u8BCD\u3002");
+  async function runOwnedPlanningTurn({
+    service,
+    sessionId,
+    prompt,
+    signal,
+    isCurrent = () => true,
+    validate = () => {
+    },
+    onProgress = () => {
+    },
+    onDispatch = () => {
+    },
+    timeoutMs = 18e4
+  }) {
+    if (typeof prompt !== "string" || !prompt || prompt.length > 6e4) throw new Error("\u672C\u6B21\u89C4\u5212\u8D44\u6599\u4E3A\u7A7A\u6216\u8FC7\u957F\u3002");
     const verify = () => {
-      if (!isCurrent()) throw new Error("\u5F53\u524D\u4E0A\u4E0B\u6587\u5DF2\u5173\u95ED\u6216\u53D8\u66F4\uFF0C\u672A\u5199\u5165\u539F\u751F\u8349\u7A3F\u3002");
-      if (!service || typeof service.currentSession !== "function" || typeof service.ownsSession !== "function" || typeof service.isActive !== "function" || !sessionId || !service.isActive() || service.currentSession() !== sessionId || !service.ownsSession(sessionId)) {
-        throw new Error("\u4F1A\u8BDD\u6216\u5DE5\u4F5C\u53F0\u5DF2\u5207\u6362\uFF0C\u6216\u4F1A\u8BDD\u4E0D\u5C5E\u4E8E\u672C\u5DE5\u4F5C\u53F0\uFF1B\u672A\u653E\u5165\u8349\u7A3F\u3002");
+      const host = inspectNativeDraftHost(service);
+      if (signal?.aborted) throw new DOMException("\u5DF2\u505C\u6B62\u7B49\u5F85\u672C\u8F6E\u7ED3\u679C\u3002", "AbortError");
+      if (!isCurrent() || !host.supported || !sessionId || host.sessionId !== sessionId || !host.owned) {
+        throw new Error("\u5DE5\u4F5C\u53F0\u6216\u89C4\u5212\u4F1A\u8BDD\u5DF2\u5207\u6362\uFF0C\u672C\u8F6E\u7ED3\u679C\u6CA1\u6709\u52A0\u5165\u5176\u4ED6\u65B9\u6848\u3002");
       }
       validate();
     };
-    let reference;
+    let reference, disposeEvents, disposeSession, timer, abortListener;
     try {
       verify();
-      const sessions = service.ctx?.sessions, conversation = service.ctx?.conversation;
-      if (typeof sessions?.retain !== "function" || typeof conversation?.input?.for !== "function") {
-        throw new Error("\u5F53\u524D\u5BBF\u4E3B\u6CA1\u6709\u516C\u5F00\u539F\u751F\u8349\u7A3F\u63A5\u53E3\uFF0C\u8BF7\u4F7F\u7528\u590D\u5236\u63D0\u793A\u8BCD\u3002");
-      }
-      reference = sessions.retain(sessionId, { source: "taskboardAISchedule" });
-      const binding = await reference.ready;
+      reference = service.ctx.sessions.retain(sessionId, { source: "taskboardAIPlanning" });
+      const binding = await new Promise((resolve, reject) => {
+        let readyTimer;
+        const cleanup = () => {
+          clearTimeout(readyTimer);
+          signal?.removeEventListener("abort", cancel);
+        };
+        const cancel = () => {
+          cleanup();
+          reject(new DOMException("\u5DF2\u53D6\u6D88\u51C6\u5907\u89C4\u5212\u4F1A\u8BDD\u3002", "AbortError"));
+        };
+        readyTimer = setTimeout(() => {
+          cleanup();
+          reject(new Error("\u89C4\u5212\u4F1A\u8BDD\u51C6\u5907\u8D85\u65F6\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002"));
+        }, Math.min(timeoutMs, 15e3));
+        const finish = (callback) => (value) => {
+          cleanup();
+          callback(value);
+        };
+        signal?.addEventListener("abort", cancel, { once: true });
+        if (signal?.aborted) cancel();
+        Promise.resolve(reference.ready).then(finish(resolve), finish(reject));
+      });
       verify();
-      if (!binding || binding.sessionId !== sessionId || !binding.ctx) throw new Error("\u5BBF\u4E3B\u8FD4\u56DE\u7684\u4F1A\u8BDD\u4F5C\u7528\u57DF\u4E0E\u672C\u6B21\u76EE\u6807\u4E0D\u7B26\uFF0C\u672A\u5199\u5165\u8349\u7A3F\u3002");
-      const input = conversation.input.for(binding.ctx);
-      if (typeof input?.setDraft !== "function" || typeof input?.state?.getSnapshot !== "function") {
-        throw new Error("\u5F53\u524D\u5BBF\u4E3B\u6CA1\u6709\u53EF\u7528\u7684\u516C\u5F00\u8349\u7A3F\u63A5\u53E3\uFF0C\u8BF7\u4F7F\u7528\u590D\u5236\u63D0\u793A\u8BCD\u3002");
+      const session = binding?.session, source = binding?.eventSource;
+      if (binding?.sessionId !== sessionId || !binding.ctx || typeof session?.prompt !== "function" || typeof session?.getSnapshot !== "function" || typeof session?.subscribe !== "function" || typeof source?.getSnapshot !== "function" || typeof source?.subscribe !== "function") {
+        throw new Error("\u5F53\u524D\u5BBF\u4E3B\u672A\u63D0\u4F9B\u5B8C\u6574\u7684\u89C4\u5212\u63D0\u4EA4\u63A5\u53E3\uFF0C\u8BF7\u4F7F\u7528\u539F\u751F\u4F1A\u8BDD\u5165\u53E3\u3002");
       }
-      const state = input.state.getSnapshot();
-      if (state?.phase === "adjudicating" || state?.phase === "submitting") throw new Error("\u539F\u751F\u8F93\u5165\u6846\u6B63\u5728\u63D0\u4EA4\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002");
-      if (typeof state?.draft !== "string" || !Array.isArray(state?.attachmentIds) || !["plain", "claimed"].includes(state.phase)) throw new Error("\u65E0\u6CD5\u5B89\u5168\u8BFB\u53D6\u539F\u751F\u8349\u7A3F\u72B6\u6001\uFF0C\u8BF7\u4F7F\u7528\u590D\u5236\u63D0\u793A\u8BCD\u3002");
-      if (state.attachmentIds.length > 0 || state.draft !== prompt && state.draft.length > 0) {
-        throw new Error("\u5F53\u524D\u539F\u751F\u8349\u7A3F\u5DF2\u6709\u6587\u5B57\u6216\u9644\u4EF6\uFF0C\u5DF2\u4FDD\u7559\u539F\u6837\u3002\u8BF7\u5148\u5904\u7406\u8349\u7A3F\u3001\u65B0\u5EFA\u672C\u5DE5\u4F5C\u53F0\u4F1A\u8BDD\uFF0C\u6216\u4F7F\u7528\u590D\u5236\u63D0\u793A\u8BCD\u3002");
+      const input = service.ctx.conversation.input.for(binding.ctx)?.state?.getSnapshot();
+      if (input?.phase !== "plain" || input.draft !== "" || !Array.isArray(input.attachmentIds) || input.attachmentIds.length) {
+        throw new Error("\u89C4\u5212\u4F1A\u8BDD\u7684\u539F\u751F\u8349\u7A3F\u5DF2\u6709\u6587\u5B57\u3001\u9644\u4EF6\u6216\u6B63\u5728\u5904\u7406\uFF0C\u5DF2\u4FDD\u7559\u539F\u6837\uFF1B\u8BF7\u5148\u5904\u7406\u8349\u7A3F\u3002");
       }
+      const initial = session.getSnapshot();
+      if (initial.sessionId !== sessionId || initial.removed || initial.openState !== "open") throw new Error("\u89C4\u5212\u4F1A\u8BDD\u5C1A\u672A\u5C31\u7EEA\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5\u3002");
+      if (initial.running || initial.pendingSubmissions?.length) throw new Error("\u89C4\u5212\u4F1A\u8BDD\u4ECD\u5728\u751F\u6210\uFF0C\u8BF7\u5148\u7B49\u5F85\u6216\u63A5\u6536\u672C\u8F6E\u7ED3\u679C\u3002");
+      let admitted = false, observedPrompt = false, settled2 = false, inspect;
+      const result = new Promise((resolve, reject) => {
+        const fail3 = (error) => {
+          if (!settled2) {
+            settled2 = true;
+            reject(error);
+          }
+        };
+        inspect = () => {
+          if (settled2) return;
+          try {
+            verify();
+            const state = session.getSnapshot();
+            if (state.removed || state.openState !== "open") throw new Error("\u89C4\u5212\u4F1A\u8BDD\u5DF2\u7ECF\u5173\u95ED\uFF0C\u672C\u8F6E\u7ED3\u679C\u672A\u5E94\u7528\u3002");
+            if (state.promptError && state.promptError !== initial.promptError) {
+              throw new Error(state.promptError.message || "\u539F\u751F AI \u8BF7\u6C42\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u6A21\u578B\u8FDE\u63A5\u540E\u91CD\u8BD5\u3002");
+            }
+            const entries = source.getSnapshot()?.entries;
+            if (!Array.isArray(entries) || entries.length > 2e4) throw new Error("\u89C4\u5212\u4F1A\u8BDD\u5185\u5BB9\u8FC7\u957F\uFF0C\u8BF7\u5F00\u59CB\u65B0\u7684\u89C4\u5212\u4F1A\u8BDD\u3002");
+            const durable = entries.filter((entry) => entry?.type !== "transient" && entry?.event?.surfaceOp === "append");
+            const textOf = (message) => (message?.content || []).filter((block) => block.type === "text").map((block) => block.text).join("");
+            const lastUser = durable.findLastIndex((entry) => isAuthoredUserEvent(entry.event));
+            const matches = lastUser >= 0 && textOf(durable[lastUser].event.data).trim() === prompt.trim();
+            if (!matches) {
+              if (observedPrompt) throw new Error("\u672C\u8F6E\u4E4B\u540E\u4F1A\u8BDD\u53C8\u6536\u5230\u5176\u4ED6\u6D88\u606F\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u89C4\u5212\u4EE5\u514D\u6DF7\u5165\u53E6\u4E00\u8F6E\u5EFA\u8BAE\u3002");
+              return;
+            }
+            observedPrompt = true;
+            onProgress(state.running || state.awaitingFirstTurn ? "AI \u6B63\u5728\u89C4\u5212\uFF0C\u5F53\u524D\u4EFB\u52A1\u4FDD\u6301\u539F\u6837\u2026" : "\u6B63\u5728\u63A5\u6536\u5B8C\u6574\u65B9\u6848\u2026");
+            if (!admitted || state.running || state.awaitingFirstTurn || state.pendingSubmissions?.length) return;
+            const reply = durable.slice(lastUser + 1).findLast((entry) => entry.event.type === "assistant/message")?.event;
+            if (!reply) return;
+            if (reply.data?.interrupted || reply.data?.message?.role !== "assistant") throw new Error("AI \u56DE\u590D\u88AB\u4E2D\u65AD\uFF0C\u4E0A\u4E00\u7248\u65B9\u6848\u5DF2\u4FDD\u7559\u3002");
+            const text2 = textOf(reply.data.message).trim();
+            if (!text2 || text2.length > 15e4) throw new Error("AI \u56DE\u590D\u4E3A\u7A7A\u6216\u8FC7\u957F\uFF0C\u8BF7\u7F29\u5C0F\u8303\u56F4\u540E\u91CD\u8BD5\u3002");
+            settled2 = true;
+            resolve({ sessionId, text: text2, prompt, replySeq: reply.seq });
+          } catch (error) {
+            fail3(error);
+          }
+        };
+        abortListener = () => fail3(new DOMException("\u5DF2\u505C\u6B62\u7B49\u5F85\uFF0C\u672C\u8F6E\u6CA1\u6709\u4FEE\u6539\u4EFB\u52A1\u3002\u53EF\u7A0D\u540E\u63A5\u6536\u7ED3\u679C\u3002", "AbortError"));
+        signal?.addEventListener("abort", abortListener, { once: true });
+        timer = setTimeout(() => fail3(new Error("\u7B49\u5F85\u672C\u8F6E\u7ED3\u679C\u8D85\u65F6\uFF0C\u4E0A\u4E00\u7248\u4FDD\u7559\u3002\u53EF\u7A0D\u540E\u63A5\u6536\u672C\u8F6E\u7ED3\u679C\uFF1B\u6CA1\u6709\u81EA\u52A8\u91CD\u53D1\u3002")), timeoutMs);
+        disposeEvents = source.subscribe(inspect);
+        disposeSession = session.subscribe(inspect);
+      });
+      result.catch(() => {
+      });
       verify();
-      const unchanged = state.draft === prompt;
-      if (!unchanged) input.setDraft(prompt);
-      return { sessionId, unchanged };
+      onDispatch();
+      const admission = await session.prompt([{ type: "text", text: prompt }], "queue", signal);
+      if (!admission?.ok) throw new Error(admission?.error?.message || "\u539F\u751F AI \u6CA1\u6709\u63A5\u6536\u672C\u6B21\u89C4\u5212\u8BF7\u6C42\u3002");
+      admitted = true;
+      inspect();
+      return await result;
     } finally {
+      clearTimeout(timer);
+      disposeEvents?.();
+      disposeSession?.();
+      if (abortListener) signal?.removeEventListener("abort", abortListener);
       reference?.release();
     }
   }
 
-  // src/ai-schedule-panel.js
-  var messageOf2 = (problem) => problem?.message || String(problem);
-  var EMPTY_LIST = [];
-  var makeRequestId = () => `tb-ai-${globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}`;
-  var confirmLabel = (preview) => preview.createdCount ? `\u786E\u8BA4\u5E94\u7528\uFF1A\u65B0\u589E ${preview.createdCount} \u9879\u4EFB\u52A1${preview.changedCount ? `\u3001${preview.changedCount} \u9879\u65E5\u671F\u53D8\u66F4` : ""}` : `\u786E\u8BA4\u5E94\u7528 ${preview.changedCount} \u9879\u65E5\u671F\u53D8\u66F4`;
-  function createAISchedulePanel(React) {
+  // src/ai-planning-panel.js
+  var EMPTY = [];
+  var messageOf2 = (error) => error?.message || String(error);
+  var freshPlan = () => ({
+    input: "",
+    messages: [],
+    revisions: [],
+    index: -1,
+    sessionId: null,
+    pending: null,
+    phase: "idle",
+    includeWorkspace: false,
+    domainChoice: "",
+    scan: null,
+    documents: [],
+    deadline: "",
+    allowOngoing: false
+  });
+  var requestId = () => `tb-ai-${globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}`;
+  var shortRange = (plan) => {
+    const start = plan?.planStartDate, end = plan?.planEndDate, year = String((/* @__PURE__ */ new Date()).getFullYear());
+    const date3 = (value) => value?.startsWith(year + "-") ? value.slice(5).replace("-", ".") : value?.replaceAll("-", ".");
+    if (start && end) return start === end ? date3(start) : `${date3(start)}\u2013${date3(end)}`;
+    return end ? `\u622A\u81F3 ${date3(end)}` : start ? `\u81EA ${date3(start)}` : "\u672A\u5B89\u6392";
+  };
+  function createAIPlanningPanel(React) {
     const h = React.createElement;
-    return function AISchedulePanel({
-      tasks = EMPTY_LIST,
+    return function AIPlanningPanel({
+      tasks = EMPTY,
       initialScopeId = null,
       service,
       commit,
       onClose,
       onOpenChat,
+      onPreviewChange,
+      onScopeChange,
+      stateRef,
       importNonce = 0,
       disabled = false
     }) {
+      const fallback = React.useRef(null), holder = stateRef || fallback;
+      if (!holder.current?.plans) holder.current = { plans: /* @__PURE__ */ new Map(), choice: "", undo: null };
+      const cache = holder.current;
       const scopes = React.useMemo(() => {
         try {
-          return { items: getAIScheduleScopes(tasks), error: "" };
-        } catch (problem) {
-          return { items: [], error: messageOf2(problem) };
+          return getAIScheduleScopes(tasks);
+        } catch {
+          return [];
         }
       }, [tasks]);
-      const [scopeChoice, setScopeChoice] = React.useState(() => {
-        const selected = initialScopeId && tasks.some((task) => task.id === initialScopeId) ? initialScopeId : scopes.items[0]?.id;
-        return selected ? `branch:${selected}` : "";
-      });
-      const [deadline, setDeadline] = React.useState(""), [constraints, setConstraints] = React.useState("");
-      const [allowOngoing, setAllowOngoing] = React.useState(false);
-      const [includeWorkspace, setIncludeWorkspace] = React.useState(false), [domainChoice, setDomainChoice] = React.useState("");
-      const [workspaceScan, setWorkspaceScan] = React.useState(null), [scanBusy, setScanBusy] = React.useState(false);
-      const [scanProgress, setScanProgress] = React.useState(""), [selectedDocuments, setSelectedDocuments] = React.useState([]);
-      const scanController = React.useRef(null), scanSequence = React.useRef(0);
-      const domainOptions = React.useMemo(() => {
+      const [scopeChoice, setScopeChoice] = React.useState(() => initialScopeId ? `branch:${initialScopeId}` : cache.choice || (scopes[0] ? `branch:${scopes[0].id}` : "all"));
+      const [model, setModel] = React.useState(() => cache.plans.get(scopeChoice) || freshPlan());
+      const liveModel = React.useRef(model), liveTasks = React.useRef(tasks), scopeRef = React.useRef(scopeChoice);
+      liveTasks.current = tasks;
+      scopeRef.current = scopeChoice;
+      const [busy, setBusy] = React.useState(false), [scanBusy, setScanBusy] = React.useState(false);
+      const [errors, setErrors] = React.useState([]), [notice, setNotice] = React.useState(""), [progress, setProgress] = React.useState("");
+      const [compare, setCompare] = React.useState(false), [manualText, setManualText] = React.useState("");
+      const mounted = React.useRef(true), flight = React.useRef(0), controller = React.useRef(null), scanController = React.useRef(null);
+      const applying = React.useRef(false), nativeFlight = React.useRef(false), root = React.useRef(null), heading = React.useRef(null), inputRef = React.useRef(null);
+      const update = (change) => {
+        const next = typeof change === "function" ? change(liveModel.current) : change;
+        liveModel.current = next;
+        cache.plans.set(scopeRef.current, next);
+        cache.choice = scopeRef.current;
+        if (mounted.current) setModel(next);
+        return next;
+      };
+      React.useEffect(() => {
+        mounted.current = true;
+        heading.current?.focus();
+        return () => {
+          mounted.current = false;
+          flight.current++;
+          controller.current?.abort();
+          scanController.current?.abort();
+          onPreviewChange?.(null);
+          if (!stateRef) releaseOwnedPlanningSession(cache);
+        };
+      }, []);
+      React.useEffect(() => {
+        onScopeChange?.(scopeChoice === "all" ? null : scopeChoice.slice(7));
+      }, [scopeChoice, onScopeChange]);
+      const revision = model.revisions[model.index];
+      const domains = React.useMemo(() => {
         try {
           return getAIScheduleDomains(tasks, { scopeId: scopeChoice.startsWith("branch:") ? scopeChoice.slice(7) : null, allTasks: scopeChoice === "all" });
         } catch {
           return [];
         }
       }, [tasks, scopeChoice]);
-      const domainRoot = domainOptions.find((domain) => domain.path === domainChoice)?.path || domainOptions[0]?.path || "";
-      const domainToken = JSON.stringify([scopeChoice, domainRoot, domainOptions]);
-      const liveDomainToken = React.useRef(domainToken);
-      liveDomainToken.current = domainToken;
-      const [request2, setRequest] = React.useState(null), requestRef = React.useRef(null);
-      const [proposalText, setProposalText] = React.useState(""), [preview, setPreview] = React.useState(null);
-      const [errors, setErrors] = React.useState([]), [notice, setNotice] = React.useState("");
-      const [nativeBusy, setNativeBusy] = React.useState(false), [applyBusy, setApplyBusy] = React.useState(false);
-      const [replyBusy, setReplyBusy] = React.useState(false), nativeSession = React.useRef(null);
-      const [minimized, setMinimized] = React.useState(false), [closing, setClosing] = React.useState(false);
-      const [applied, setApplied] = React.useState(false);
-      const mounted = React.useRef(true), applying = React.useRef(false), nativeFlight = React.useRef(false);
-      const latestTasks = React.useRef(tasks);
-      latestTasks.current = tasks;
-      const panelRef = React.useRef(null), promptRef = React.useRef(null), headingRef = React.useRef(null), previewRef = React.useRef(null);
-      const currentScope = React.useRef(scopeChoice);
-      currentScope.current = scopeChoice;
-      const fieldId = React.useId();
-      requestRef.current = request2;
-      const busy = nativeBusy || applyBusy || scanBusy || replyBusy;
+      const domainRoot = domains.find((item) => item.path === model.domainChoice)?.path || domains[0]?.path || "";
+      const domainToken = JSON.stringify([scopeChoice, domains]);
+      const scanToken = React.useRef(domainToken);
       React.useEffect(() => {
-        mounted.current = true;
-        return () => {
-          mounted.current = false;
-          scanSequence.current++;
+        if (scanToken.current !== domainToken) {
+          scanToken.current = domainToken;
           scanController.current?.abort();
-        };
-      }, []);
-      const dirty = !applied && (!!request2 || !!proposalText || !!deadline || !!constraints || allowOngoing || includeWorkspace);
-      const close = () => {
-        if (busy) return;
-        if (dirty) {
-          setClosing(true);
-          setMinimized(false);
-        } else onClose?.();
-      };
-      const closeRef = React.useRef(close);
-      closeRef.current = close;
-      React.useEffect(() => {
-        if (minimized) return;
-        const previous = document.activeElement;
-        headingRef.current?.focus();
-        const keys = (event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            event.stopPropagation();
-            closeRef.current();
-          } else if (event.key === "Tab") {
-            const controls = [...panelRef.current?.querySelectorAll("button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary") || []].filter((element) => element.getClientRects().length > 0);
-            if (!controls.length) {
-              event.preventDefault();
-              headingRef.current?.focus();
-              return;
-            }
-            const index = controls.indexOf(document.activeElement);
-            if (event.shiftKey && index <= 0 || !event.shiftKey && (index < 0 || index === controls.length - 1)) {
-              event.preventDefault();
-              event.stopPropagation();
-              controls[event.shiftKey ? controls.length - 1 : 0]?.focus();
-            }
-          }
-        };
-        document.addEventListener("keydown", keys, true);
-        return () => {
-          document.removeEventListener("keydown", keys, true);
-          if (previous?.isConnected && panelRef.current?.contains(document.activeElement)) previous.focus?.();
-        };
-      }, [minimized]);
-      const livePreview = React.useMemo(() => {
-        if (!preview || applied) return preview;
-        return previewProposal(tasks, preview.proposal, preview.request);
-      }, [tasks, preview, applied]);
-      const availability = inspectNativeDraftHost(service);
-      const replyAvailability = inspectNativeReplyHost(service);
-      const invalidate = (action) => {
-        action();
-        setRequest(null);
-        requestRef.current = null;
-        setPreview(null);
-        setApplied(false);
-        nativeSession.current = null;
-        setErrors([]);
-        setNotice("\u8303\u56F4\u6216\u7EA6\u675F\u5DF2\u53D8\u66F4\uFF0C\u8BF7\u91CD\u65B0\u9884\u89C8\u4E0A\u4E0B\u6587\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u53D1\u9001\u6216\u4FEE\u6539\u65E5\u671F\u3002");
-      };
-      const clearWorkspaceScan = () => {
-        scanSequence.current++;
-        scanController.current?.abort();
-        scanController.current = null;
-        setWorkspaceScan(null);
-        setSelectedDocuments([]);
-        setScanProgress("");
-        setScanBusy(false);
-      };
-      React.useEffect(() => {
-        clearWorkspaceScan();
+          update((previous) => ({ ...previous, scan: null, documents: [] }));
+        }
       }, [domainToken]);
-      const scanDomain = async () => {
-        if (!includeWorkspace || !domainRoot || busy || disabled) return;
-        const sequence = ++scanSequence.current, token = domainToken, controller = new AbortController();
-        scanController.current?.abort();
-        scanController.current = controller;
-        setScanBusy(true);
-        setWorkspaceScan(null);
+      const derived = React.useMemo(() => {
+        if (!revision) return null;
+        if (["applied", "undone"].includes(revision.status) && revision.confirmed) return revision.confirmed;
+        try {
+          return planningPreview(tasks, revision, revision.selected);
+        } catch (error) {
+          return { error: messageOf2(error) };
+        }
+      }, [tasks, revision, model.phase]);
+      const draftVisible = !["applied", "undone"].includes(model.phase) && (!revision || revision.status === "draft");
+      React.useEffect(() => {
+        onPreviewChange?.(draftVisible ? derived?.chart || null : null);
+      }, [derived, draftVisible, onPreviewChange]);
+      const busyNow = busy || scanBusy || disabled;
+      const selected = revision && new Set(revision.selected);
+      const issues = derived?.error ? [derived.error] : draftVisible ? derived?.selected?.errors || [] : [];
+      const capability = inspectNativeDraftHost(service);
+      const changeScope = (choice) => {
+        if (busyNow) return;
+        cache.plans.set(scopeChoice, liveModel.current);
+        cache.choice = choice;
+        scopeRef.current = choice;
+        const next = cache.plans.get(choice) || freshPlan();
+        liveModel.current = next;
+        setScopeChoice(choice);
+        setModel(next);
         setErrors([]);
         setNotice("");
-        setRequest(null);
-        requestRef.current = null;
-        setPreview(null);
-        try {
-          const result = await scanWorkspace(domainRoot, {
-            signal: controller.signal,
-            onProgress: (value) => {
-              if (mounted.current && sequence === scanSequence.current) setScanProgress(`\u6B63\u5728\u8BFB\u53D6 ${value.relative}\uFF08${value.attempted}/${WORKSPACE_SCAN_LIMITS.files}\uFF09`);
-            }
-          });
-          if (!mounted.current || sequence !== scanSequence.current || liveDomainToken.current !== token) return;
-          setWorkspaceScan(result);
-          setSelectedDocuments(result.documents.map((file) => file.relative));
-          setScanProgress("");
-          setNotice("\u626B\u63CF\u5DF2\u5B8C\u6210\uFF0C\u5185\u5BB9\u4EC5\u5728\u672C\u5730\u3002\u8BF7\u68C0\u67E5\u4E0B\u65B9\u6587\u4EF6\u4E0E\u6B63\u6587\uFF0C\u518D\u9884\u89C8\u4E0A\u4E0B\u6587\uFF1B\u5C1A\u672A\u53D1\u9001\u7ED9 AI\u3002");
-        } catch (problem) {
-          if (mounted.current && sequence === scanSequence.current) {
-            setScanProgress("");
-            if (controller.signal.aborted) setNotice("\u5DF2\u53D6\u6D88\u626B\u63CF\uFF0C\u6CA1\u6709\u52A0\u5165 AI \u4E0A\u4E0B\u6587\u3002");
-            else setErrors([messageOf2(problem)]);
-          }
-        } finally {
-          if (mounted.current && sequence === scanSequence.current) setScanBusy(false);
-        }
+        setCompare(false);
       };
-      const prepare = () => {
-        setErrors([]);
-        setNotice("");
-        setPreview(null);
-        setApplied(false);
-        nativeSession.current = null;
-        try {
-          if (includeWorkspace && (!workspaceScan || workspaceScan.root !== domainRoot)) throw new Error("\u8BF7\u5148\u4E3B\u52A8\u626B\u63CF\u9009\u5B9A\u5DE5\u4F5C\u57DF\uFF0C\u6216\u5173\u95ED\u201C\u8BFB\u53D6\u5DE5\u4F5C\u57DF\u8F85\u52A9\u6392\u671F\u201D\u3002");
-          const next = buildPrompt(tasks, {
-            scopeId: scopeChoice.startsWith("branch:") ? scopeChoice.slice(7) : null,
-            allTasks: scopeChoice === "all",
-            deadline,
-            constraints,
-            allowOngoing,
-            requestId: makeRequestId(),
-            ...includeWorkspace ? { workspaceScan: { ...workspaceScan, documents: workspaceScan.documents.filter((file) => selectedDocuments.includes(file.relative)) } } : {}
-          });
-          setRequest(next);
-          requestRef.current = next;
-          setNotice("\u4E0A\u4E0B\u6587\u5DF2\u5728\u672C\u5730\u751F\u6210\uFF0C\u5C1A\u672A\u653E\u5165\u539F\u751F\u8349\u7A3F\uFF0C\u4E5F\u672A\u53D1\u9001\u3002\u8BF7\u5148\u68C0\u67E5\u4E0B\u9762\u7684\u5185\u5BB9\u3002");
-        } catch (problem) {
-          setRequest(null);
-          requestRef.current = null;
-          setErrors(problem.issues || [messageOf2(problem)]);
-        }
-      };
-      const requestIsFresh = (target) => {
-        const empty2 = { version: 1, requestId: target.requestId, changes: [], assumptions: [], conflicts: [] };
-        const check = previewProposal(latestTasks.current, empty2, target);
+      const validate = (request2) => {
+        const check = previewProposal(liveTasks.current, { version: 1, requestId: request2.requestId, changes: [], assumptions: [], conflicts: [] }, request2);
         if (check.errors.length) throw new Error(check.errors.join("\n"));
       };
-      const openNative = () => {
-        setMinimized(true);
-        onOpenChat?.();
-      };
-      const copyPrompt = async () => {
-        if (!request2) return;
-        setErrors([]);
-        try {
-          requestIsFresh(request2);
-          if (typeof globalThis.navigator?.clipboard?.writeText !== "function") throw new Error("\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u81EA\u52A8\u590D\u5236\u3002");
-          await globalThis.navigator.clipboard.writeText(request2.prompt);
-          if (mounted.current) setNotice("\u5DF2\u590D\u5236\u6240\u9884\u89C8\u7684\u63D0\u793A\u8BCD\uFF1B\u8BF7\u5728\u81EA\u5DF1\u7684\u539F\u751F\u4F1A\u8BDD\u4E2D\u7C98\u8D34\u5E76\u624B\u52A8\u53D1\u9001\uFF0C\u56DE\u590D\u540E\u590D\u5236\u5B8C\u6574\u56DE\u7B54\u56DE\u6765\u5BFC\u5165\u3002");
-        } catch (problem) {
-          promptRef.current?.focus();
-          promptRef.current?.select();
-          if (mounted.current) setErrors([`${messageOf2(problem)} \u63D0\u793A\u8BCD\u4FDD\u6301\u53EF\u9009\u4E2D\uFF0C\u8BF7\u6838\u5BF9\u540E\u624B\u52A8\u590D\u5236\uFF1B\u6CA1\u6709\u5411 AI \u53D1\u9001\u3002`]);
-        }
-      };
-      const placeNativeDraft = async (mode) => {
-        if (!request2 || disabled || nativeFlight.current) return;
-        const target = request2;
-        nativeFlight.current = true;
-        setNativeBusy(true);
+      const scanDomain = async () => {
+        if (!domainRoot || busyNow) return;
+        const token = scanToken.current, abort2 = new AbortController();
+        scanController.current = abort2;
+        setScanBusy(true);
         setErrors([]);
         setNotice("");
+        setProgress("\u6B63\u5728\u626B\u63CF\u6240\u9009\u5DE5\u4F5C\u57DF\u2026");
         try {
-          requestIsFresh(target);
-          const capability = inspectNativeDraftHost(service);
-          if (!capability.supported) throw new Error(capability.reason);
-          let sessionId = capability.sessionId;
-          if (mode === "existing-workspace") {
-            if (!capability.workspaceId || typeof service.newSession !== "function") throw new Error("\u6CA1\u6709\u5DF2\u786E\u8BA4\u7684\u53EF\u7528\u5DE5\u4F5C\u533A\uFF1B\u8BF7\u660E\u786E\u9009\u62E9\u4F4D\u7F6E\u65B0\u5EFA\uFF0C\u6216\u590D\u5236\u63D0\u793A\u8BCD\u3002");
-            sessionId = await service.newSession(capability.workspaceId);
-          } else if (mode === "choose-workspace") {
-            if (typeof service.newWorkspaceSession !== "function") throw new Error("\u5F53\u524D\u5BBF\u4E3B\u4E0D\u652F\u6301\u4ECE\u5DE5\u4F5C\u53F0\u9009\u62E9\u4F4D\u7F6E\u65B0\u5EFA\u4F1A\u8BDD\uFF0C\u8BF7\u624B\u52A8\u521B\u5EFA\u540E\u91CD\u8BD5\u3002");
-            sessionId = await service.newWorkspaceSession();
-            if (!sessionId) {
-              if (mounted.current) setNotice("\u5DF2\u53D6\u6D88\u9009\u62E9\u4F4D\u7F6E\uFF0C\u672A\u653E\u5165\u4EFB\u4F55\u8349\u7A3F\u3002");
-              return;
-            }
+          const scan = await scanWorkspace(domainRoot, { signal: abort2.signal, onProgress: (value) => {
+            if (mounted.current && scanToken.current === token) setProgress(`\u6B63\u5728\u8BFB\u53D6 ${value.relative}\u2026`);
+          } });
+          if (!mounted.current || token !== scanToken.current || abort2.signal.aborted) return;
+          update((previous) => ({ ...previous, scan, documents: scan.documents.map((item) => item.relative) }));
+          setNotice(`\u5DF2\u626B\u63CF ${scan.files.length} \u4E2A\u6587\u4EF6\uFF0C\u8BFB\u53D6 ${scan.documents.length} \u7BC7\u6B63\u6587\uFF1B\u8BF7\u9884\u89C8\u5E76\u9009\u62E9\u8981\u53C2\u8003\u7684\u5185\u5BB9\u3002`);
+        } catch (error) {
+          if (mounted.current) setErrors([abort2.signal.aborted ? "\u5DF2\u53D6\u6D88\u626B\u63CF\uFF0C\u672A\u52A0\u5165\u5DE5\u4F5C\u57DF\u5185\u5BB9\u3002" : messageOf2(error)]);
+        } finally {
+          if (mounted.current) {
+            setScanBusy(false);
+            setProgress("");
           }
-          await placeOwnedNativeDraft({
+        }
+      };
+      const accept = (reply, request2) => {
+        validate(request2);
+        const parsed = parsePlanningReply(reply.text);
+        const keepInput = (previous) => previous.input.trim() && previous.input.trim() !== request2.options.constraints.trim() ? previous.input : "";
+        if (parsed.clarification) {
+          update((previous) => ({
+            ...previous,
+            phase: "question",
+            pending: null,
+            input: keepInput(previous),
+            messages: [...previous.messages, { role: "assistant", text: parsed.clarification, clarification: true }]
+          }));
+          inputRef.current?.focus();
+          return;
+        }
+        if (parsed.proposal.requestId !== request2.requestId) throw new Error("AI \u8FD4\u56DE\u4E86\u5176\u4ED6\u8F6E\u6B21\u7684\u65B9\u6848\uFF0C\u5F53\u524D\u9884\u89C8\u5DF2\u4FDD\u7559\u3002");
+        const existing = liveModel.current.revisions.findIndex((item) => item.request.requestId === request2.requestId);
+        if (existing >= 0) {
+          update((previous) => ({
+            ...previous,
+            index: existing,
+            pending: null,
+            phase: ["applied", "undone"].includes(previous.revisions[existing].status) ? previous.revisions[existing].status : "preview"
+          }));
+          setNotice("\u5DF2\u6062\u590D\u540C\u4E00\u4EFD\u65B9\u6848\uFF0C\u6CA1\u6709\u91CD\u590D\u751F\u6210\u7248\u672C\u6216\u4FEE\u6539\u4EFB\u52A1\u3002");
+          return;
+        }
+        const preview = previewProposal(liveTasks.current, parsed.proposal, request2);
+        update((previous) => {
+          const prior = previous.revisions[previous.index], previousKeys = new Set(prior ? proposalKeys(prior.proposal) : []);
+          const priorSelected = new Set(prior?.selected);
+          const keys = proposalKeys(parsed.proposal).filter((key) => !previousKeys.has(key) || priorSelected.has(key));
+          const number = (previous.revisions.at(-1)?.number || 0) + 1;
+          const next = { number, request: request2, proposal: parsed.proposal, explanation: parsed.explanation, selected: keys, status: "draft" };
+          const summary = preview.errors.length ? `\u7B2C ${number} \u7248\u5DF2\u8FD4\u56DE\uFF0C\u6709 ${preview.errors.length} \u5904\u9700\u8981\u8C03\u6574\uFF0C\u8BF7\u67E5\u770B\u51B2\u7A81\u3002` : `\u5DF2\u751F\u6210\u7B2C ${number} \u7248\uFF1A\u65B0\u589E ${preview.createdCount} \u9879\u4EFB\u52A1\u3001\u8C03\u6574 ${preview.changedCount} \u9879\u65E5\u671F\u3002\u8BF7\u5728\u56FE\u4E0A\u6838\u5BF9\u3002`;
+          return {
+            ...previous,
+            input: keepInput(previous),
+            phase: "preview",
+            pending: null,
+            revisions: [...previous.revisions, next],
+            index: previous.revisions.length,
+            messages: [...previous.messages, { role: "assistant", text: summary }]
+          };
+        });
+        setNotice("");
+        inputRef.current?.focus();
+      };
+      const generate = async () => {
+        const current = liveModel.current, text2 = current.input.trim();
+        if (busyNow || applying.current || nativeFlight.current || !text2) return;
+        if (current.revisions.length >= PLANNING_LIMITS.revisions) {
+          setErrors(["\u5DF2\u4FDD\u7559 12 \u4E2A\u65B9\u6848\u7248\u672C\u3002\u8BF7\u5F00\u59CB\u65B0\u89C4\u5212\uFF0C\u5408\u5E76\u9700\u8981\u4FDD\u7559\u7684\u8981\u6C42\uFF1B\u73B0\u6709\u65B9\u6848\u4ECD\u4FDD\u7559\u3002"]);
+          return;
+        }
+        nativeFlight.current = true;
+        const token = ++flight.current, scope = scopeChoice, abort2 = new AbortController();
+        controller.current = abort2;
+        setBusy(true);
+        setErrors([]);
+        setNotice("");
+        setProgress("\u6B63\u5728\u51C6\u5907\u89C4\u5212\u4F1A\u8BDD\u2026");
+        let request2;
+        try {
+          if (current.includeWorkspace && (!current.scan || current.scan.root !== domainRoot)) throw new Error("\u8BF7\u5148\u626B\u63CF\u5E76\u9884\u89C8\u6240\u9009\u5DE5\u4F5C\u57DF\uFF0C\u6216\u53D6\u6D88\u201C\u53C2\u8003\u5DE5\u4F5C\u57DF\u201D\u3002");
+          let history = current.messages;
+          if (current.pending?.message === text2 && history.at(-1)?.role === "user" && history.at(-1).text === text2) history = history.slice(0, -1);
+          request2 = buildPlanningRequest(liveTasks.current, {
+            scopeId: scope.startsWith("branch:") ? scope.slice(7) : null,
+            allTasks: scope === "all",
+            message: text2,
+            messages: history,
+            requestId: requestId(),
+            priorState: current.phase,
+            priorRevision: ["applied", "undone"].includes(current.phase) ? null : current.revisions[current.index],
+            selectedKeys: current.revisions[current.index]?.selected || [],
+            deadline: current.deadline,
+            allowOngoing: current.allowOngoing,
+            ...current.includeWorkspace ? { workspaceScan: { ...current.scan, documents: current.scan.documents.filter((item) => current.documents.includes(item.relative)) } } : {}
+          });
+          validate(request2);
+          const available = inspectNativeDraftHost(service);
+          if (!available.supported) throw new Error(available.reason);
+          let sessionId = current.sessionId;
+          if (!sessionId || available.sessionId !== sessionId || !service.ownsSession(sessionId)) {
+            if (!available.workspaceId || typeof service.newSession !== "function") throw new Error("\u8BF7\u5148\u9009\u62E9\u672C\u5DE5\u4F5C\u53F0\u7684\u4F1A\u8BDD\u4F4D\u7F6E\uFF0C\u7136\u540E\u751F\u6210\u65B9\u6848\u3002");
+            sessionId = await service.newSession(available.workspaceId);
+          }
+          if (!mounted.current || token !== flight.current || abort2.signal.aborted || scopeRef.current !== scope) return;
+          keepOwnedPlanningSession(cache, service, sessionId);
+          update((previous) => ({ ...previous, sessionId, phase: "generating" }));
+          const reply = await runOwnedPlanningTurn({
             service,
             sessionId,
-            prompt: target.prompt,
-            isCurrent: () => mounted.current && requestRef.current === target,
-            validate: () => requestIsFresh(target)
-          });
-          if (mounted.current) {
-            nativeSession.current = sessionId;
-            setNotice("\u5DF2\u653E\u5165\u672C\u5DE5\u4F5C\u53F0\u539F\u751F\u8349\u7A3F\u3002\u624B\u52A8\u53D1\u9001\u5E76\u7B49\u5F85\u56DE\u590D\u5B8C\u6210\u540E\uFF0C\u70B9\u51FB\u201C\u5BFC\u5165\u672C\u6B21 AI \u5EFA\u8BAE\u201D\u5373\u53EF\u6821\u9A8C\u9884\u89C8\u3002");
-            openNative();
-          }
-        } catch (problem) {
-          if (mounted.current) setErrors([`${messageOf2(problem)} \u53EF\u9009\u4E2D\u6216\u590D\u5236\u4E0B\u9762\u7684\u63D0\u793A\u8BCD\u624B\u52A8\u4F7F\u7528\u3002`]);
-        } finally {
-          nativeFlight.current = false;
-          if (mounted.current) setNativeBusy(false);
-        }
-      };
-      const importPreview = () => {
-        setErrors([]);
-        setNotice("");
-        setApplied(false);
-        try {
-          if (!request2) throw new Error("\u8BF7\u5148\u9884\u89C8\u4E0A\u4E0B\u6587\u5E76\u4F7F\u7528\u672C\u6B21\u63D0\u793A\u8BCD\uFF1B\u4E0D\u80FD\u5BFC\u5165\u6CA1\u6709\u5BF9\u5E94\u4E0A\u4E0B\u6587\u7684 JSON\u3002");
-          const proposal = parseProposal(proposalText);
-          const next = previewProposal(tasks, proposal, request2);
-          setPreview(next);
-          if (next.noOp) setNotice("\u63D0\u6848\u6CA1\u6709\u5B9E\u9645\u65E5\u671F\u53D8\u66F4\u6216\u65B0\u589E\u4EFB\u52A1\uFF0C\u4E0D\u4F1A\u5199\u5165\u3002");
-        } catch (problem) {
-          setPreview(null);
-          setErrors(problem.issues || [messageOf2(problem)]);
-        }
-      };
-      const importNative = async () => {
-        if (disabled || busy || applied || nativeFlight.current) return;
-        const target = requestRef.current, scope = scopeChoice;
-        nativeFlight.current = true;
-        setReplyBusy(true);
-        setErrors([]);
-        setNotice("");
-        setClosing(false);
-        setMinimized(false);
-        try {
-          const result = await readOwnedNativeReply({
-            service,
-            sessionId: nativeSession.current,
-            isCurrent: () => mounted.current && requestRef.current === target && currentScope.current === scope,
-            validate: () => {
-              if (target) requestIsFresh(target);
+            prompt: request2.prompt,
+            signal: abort2.signal,
+            isCurrent: () => mounted.current && token === flight.current && scopeRef.current === scope,
+            onDispatch: () => update((previous) => ({
+              ...previous,
+              sessionId,
+              phase: "generating",
+              input: "",
+              pending: { request: request2, message: text2, sessionId },
+              messages: [...history, { role: "user", text: text2 }]
+            })),
+            validate: () => validate(request2),
+            onProgress: (value) => {
+              if (mounted.current && token === flight.current) setProgress(value);
             }
           });
-          const proposal = parseProposal(result.text);
-          const restored = restoreNativeRequest(latestTasks.current, {
-            prompt: result.prompt,
-            requestId: proposal.requestId,
+          if (mounted.current && token === flight.current && scopeRef.current === scope) accept(reply, request2);
+        } catch (error) {
+          if (mounted.current && token === flight.current) {
+            update((previous) => ({ ...previous, phase: ["applied", "undone"].includes(current.phase) ? current.phase : previous.revisions.length ? "preview" : "error", input: text2 }));
+            setErrors(error.issues || [messageOf2(error)]);
+          }
+        } finally {
+          nativeFlight.current = false;
+          if (mounted.current && token === flight.current) {
+            setBusy(false);
+            setProgress("");
+          }
+        }
+      };
+      const importReply = async () => {
+        if (busyNow || applying.current || nativeFlight.current) return;
+        nativeFlight.current = true;
+        const token = ++flight.current, scope = scopeChoice, target = liveModel.current.pending?.request;
+        setBusy(true);
+        setErrors([]);
+        setNotice("");
+        try {
+          keepOwnedPlanningSession(cache, service, liveModel.current.pending?.sessionId || liveModel.current.sessionId || service?.currentSession?.());
+          const reply = await readOwnedNativeReply({
+            service,
+            sessionId: liveModel.current.pending?.sessionId || liveModel.current.sessionId || void 0,
+            isCurrent: () => mounted.current && token === flight.current && scopeRef.current === scope,
+            validate: () => {
+              if (target) validate(target);
+            }
+          });
+          const parsed = parsePlanningReply(reply.text);
+          const request2 = target || restoreNativeRequest(liveTasks.current, {
+            prompt: reply.prompt,
+            requestId: parsed.proposal?.requestId,
             scopeId: scope.startsWith("branch:") ? scope.slice(7) : null,
             allTasks: scope === "all"
           });
-          if (target && proposal.requestId !== target.requestId) throw new Error("AI \u56DE\u590D\u4E0D\u662F\u672C\u6B21\u8BF7\u6C42\uFF0C\u8BF7\u5207\u56DE\u5BF9\u5E94\u4F1A\u8BDD\uFF1B\u6CA1\u6709\u5BFC\u5165\u5176\u4ED6\u5EFA\u8BAE\u3002");
-          const nextRequest = target || restored;
-          const next = previewProposal(latestTasks.current, proposal, nextRequest);
-          if (!mounted.current || requestRef.current !== target || currentScope.current !== scope) return;
-          if (!target) {
-            setRequest(restored);
-            requestRef.current = restored;
-            setDeadline(restored.options.deadline);
-            setConstraints(restored.options.constraints);
-            setAllowOngoing(restored.options.allowOngoing);
-          }
-          nativeSession.current = result.sessionId;
-          setProposalText(result.text);
-          setPreview(next);
-          setApplied(false);
-          setNotice(next.noOp ? "\u5DF2\u5BFC\u5165\u539F\u751F\u5EFA\u8BAE\uFF0C\u6CA1\u6709\u5B9E\u9645\u65E5\u671F\u53D8\u66F4\u6216\u65B0\u589E\u4EFB\u52A1\uFF0C\u4E0D\u4F1A\u5199\u5165\u3002" : "\u5DF2\u4ECE\u5F53\u524D\u539F\u751F\u4F1A\u8BDD\u5BFC\u5165\u5B8C\u6574\u5EFA\u8BAE\u5E76\u5B8C\u6210\u6821\u9A8C\u3002\u8BF7\u6838\u5BF9\u4E0B\u65B9\u65B0\u589E\u4EFB\u52A1\u3001\u5C42\u7EA7\u548C\u65E5\u671F\uFF1B\u70B9\u51FB\u201C\u786E\u8BA4\u5E94\u7528\u201D\u624D\u4F1A\u4FDD\u5B58\u3002");
-        } catch (problem) {
-          if (mounted.current) {
-            setPreview(null);
-            setErrors(problem.issues || [messageOf2(problem)]);
-          }
+          if (target && reply.prompt !== target.prompt) throw new Error("\u539F\u751F\u56DE\u590D\u4E0E\u672C\u8F6E\u8BF7\u6C42\u4E0D\u5BF9\u5E94\uFF0C\u672A\u5BFC\u5165\u3002");
+          if (!liveModel.current.messages.length) update((previous) => ({
+            ...previous,
+            sessionId: reply.sessionId,
+            messages: [{ role: "user", text: request2.options.constraints || "\u5BFC\u5165\u5DF2\u6709\u6392\u671F\u5EFA\u8BAE" }]
+          }));
+          accept(reply, request2);
+        } catch (error) {
+          if (mounted.current) setErrors(error.issues || [messageOf2(error)]);
         } finally {
           nativeFlight.current = false;
-          if (mounted.current) setReplyBusy(false);
+          if (mounted.current) setBusy(false);
         }
       };
-      const importAction = React.useRef(importNative);
-      importAction.current = importNative;
+      const importRef = React.useRef(importReply);
+      importRef.current = importReply;
       React.useEffect(() => {
-        if (importNonce) void importAction.current();
+        if (importNonce) void importRef.current();
       }, [importNonce]);
-      React.useEffect(() => {
-        if (!preview || minimized) return;
-        previewRef.current?.scrollIntoView?.({ block: "start", behavior: "instant" });
-        previewRef.current?.focus?.({ preventScroll: true });
-      }, [preview, minimized]);
-      const confirmApply = async () => {
-        if (disabled || applying.current || !preview || !livePreview?.canApply || applied) return;
-        if (typeof commit !== "function") {
-          setErrors(["\u5F53\u524D\u754C\u9762\u6CA1\u6709\u53EF\u7528\u7684\u539F\u5B50\u63D0\u4EA4\u901A\u9053\uFF0C\u4E0D\u80FD\u5E94\u7528\u63D0\u6848\u3002"]);
-          return;
-        }
+      const confirm = async () => {
+        const current = liveModel.current, version = current.revisions[current.index];
+        if (busyNow || applying.current || !version || !draftVisible || !derived?.selected?.canApply || typeof commit !== "function") return;
         applying.current = true;
-        setApplyBusy(true);
+        setBusy(true);
         setErrors([]);
-        setNotice("");
+        let receipt, confirmed;
         try {
-          const outcome = await commit((latest) => applyProposal(latest, preview));
-          if (outcome === false) throw new Error("\u63D0\u6848\u4FDD\u5B58\u5931\u8D25\uFF0C\u4EFB\u52A1\u4E0E\u65E5\u671F\u672A\u786E\u8BA4\u843D\u76D8\u3002\u8BF7\u68C0\u67E5\u4FDD\u5B58\u9519\u8BEF\u5E76\u91CD\u65B0\u9884\u89C8\u540E\u91CD\u8BD5\u3002");
-          if (mounted.current) {
-            setApplied(true);
-            setNotice(preview.createdCount ? `\u5DF2\u786E\u8BA4\u65B0\u589E ${preview.createdCount} \u9879\u5F85\u529E\u4EFB\u52A1${preview.changedCount ? `\uFF0C\u5E76\u5E94\u7528 ${preview.changedCount} \u9879\u539F\u6709\u65E5\u671F\u53D8\u66F4` : ""}\u3002\u539F\u6709\u4EFB\u52A1\u7684\u8D1F\u8D23\u4EBA\u3001\u72B6\u6001\u3001\u7B14\u8BB0\u4E0E\u5B9E\u9645\u5B8C\u6210\u65F6\u95F4\u672A\u6539\u52A8\uFF1B\u6B64\u63D0\u6848\u4E0D\u80FD\u518D\u6B21\u5E94\u7528\u3002` : `\u5DF2\u786E\u8BA4\u5E76\u5E94\u7528 ${preview.changedCount} \u9879\u65E5\u671F\u53D8\u66F4\u3002\u8D1F\u8D23\u4EBA\u3001\u72B6\u6001\u3001\u7B14\u8BB0\u4E0E\u5B9E\u9645\u5B8C\u6210\u65F6\u95F4\u672A\u6539\u52A8\uFF1B\u6B64\u63D0\u6848\u4E0D\u80FD\u518D\u6B21\u5E94\u7528\u3002`);
-          }
-        } catch (problem) {
-          if (mounted.current) setErrors(problem.issues || [messageOf2(problem)]);
+          const outcome = await commit((latest) => {
+            confirmed = planningPreview(latest, version, version.selected);
+            const after = applyProposal(latest, confirmed.selected);
+            receipt = createPlanningUndo(latest, after);
+            return after;
+          });
+          if (outcome === false) throw new Error("\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u4EFB\u52A1\u5DF2\u4FDD\u7559\uFF1B\u8BF7\u91CD\u8BD5\u786E\u8BA4\u3002");
+          cache.undo = { ...receipt, scopeChoice, requestId: version.request.requestId };
+          update((previous) => ({ ...previous, phase: "applied", pending: null, revisions: previous.revisions.map((item, index) => index === previous.index ? { ...item, status: "applied", confirmed } : item) }));
+          setNotice(`\u5DF2\u5E94\u7528 ${receipt.records.length} \u9879\u53D8\u5316\uFF0C\u53EF\u64A4\u9500\u672C\u6279\u3002`);
+        } catch (error) {
+          if (mounted.current) setErrors(error.issues || [messageOf2(error)]);
         } finally {
           applying.current = false;
-          if (mounted.current) setApplyBusy(false);
+          if (mounted.current) setBusy(false);
         }
       };
-      const issueList = (items, label, className = "tbAIIssues") => items?.length ? h(
-        "div",
-        { className, role: className === "tbAIIssues" ? "alert" : "note" },
-        h("strong", null, label),
-        h("ul", null, items.map((text2, index) => h("li", { key: index }, String(text2))))
-      ) : null;
-      const button = (label, onClick, extra = {}) => h("button", { type: "button", className: "tbBtn", onClick, ...extra }, label);
-      const chosenTask = tasks.find((task) => `branch:${task.id}` === scopeChoice);
-      const scopeItems = chosenTask && !scopes.items.some((item) => item.id === chosenTask.id) ? [{ id: chosenTask.id, title: `${chosenTask.title || chosenTask.id}\uFF08\u5F53\u524D\u5206\u652F\uFF09` }, ...scopes.items] : scopes.items;
-      if (minimized) return h(
-        "aside",
-        { className: "tbAIDock", "data-ai-schedule-dock": true, "aria-label": "AI \u6392\u671F\u63D0\u6848\u5F85\u5BFC\u5165" },
-        h("span", { className: "tbAIStatus" }, "\u4EC5\u5EFA\u8BAE \xB7 \u7B49\u5F85\u5BFC\u5165 AI \u5B8C\u6574\u56DE\u590D"),
-        button("\u5BFC\u5165\u672C\u6B21 AI \u5EFA\u8BAE", importNative, { className: "tbBtn tbBtnPrimary", disabled: busy || disabled || !replyAvailability.supported || !replyAvailability.owned }),
-        button("\u8FD4\u56DE AI \u6392\u671F\u9884\u89C8", () => {
-          setMinimized(false);
-          setClosing(false);
+      const undo = async () => {
+        if (busyNow || applying.current || !cache.undo || typeof commit !== "function") return;
+        applying.current = true;
+        setBusy(true);
+        setErrors([]);
+        try {
+          let problem;
+          const receipt = cache.undo;
+          const outcome = await commit((latest) => {
+            try {
+              return undoPlanningBatch(latest, receipt);
+            } catch (error) {
+              problem = error;
+              throw error;
+            }
+          });
+          if (outcome === false) throw problem || new Error("\u64A4\u9500\u4FDD\u5B58\u5931\u8D25\uFF0C\u672C\u6279\u8BB0\u5F55\u4FDD\u6301\u539F\u6837\uFF0C\u53EF\u91CD\u8BD5\u3002");
+          cache.undo = null;
+          const markUndone = (plan) => {
+            const viewing = plan.revisions[plan.index]?.request.requestId === receipt.requestId;
+            return {
+              ...plan,
+              ...viewing ? { phase: "undone", pending: null } : {},
+              revisions: plan.revisions.map((item) => item.request.requestId === receipt.requestId ? { ...item, status: "undone" } : item)
+            };
+          };
+          for (const [key, plan] of cache.plans) if (key !== scopeChoice) cache.plans.set(key, markUndone(plan));
+          update((previous) => ({
+            ...markUndone(previous),
+            messages: [...previous.messages, { role: "system", text: "\u5DF2\u64A4\u9500\u4E0A\u6B21\u5E94\u7528\uFF0C\u4EFB\u52A1\u6062\u590D\u5230\u8BE5\u6279\u5E94\u7528\u524D\u3002\u53EF\u4EE5\u7EE7\u7EED\u8C03\u6574\u3002" }]
+          }));
+          setNotice("\u5DF2\u6574\u6279\u64A4\u9500\u65B0\u589E\u4EFB\u52A1\u3001\u5B50\u4EFB\u52A1\u53CA\u65E5\u671F\u8C03\u6574\u3002\u5BF9\u8BDD\u548C\u65B9\u6848\u7248\u672C\u4ECD\u4FDD\u7559\u3002");
+        } catch (error) {
+          if (mounted.current) setErrors([messageOf2(error)]);
+        } finally {
+          applying.current = false;
+          if (mounted.current) setBusy(false);
+        }
+      };
+      const toggle = (key, checked) => update((previous) => ({ ...previous, revisions: previous.revisions.map((item, index) => index === previous.index ? { ...item, selected: togglePlanningSelection(item.proposal, item.selected, key, checked) } : item) }));
+      const chooseVersion = (index) => {
+        setCompare(false);
+        setErrors([]);
+        setNotice("");
+        update((previous) => ({ ...previous, index, phase: ["applied", "undone"].includes(previous.revisions[index]?.status) ? previous.revisions[index].status : "preview" }));
+      };
+      const startNew = () => {
+        if (busyNow) return;
+        cache.plans.set(`history:${scopeChoice}:${Date.now()}`, liveModel.current);
+        update(freshPlan());
+        setErrors([]);
+        setNotice("\u5DF2\u5F00\u59CB\u65B0\u89C4\u5212\uFF1B\u6B64\u524D\u8BB0\u5F55\u4ECD\u5728\u672C\u6B21\u5DE5\u4F5C\u53F0\u5185\u4FDD\u7559\u3002");
+        setCompare(false);
+      };
+      const button = (text2, action, extra = {}) => h("button", { type: "button", className: "tbBtn", disabled: busyNow, onClick: action, ...extra }, text2);
+      const issueList = (items) => items.length ? h("div", { className: "tbPlanningErrors", role: "alert" }, items.map((text2, index) => h("p", { key: index }, text2))) : null;
+      const recent = model.messages.slice(-2), older = model.messages.slice(0, -2);
+      const renderMessage = (item, index) => h("p", { key: index, className: `tbPlanningMessage tbPlanningMessage-${item.role}` }, item.text);
+      const rows = revision ? [
+        ...revision.proposal.changes.map((item) => ({
+          key: changeKey(item.id),
+          title: tasks.find((task) => task.id === item.id)?.title || "\u539F\u6709\u4EFB\u52A1",
+          kind: "\u6539\u671F",
+          range: `${shortRange(derived?.all?.rows?.find((row) => row.id === item.id)?.before || tasks.find((task) => task.id === item.id))} \u2192 ${shortRange(item)}`,
+          item
+        })),
+        ...(revision.proposal.newTasks || []).map((item) => {
+          const effective = derived?.selected?.creationRows?.find((row) => row.ref === item.ref) || derived?.all?.creationRows?.find((row) => row.ref === item.ref);
+          return {
+            key: newTaskKey(item.ref),
+            title: item.title,
+            kind: "\u65B0\u589E",
+            range: `${item.parentRef ? `${revision.proposal.newTasks.find((parent) => parent.ref === item.parentRef)?.title || "\u65B0\u7236\u4EFB\u52A1"} \xB7 ` : effective?.automatic ? "\u81EA\u52A8\u6C47\u603B \xB7 " : ""}${shortRange(effective?.after || item)}`,
+            item
+          };
+        })
+      ] : [];
+      const selectedCount = revision?.selected.length || 0;
+      const explanation = revision ? [
+        revision.explanation,
+        ...rows.map((row) => `${row.title}\uFF1A${row.item.reason}${row.item.assumptions.length ? `
+\u5047\u8BBE\uFF1A${row.item.assumptions.join("\uFF1B")}` : ""}`),
+        ...revision.proposal.workspaceSuggestions || [],
+        ...revision.proposal.assumptions || []
+      ].filter(Boolean) : [];
+      const composer = h(
+        "form",
+        { className: "tbPlanningComposer", onSubmit: (event) => {
+          event.preventDefault();
+          void generate();
+        } },
+        !model.messages.length ? h("label", { className: "tbPlanningLabel", htmlFor: "tb-planning-goal" }, "\u544A\u8BC9 AI \u4F60\u7684\u76EE\u6807") : null,
+        h("textarea", {
+          id: "tb-planning-goal",
+          ref: inputRef,
+          className: "tbArea",
+          "aria-label": model.messages.length ? "\u7EE7\u7EED\u8C03\u6574\u65B9\u6848" : "\u89C4\u5212\u76EE\u6807",
+          rows: model.messages.length ? 3 : 5,
+          maxLength: PLANNING_LIMITS.message,
+          value: model.input,
+          disabled: busyNow,
+          placeholder: model.messages.length ? "\u7EE7\u7EED\u8BF4\u54EA\u91CC\u4E0D\u5408\u9002\u2026" : "\u4F8B\u5982\uFF1A10\u670828\u65E5\u524D\u5B8C\u6210\u9A8C\u6536\uFF0C\u5F00\u53D1\u65E5\u671F\u4E0D\u52A8\uFF0C\u5E2E\u6211\u8865\u9F50\u9057\u6F0F\u6B65\u9AA4\u3002",
+          onChange: (event) => update((previous) => ({ ...previous, input: event.target.value }))
         }),
-        button("\u5173\u95ED", close, { disabled: busy, "aria-label": "\u5173\u95ED AI \u6392\u671F\u63D0\u6848" })
+        !model.messages.length ? h(
+          "div",
+          { className: "tbPlanningExamples" },
+          button("\u8865\u9F50\u5B50\u4EFB\u52A1", () => {
+            update((previous) => ({ ...previous, input: "\u8BF7\u6839\u636E\u5F53\u524D\u4EFB\u52A1\u548C\u5DF2\u9009\u62E9\u7684\u8D44\u6599\u8865\u9F50\u9057\u6F0F\u7684\u5B50\u4EFB\u52A1\uFF0C\u4FDD\u7559\u73B0\u6709\u4EFB\u52A1\u5B89\u6392\u3002" }));
+            inputRef.current?.focus();
+          }),
+          button("\u4F18\u5316\u5F53\u524D\u6392\u671F", () => {
+            update((previous) => ({ ...previous, input: "\u8BF7\u68C0\u67E5\u5F53\u524D\u6392\u671F\uFF0C\u6307\u51FA\u51B2\u7A81\u5E76\u7ED9\u51FA\u66F4\u5408\u7406\u7684\u65E5\u671F\u5B89\u6392\uFF0C\u8BF4\u660E\u9700\u8981\u6211\u786E\u8BA4\u7684\u5047\u8BBE\u3002" }));
+            inputRef.current?.focus();
+          })
+        ) : null,
+        h("button", {
+          type: "submit",
+          className: `tbBtn${!model.messages.length ? " tbBtnPrimary tbPlanningGenerate" : " tbPlanningUpdate"}`,
+          disabled: busyNow || !model.input.trim()
+        }, busy ? "\u6B63\u5728\u751F\u6210\u2026" : model.messages.length ? "\u66F4\u65B0\u9884\u89C8" : "\u751F\u6210\u65B9\u6848\u9884\u89C8"),
+        h("p", { className: "tbPlanningHelp" }, ["applied", "undone"].includes(model.phase) ? "\u7EE7\u7EED\u8F93\u5165\u5C06\u57FA\u4E8E\u5F53\u524D\u4EFB\u52A1\u751F\u6210\u65B0\u9884\u89C8\u3002" : revision ? "\u786E\u8BA4\u524D\u53EA\u66F4\u65B0\u9884\u89C8\uFF0C\u4E0D\u4FEE\u6539\u4EFB\u52A1\u3002" : "\u5148\u751F\u6210\u9884\u89C8\uFF0C\u786E\u8BA4\u540E\u624D\u4F1A\u4FEE\u6539\u4EFB\u52A1\u3002")
       );
       return h(
-        "div",
-        { className: "tbAIShade", "data-ai-schedule-scope": true },
+        "aside",
+        {
+          className: "tbPlanning",
+          ref: root,
+          "data-ai-planning": true,
+          "data-phase": model.phase,
+          "aria-label": "AI \u8F85\u52A9\u89C4\u5212",
+          onKeyDown: (event) => {
+            if (event.key === "Escape" && !applying.current) {
+              event.preventDefault();
+              event.stopPropagation();
+              onClose?.();
+            }
+          }
+        },
         h(
-          "section",
-          { className: "tbAI", ref: panelRef, role: "dialog", "aria-modal": true, "aria-labelledby": `${fieldId}-title` },
-          h(
-            "header",
-            { className: "tbAIHeader" },
-            h(
-              "div",
-              null,
-              h("h2", { id: `${fieldId}-title`, tabIndex: -1, ref: headingRef }, "AI \u8F85\u52A9\u6392\u671F"),
-              h("p", null, "\u9009\u62E9\u8303\u56F4 \u2192 \u9884\u89C8\u4E0A\u4E0B\u6587 \u2192 \u539F\u751F\u4F1A\u8BDD\u624B\u52A8\u53D1\u9001 \u2192 \u4E00\u952E\u5BFC\u5165\u5EFA\u8BAE \u2192 \u786E\u8BA4\u5E94\u7528")
-            ),
-            button("\u5173\u95ED", close, { disabled: busy, "aria-label": "\u5173\u95ED AI \u6392\u671F" })
-          ),
-          h(
+          "header",
+          { className: "tbPlanningHeader" },
+          h("h2", { tabIndex: -1, ref: heading }, revision ? "AI \u65B9\u6848" : "AI \u8F85\u52A9\u89C4\u5212"),
+          revision ? h("span", { className: "tbPlanningBadge" }, model.phase === "applied" ? "\u5DF2\u5E94\u7528" : model.phase === "undone" ? "\u5DF2\u64A4\u9500" : "\u9884\u89C8\u4E2D") : null,
+          button("\u5173\u95ED", onClose, { className: "tbBtn tbGhost", "aria-label": "\u5173\u95ED AI \u89C4\u5212", disabled: applying.current })
+        ),
+        h(
+          "div",
+          { className: "tbPlanningBody" },
+          model.revisions.length ? h(
             "div",
-            { className: "tbAIBody" },
-            h("div", { className: "tbAISafety" }, "\u9ED8\u8BA4\u53EA\u5206\u6790\u4EFB\u52A1\u3002\u53EA\u6709\u52FE\u9009\u5E76\u4E3B\u52A8\u626B\u63CF\u5DE5\u4F5C\u57DF\u624D\u8BFB\u53D6\u6587\u4EF6\uFF1B\u7ED3\u679C\u5148\u5728\u672C\u5730\u5C55\u793A\uFF0C\u4E0D\u81EA\u52A8\u53D1\u9001\u3002\u786E\u8BA4\u5E94\u7528\u53EF\u66F4\u65B0\u539F\u6709\u53F6\u4EFB\u52A1\u65E5\u671F\uFF0C\u5E76\u521B\u5EFA\u9884\u89C8\u4E2D\u7684\u5F85\u529E\u4EFB\u52A1\u4E0E\u5B50\u4EFB\u52A1\uFF1B\u4E0D\u66F4\u6539\u5DF2\u6709\u4EFB\u52A1\u7684\u8D1F\u8D23\u4EBA\u3001\u72B6\u6001\u3001\u7B14\u8BB0\u6216\u5B9E\u9645\u5B8C\u6210\u65F6\u95F4\uFF0C\u4E0D\u64CD\u4F5C\u5DE5\u4F5C\u57DF\u6587\u4EF6\u3002"),
-            closing ? h(
-              "div",
-              { className: "tbAICloseConfirm", role: "alert" },
-              h("strong", null, "\u5173\u95ED\u540E\u4F1A\u4E22\u5931\u672C\u5730\u672A\u5E94\u7528\u7684\u63D0\u793A\u8BCD\u3001\u7EA6\u675F\u4E0E\u7C98\u8D34\u5185\u5BB9\u3002\u4EFB\u52A1\u4E0D\u4F1A\u6539\u52A8\uFF0C\u539F\u751F\u4F1A\u8BDD\u8349\u7A3F\u4E0D\u4F1A\u88AB\u5220\u9664\u3002"),
-              h("div", { className: "tbAIActions" }, button("\u7EE7\u7EED\u6392\u671F", () => setClosing(false)), button("\u4E22\u5F03\u672C\u5730\u8349\u7A3F\u5E76\u5173\u95ED", () => onClose?.(), { disabled: busy }))
-            ) : null,
-            issueList([...errors, ...scopes.error ? [scopes.error] : []], "\u65E0\u6CD5\u7EE7\u7EED"),
-            notice ? h("p", { className: "tbAINotice", role: "status" }, notice) : null,
+            { className: "tbPlanningVersion" },
             h(
-              "section",
-              { className: "tbAIStep", "aria-labelledby": `${fieldId}-scope` },
-              h("h3", { id: `${fieldId}-scope` }, "1 \xB7 \u9009\u5B9A\u4EFB\u52A1\u4E0E\u7528\u6237\u7EA6\u675F"),
-              h(
-                "div",
-                { className: "tbAIFields" },
-                h("label", null, "\u6392\u671F\u8303\u56F4", h(
+              "select",
+              { className: "tbSelect", "aria-label": "\u65B9\u6848\u7248\u672C", value: model.index, disabled: busyNow, onChange: (event) => chooseVersion(Number(event.target.value)) },
+              model.index < 0 ? h("option", { value: -1 }, "\u67E5\u770B\u6B64\u524D\u65B9\u6848\u2026") : null,
+              model.revisions.map((item, index) => h("option", { key: item.number, value: index }, `\u7B2C ${item.number} \u7248${item.status === "applied" ? "\uFF08\u5DF2\u5E94\u7528\uFF09" : ""}`))
+            ),
+            button(compare ? "\u6536\u8D77\u5BF9\u6BD4" : "\u5BF9\u6BD4\u4E0A\u4E00\u7248", () => setCompare((value) => !value), { className: "tbPlanningLink", disabled: busyNow || model.index < 1 })
+          ) : null,
+          !model.messages.length ? h("div", { className: "tbPlanningWelcome" }, h("h3", null, "\u4F60\u60F3\u600E\u4E48\u5B89\u6392\u8FD9\u4E2A\u9879\u76EE\uFF1F"), h("p", null, "\u8BF4\u6E05\u76EE\u6807\uFF0CAI \u4F1A\u628A\u5EFA\u8BAE\u753B\u5728\u7518\u7279\u56FE\u4E0A\u3002")) : null,
+          !model.messages.length ? h(
+            "label",
+            { className: "tbPlanningLabel" },
+            "\u89C4\u5212\u8303\u56F4",
+            h(
+              "select",
+              {
+                className: "tbSelect",
+                "aria-label": "\u89C4\u5212\u8303\u56F4",
+                value: scopeChoice,
+                disabled: busyNow,
+                onChange: (event) => changeScope(event.target.value)
+              },
+              initialScopeId && !scopes.some((item) => item.id === initialScopeId) ? h("option", { value: `branch:${initialScopeId}` }, tasks.find((task) => task.id === initialScopeId)?.title || "\u5F53\u524D\u5206\u652F") : null,
+              scopes.map((item) => h("option", { key: item.id, value: `branch:${item.id}` }, `\u5F53\u524D\u9879\u76EE \xB7 ${item.title}`)),
+              h("option", { value: "all" }, "\u5168\u90E8\u4EFB\u52A1\uFF08\u660E\u786E\u5305\u542B\u5386\u53F2\u4EFB\u52A1\uFF09")
+            ),
+            h("span", { className: "tbPlanningHelp" }, scopeChoice === "all" ? "\u5DF2\u660E\u786E\u9009\u62E9\u5168\u90E8\u4EFB\u52A1\uFF0C\u8BF7\u6838\u5BF9\u8303\u56F4\u3002" : `\u5305\u542B ${Math.max(0, subtreeIds(tasks, scopeChoice.slice(7)).size - 1)} \u4E2A\u5B50\u4EFB\u52A1`)
+          ) : null,
+          h(
+            "section",
+            { className: "tbPlanningWorkspace" },
+            h("label", { className: "tbPlanningCheck" }, h("input", {
+              type: "checkbox",
+              "aria-label": "\u53C2\u8003\u5DE5\u4F5C\u57DF",
+              checked: model.includeWorkspace,
+              disabled: busyNow,
+              onChange: (event) => update((previous) => ({
+                ...previous,
+                includeWorkspace: event.target.checked,
+                ...!event.target.checked ? { scan: null, documents: [] } : {}
+              }))
+            }), "\u53C2\u8003\u5DE5\u4F5C\u57DF", h("span", { className: "tbPlanningHelp" }, "\u53EF\u9009")),
+            model.includeWorkspace ? h(
+              model.messages.length ? "details" : React.Fragment,
+              model.messages.length ? { className: "tbPlanningDetails" } : null,
+              model.messages.length ? h("summary", null, `\u5DF2\u53C2\u8003 ${model.documents.length} \u7BC7\u6B63\u6587 \xB7 \u8C03\u6574\u8D44\u6599`) : null,
+              !domainRoot ? h("p", { className: "tbPlanningHelp" }, "\u5F53\u524D\u8303\u56F4\u5C1A\u672A\u7ED1\u5B9A\u5DE5\u4F5C\u57DF\uFF0C\u8BF7\u5148\u5728\u4EFB\u52A1\u8BE6\u60C5\u9009\u62E9\u6587\u4EF6\u5939\u3002") : h(
+                React.Fragment,
+                null,
+                h(
                   "select",
                   {
                     className: "tbSelect",
-                    "aria-label": "\u6392\u671F\u8303\u56F4",
-                    value: scopeChoice,
-                    disabled: busy || disabled,
-                    onChange: (event) => invalidate(() => setScopeChoice(event.target.value))
+                    "aria-label": "\u626B\u63CF\u5DE5\u4F5C\u57DF",
+                    value: domainRoot,
+                    disabled: busyNow,
+                    onChange: (event) => update((previous) => ({ ...previous, domainChoice: event.target.value, scan: null, documents: [] }))
                   },
-                  !scopeItems.length ? h("option", { value: "" }, "\u6682\u65E0\u4EFB\u52A1") : null,
-                  scopeItems.map((item) => h("option", { value: `branch:${item.id}`, key: item.id }, `${item.title}\uFF08\u542B\u5168\u90E8\u4E0B\u7EA7\uFF09`)),
-                  h("option", { value: "all" }, "\u660E\u786E\u9009\u62E9\u5168\u90E8\u4EFB\u52A1\uFF08\u542B\u5168\u90E8\u5386\u53F2\u4EFB\u52A1\uFF09")
-                )),
-                h("label", null, "\u7528\u6237\u7ED9\u5B9A\u622A\u6B62\uFF08\u53EF\u9009\uFF09", h("input", {
-                  type: "date",
-                  className: "tbInput",
-                  "aria-label": "\u7528\u6237\u7ED9\u5B9A\u622A\u6B62",
-                  value: deadline,
-                  disabled: busy || disabled,
-                  onChange: (event) => invalidate(() => setDeadline(event.target.value))
-                }))
-              ),
-              scopeChoice === "all" ? h("p", { className: "tbAIWarning" }, "\u5DF2\u660E\u786E\u9009\u62E9\u5168\u90E8\u4EFB\u52A1\uFF1B\u8D85\u8FC7 100 \u9879\u65F6\u5FC5\u987B\u7F29\u5C0F\u8303\u56F4\uFF0C\u4E0D\u4F1A\u9759\u9ED8\u622A\u65AD\u4EFB\u52A1\u3002") : null,
-              h("label", { className: "tbAILabel" }, "\u5DE5\u4F5C\u91CF\u4E0E\u7EA6\u675F\uFF08\u53EF\u9009\uFF0C\u5747\u7531\u4F60\u63D0\u4F9B\uFF09", h("textarea", {
-                className: "tbArea",
-                "aria-label": "\u5DE5\u4F5C\u91CF\u4E0E\u7EA6\u675F",
-                rows: 3,
-                placeholder: "\u4F8B\u5982\uFF1A\u6BCF\u5929\u53EF\u6295\u5165 2 \u5C0F\u65F6\u3001\u67D0\u4EFB\u52A1\u5FC5\u987B\u5148\u5B8C\u6210\uFF1B\u6CA1\u6709\u586B\u5199\u5C31\u6309\u672A\u77E5\u5904\u7406\u3002",
-                value: constraints,
-                maxLength: AI_SCHEDULE_LIMITS.constraints,
-                disabled: busy || disabled,
-                onChange: (event) => invalidate(() => setConstraints(event.target.value))
-              })),
-              h("label", { className: "tbAICheck" }, h("input", {
-                type: "checkbox",
-                checked: allowOngoing,
-                disabled: busy || disabled,
-                onChange: (event) => invalidate(() => setAllowOngoing(event.target.checked))
-              }), "\u672C\u6B21\u660E\u786E\u5141\u8BB8\u4E3A\u672A\u8BBE\u622A\u6B62\u7684\u6301\u7EED\u6027\u5DE5\u4F5C\u5EFA\u8BAE\u65E5\u671F\uFF08\u9ED8\u8BA4\u4E0D\u5141\u8BB8\uFF09"),
-              h(
-                "section",
-                { className: "tbAIWorkspace", "aria-label": "\u53EF\u9009\u5DE5\u4F5C\u57DF\u626B\u63CF" },
-                h("label", { className: "tbAICheck" }, h("input", {
-                  type: "checkbox",
-                  checked: includeWorkspace,
-                  disabled: busy || disabled,
-                  onChange: (event) => invalidate(() => {
-                    setIncludeWorkspace(event.target.checked);
-                    if (!event.target.checked) clearWorkspaceScan();
-                  })
-                }), "\u8BFB\u53D6\u5DE5\u4F5C\u57DF\u8F85\u52A9\u6392\u671F\uFF08\u53EF\u9009\uFF09"),
-                includeWorkspace ? h(
-                  React.Fragment,
-                  null,
-                  !domainRoot ? h("p", { className: "tbAIHelp" }, "\u6240\u9009\u4EFB\u52A1\u53CA\u5176\u7236\u7EA7\u5C1A\u672A\u7ED1\u5B9A\u5DE5\u4F5C\u57DF\uFF0C\u8BF7\u5148\u5728\u4EFB\u52A1\u8BE6\u60C5\u9009\u62E9\u6587\u4EF6\u5939\u3002") : h(
-                    React.Fragment,
-                    null,
-                    h("label", { className: "tbAILabel" }, "\u626B\u63CF\u5DE5\u4F5C\u57DF", h(
-                      "select",
-                      {
-                        className: "tbSelect",
-                        "aria-label": "\u626B\u63CF\u5DE5\u4F5C\u57DF",
-                        value: domainRoot,
-                        disabled: busy,
-                        onChange: (event) => invalidate(() => {
-                          clearWorkspaceScan();
-                          setDomainChoice(event.target.value);
-                        })
-                      },
-                      domainOptions.map((domain) => h("option", { key: domain.path, value: domain.path }, `${domain.titles.join("\u3001")} \xB7 ${domain.path}`))
-                    )),
-                    h("p", { className: "tbAIHelp" }, `\u9012\u5F52\u6D4F\u89C8\u8FD9\u4E2A\u5DE5\u4F5C\u57DF\u7684\u53EF\u8BFB\u6587\u672C\u7D22\u5F15\uFF0C\u8DF3\u8FC7\u9690\u85CF\u3001\u5E38\u89C1\u51ED\u636E\u3001\u4F9D\u8D56\u4E0E\u6784\u5EFA\u6587\u4EF6\u3002\u6700\u591A\u5217\u51FA ${WORKSPACE_SCAN_LIMITS.index} \u4E2A\u6587\u4EF6\u540D\u3001\u8BFB\u53D6 ${WORKSPACE_SCAN_LIMITS.files} \u7BC7\u6B63\u6587\uFF0C\u5171 ${WORKSPACE_SCAN_LIMITS.content} \u5B57\uFF1B\u626B\u63CF\u4E0D\u4EE3\u8868\u5168\u90E8\u6587\u4EF6\u5DF2\u5BA1\u9605\u3002`),
-                    h(
-                      "div",
-                      { className: "tbAIActions" },
-                      button(scanBusy ? "\u6B63\u5728\u626B\u63CF\u2026" : "\u626B\u63CF\u5DE5\u4F5C\u57DF", scanDomain, { disabled: busy || disabled }),
-                      scanBusy ? button("\u53D6\u6D88\u626B\u63CF", () => scanController.current?.abort()) : null,
-                      workspaceScan ? button("\u6E05\u9664\u626B\u63CF\u7ED3\u679C", () => invalidate(clearWorkspaceScan), { disabled: busy }) : null
-                    ),
-                    scanProgress ? h("p", { className: "tbAIHelp", role: "status" }, scanProgress) : null,
-                    workspaceScan ? h(
-                      "div",
-                      { className: "tbAIWorkspaceResult" },
-                      h("p", { role: "status" }, `\u5DF2\u5217\u51FA ${workspaceScan.files.length} \u4E2A\u6587\u4EF6\uFF0C\u8BFB\u53D6 ${workspaceScan.documents.length} \u7BC7\u6B63\u6587\uFF1B\u672C\u6B21\u9009\u62E9 ${selectedDocuments.length} \u7BC7\u52A0\u5165\u4E0A\u4E0B\u6587\u3002`),
-                      workspaceScan.coverage.listingMayBeLimited ? h("p", { className: "tbAIWarning" }, "\u5BBF\u4E3B\u7D22\u5F15\u5DF2\u8FBE 400 \u9879\u4E0A\u9650\uFF0C\u4ECD\u53EF\u80FD\u6709\u672A\u5217\u51FA\u7684\u6587\u4EF6\uFF1B\u4E0D\u80FD\u636E\u6B64\u58F0\u79F0\u626B\u63CF\u5B8C\u6574\u3002") : null,
-                      h(
-                        "details",
-                        null,
-                        h("summary", null, "\u68C0\u67E5\u6587\u4EF6\u7D22\u5F15\u4E0E\u5DF2\u8BFB\u53D6\u6B63\u6587"),
-                        h("ul", { className: "tbAIFileIndex" }, workspaceScan.files.map((file) => h(
-                          "li",
-                          { key: file.relative },
-                          file.relative,
-                          h("span", null, workspaceScan.documents.some((document2) => document2.relative === file.relative) ? "\u5DF2\u8BFB\u53D6" : "\u4EC5\u6587\u4EF6\u540D")
-                        ))),
-                        workspaceScan.documents.map((file) => h(
-                          "details",
-                          { className: "tbAIWorkspaceDocument", key: file.relative },
-                          h("summary", null, file.relative, file.truncated ? "\uFF08\u6B63\u6587\u5DF2\u622A\u65AD\uFF09" : ""),
-                          h("label", { className: "tbAICheck" }, h("input", {
-                            type: "checkbox",
-                            checked: selectedDocuments.includes(file.relative),
-                            "aria-label": `\u52A0\u5165\u6B63\u6587\uFF1A${file.relative}`,
-                            onChange: (event) => invalidate(() => setSelectedDocuments((previous) => event.target.checked ? [...previous, file.relative] : previous.filter((value) => value !== file.relative)))
-                          }), "\u5C06\u8FD9\u7BC7\u6B63\u6587\u52A0\u5165 AI \u4E0A\u4E0B\u6587"),
-                          h("pre", null, file.content)
-                        ))
-                      ),
-                      issueList(workspaceScan.warnings, "\u672A\u8BFB\u53D6\u7684\u5185\u5BB9", "tbAIWarnings")
-                    ) : null
-                  )
+                  domains.map((item) => h("option", { key: item.path, value: item.path }, item.titles.join("\u3001")))
+                ),
+                h(
+                  "div",
+                  { className: "tbPlanningScanActions" },
+                  button(scanBusy ? "\u6B63\u5728\u626B\u63CF\u2026" : model.scan ? "\u91CD\u65B0\u626B\u63CF" : "\u626B\u63CF\u5DE5\u4F5C\u57DF", scanDomain),
+                  scanBusy ? button("\u53D6\u6D88\u626B\u63CF", () => scanController.current?.abort(), { disabled: false }) : null
+                ),
+                model.scan ? h(
+                  "details",
+                  { key: model.messages.length, className: "tbPlanningDetails" },
+                  h("summary", null, `\u9884\u89C8\u626B\u63CF\u5185\u5BB9 \xB7 ${model.scan.files.length} \u4E2A\u6587\u4EF6 / ${model.documents.length} \u7BC7\u6B63\u6587`),
+                  h("p", { className: "tbPlanningHelp" }, "\u4EC5\u52FE\u9009\u7684\u6B63\u6587\u4E0E\u5DF2\u5217\u51FA\u7684\u76F8\u5BF9\u6587\u4EF6\u540D\u4F1A\u52A0\u5165\u8BF7\u6C42\uFF1B\u672A\u8BFB\u53D6\u6216\u622A\u65AD\u5185\u5BB9\u4E0D\u7B97\u5DF2\u5BA1\u9605\u3002"),
+                  model.scan.files.map((file) => h("p", { key: file.relative, className: "tbPlanningHelp" }, file.relative)),
+                  model.scan.documents.map((file) => h(
+                    "details",
+                    { key: file.relative },
+                    h("summary", null, file.relative, file.truncated ? "\uFF08\u5DF2\u622A\u65AD\uFF09" : ""),
+                    h("label", { className: "tbPlanningCheck" }, h("input", {
+                      type: "checkbox",
+                      checked: model.documents.includes(file.relative),
+                      "aria-label": `\u52A0\u5165\u6B63\u6587\uFF1A${file.relative}`,
+                      disabled: busyNow,
+                      onChange: (event) => update((previous) => ({
+                        ...previous,
+                        documents: event.target.checked ? [...previous.documents, file.relative] : previous.documents.filter((name) => name !== file.relative)
+                      }))
+                    }), "\u52A0\u5165\u672C\u7BC7\u6B63\u6587"),
+                    h("pre", null, file.content)
+                  )),
+                  model.scan.warnings.map((text2, index) => h("p", { key: index, className: "tbPlanningHelp" }, text2))
                 ) : null
-              ),
-              h("div", { className: "tbAIActions" }, button("\u9884\u89C8\u672C\u6B21\u4E0A\u4E0B\u6587", prepare, { className: "tbBtn tbBtnPrimary", disabled: busy || disabled || !tasks.length && scopeChoice !== "all" }))
-            ),
-            request2 ? h(
-              "section",
-              { className: "tbAIStep", "aria-labelledby": `${fieldId}-context` },
-              h("h3", { id: `${fieldId}-context` }, "2 \xB7 \u68C0\u67E5\u540E\uFF0C\u653E\u5165\u539F\u751F\u4F1A\u8BDD\u8349\u7A3F"),
-              h("p", { className: "tbAIHelp" }, request2.restoredFromNative ? "\u5DF2\u4ECE\u539F\u751F\u4F1A\u8BDD\u6062\u590D\u5DF2\u53D1\u9001\u8D44\u6599\uFF0C\u5E76\u6838\u5BF9\u4EFB\u52A1\u8303\u56F4\u3001\u65E5\u671F\u3001\u72B6\u6001\u53CA\u7528\u6237\u7EA6\u675F\u3002\u6CA1\u6709\u91CD\u65B0\u626B\u63CF\u6587\u4EF6\uFF1B\u5DE5\u4F5C\u57DF\u5EFA\u8BAE\u53EA\u4F9B\u5BA1\u9605\u3002\u5982\u9700\u91CD\u65B0\u5EFA\u8BAE\uFF0C\u8BF7\u5148\u91CD\u65B0\u9884\u89C8\u4E0A\u4E0B\u6587\u3002" : `\u672C\u6B21 ${request2.scopeIds.length} \u9879\u4EFB\u52A1\uFF0C${request2.editableIds.length} \u9879\u5141\u8BB8\u5EFA\u8BAE\u65E5\u671F\u3002\u5305\u542B\u6807\u9898\u3001\u7B14\u8BB0\u3001\u8BA1\u5212\u3001\u72B6\u6001\u4E0E\u5C42\u7EA7\uFF1B${request2.context.workspace ? `\u53E6\u542B\u4E3B\u52A8\u626B\u63CF\u7684\u6587\u4EF6\u7D22\u5F15\u4E0E ${request2.context.workspace.documents.length} \u7BC7\u6B63\u6587\u7247\u6BB5\uFF0C\u4E0D\u542B\u7EDD\u5BF9\u5DE5\u4F5C\u57DF\u8DEF\u5F84\u3002` : "\u4E0D\u5305\u542B\u5DE5\u4F5C\u57DF\u8DEF\u5F84\u3001\u6587\u4EF6\u5185\u5BB9\u6216\u8D1F\u8D23\u4EBA\u3002"}\u5355\u9879\u7B14\u8BB0\u6700\u591A ${AI_SCHEDULE_LIMITS.note} \u5B57\u3002`),
-              h("label", { className: "tbAILabel" }, "\u53D1\u9001\u7ED9 AI \u7684\u5B8C\u6574\u5185\u5BB9\uFF08\u4E2D\u6587\u8D44\u6599\u4E0E\u683C\u5F0F\u8BF4\u660E\uFF09", h("textarea", {
-                className: "tbArea",
-                ref: promptRef,
-                value: request2.prompt,
-                readOnly: true,
-                rows: 8,
-                "aria-label": "\u672C\u6B21 AI \u6392\u671F\u4E0A\u4E0B\u6587\u4E0E\u63D0\u793A\u8BCD"
-              })),
-              !availability.supported ? h("p", { className: "tbAIHelp" }, availability.reason) : !availability.owned ? h("p", { className: "tbAIHelp" }, "\u5C1A\u65E0\u6B63\u5728\u663E\u793A\u4E14\u5C5E\u4E8E\u672C\u5DE5\u4F5C\u53F0\u7684\u4F1A\u8BDD\u3002\u53EF\u660E\u786E\u65B0\u5EFA\uFF0C\u6216\u590D\u5236\u540E\u5728\u539F\u751F\u4F1A\u8BDD\u4E2D\u624B\u52A8\u4F7F\u7528\u3002") : null,
-              h(
-                "div",
-                { className: "tbAIActions" },
-                button(nativeBusy ? "\u6B63\u5728\u51C6\u5907\u8349\u7A3F\u2026" : "\u653E\u5165\u5F53\u524D\u5DE5\u4F5C\u53F0\u4F1A\u8BDD\u8349\u7A3F", () => placeNativeDraft("current"), { className: "tbBtn tbBtnPrimary", disabled: busy || disabled || !availability.supported || !availability.owned || !request2.editableIds.length && !request2.context.workspace && request2.proposalVersion !== 2 }),
-                button("\u590D\u5236\u63D0\u793A\u8BCD", copyPrompt, { disabled: busy }),
-                button("\u6253\u5F00\u539F\u751F\u4F1A\u8BDD", openNative, { disabled: busy })
-              ),
-              availability.supported ? h(
-                "details",
-                { className: "tbAINativeOptions" },
-                h("summary", null, "\u9700\u8981\u65B0\u7684\u672C\u5DE5\u4F5C\u53F0\u4F1A\u8BDD\uFF1F\uFF08\u4E0D\u81EA\u52A8\u53D1\u9001\uFF09"),
-                h(
-                  "div",
-                  { className: "tbAIActions" },
-                  button("\u5728\u5DF2\u786E\u8BA4\u5DE5\u4F5C\u533A\u65B0\u5EFA\u4F1A\u8BDD\u5E76\u653E\u5165\u8349\u7A3F", () => placeNativeDraft("existing-workspace"), { disabled: busy || disabled || !availability.workspaceId || !request2.editableIds.length && !request2.context.workspace && request2.proposalVersion !== 2 }),
-                  button("\u9009\u62E9\u6587\u4EF6\u5939\u4F4D\u7F6E\u5E76\u65B0\u5EFA\u4F1A\u8BDD\u8349\u7A3F", () => placeNativeDraft("choose-workspace"), { disabled: busy || disabled || typeof service?.newWorkspaceSession !== "function" || !request2.editableIds.length && !request2.context.workspace && request2.proposalVersion !== 2 })
-                )
-              ) : null,
-              h("p", { className: "tbAIHelp" }, "\u8349\u7A3F\u6309\u539F\u751F\u4F1A\u8BDD\u89C4\u5219\u4FDD\u5B58\uFF0C\u5DF2\u6709\u6587\u5B57/\u9644\u4EF6\u4E0D\u4F1A\u88AB\u8986\u76D6\u3002\u539F\u751F\u6D88\u606F\u4ECD\u7531\u4F60\u624B\u52A8\u53D1\u9001\uFF1B\u56DE\u590D\u5B8C\u6210\u540E\u70B9\u51FB\u201C\u5BFC\u5165\u672C\u6B21 AI \u5EFA\u8BAE\u201D\u3002\u53EA\u8BFB\u53D6\u5F53\u524D\u672C\u5DE5\u4F5C\u53F0\u4F1A\u8BDD\uFF0C\u4E0D\u81EA\u52A8\u8BFB\u53D6\u5176\u4ED6\u4F1A\u8BDD\u6216\u5E94\u7528\u65E5\u671F\uFF1B\u624B\u52A8\u7C98\u8D34\u4ECD\u53EF\u4F7F\u7528\u3002")
-            ) : null,
-            h(
-              "section",
-              { className: "tbAIStep", "aria-labelledby": `${fieldId}-import` },
-              h("h3", { id: `${fieldId}-import` }, "3 \xB7 \u5BFC\u5165\u539F\u751F AI \u5EFA\u8BAE"),
-              h("div", { className: "tbAIActions" }, button(
-                replyBusy ? "\u6B63\u5728\u5BFC\u5165\u5EFA\u8BAE\u2026" : "\u5BFC\u5165\u672C\u6B21 AI \u5EFA\u8BAE",
-                importNative,
-                { className: "tbBtn tbBtnPrimary", disabled: busy || disabled || applied || !replyAvailability.supported || !replyAvailability.owned }
-              )),
-              h("p", { className: "tbAIHelp" }, replyAvailability.supported && replyAvailability.owned ? "\u4E00\u952E\u8BFB\u53D6\u5F53\u524D\u4F1A\u8BDD\u5DF2\u5B8C\u6210\u7684\u56DE\u590D\uFF0C\u6838\u5BF9\u8BF7\u6C42\u540E\u5C55\u793A\u65B0\u589E\u4EFB\u52A1\u3001\u7236\u5B50\u5C42\u7EA7\u53CA\u65E5\u671F\uFF0C\u65E0\u9700\u590D\u5236\u7C98\u8D34\u3002\u5BFC\u5165\u53EA\u9884\u89C8\uFF0C\u53E6\u884C\u786E\u8BA4\u624D\u4FDD\u5B58\u3002" : replyAvailability.reason || "\u8BF7\u5148\u6253\u5F00\u5C5E\u4E8E\u672C\u4EFB\u52A1\u680F\u5DE5\u4F5C\u53F0\u7684\u539F\u751F\u4F1A\u8BDD\uFF1B\u4E5F\u53EF\u4EE5\u5728\u4E0B\u65B9\u624B\u52A8\u7C98\u8D34\u3002"),
-              h("label", { className: "tbAILabel" }, "AI \u5B8C\u6574\u56DE\u590D\uFF08\u4E2D\u6587\u5EFA\u8BAE\u4E0E\u5BFC\u5165\u6570\u636E\uFF0C\u65E0\u9700\u624B\u5DE5\u62C6\u5206\uFF09", h("textarea", {
-                className: "tbArea",
-                "aria-label": "\u672C\u6B21\u63D0\u6848 JSON\uFF08\u4EC5\u4F5C\u4E3A\u6570\u636E\u6821\u9A8C\uFF0C\u4E0D\u6267\u884C\u5185\u5BB9\uFF09",
-                value: proposalText,
-                rows: 7,
-                maxLength: AI_SCHEDULE_LIMITS.proposal,
-                disabled: busy || disabled,
-                placeholder: "\u76F4\u63A5\u7C98\u8D34\u672C\u6B21 AI \u5B8C\u6574\u56DE\u590D\uFF0C\u4FDD\u7559\u672B\u5C3E\u201C\u5DE5\u4F5C\u53F0\u5BFC\u5165\u6570\u636E\u201D\u4EE3\u7801\u5757\u3002\u4E5F\u517C\u5BB9\u65E7\u7248\u7EAF JSON\uFF1B\u4E0D\u8981\u62FC\u63A5\u591A\u4EFD\u56DE\u590D\u3002",
-                onChange: (event) => {
-                  setProposalText(event.target.value);
-                  setPreview(null);
-                  setApplied(false);
-                  setErrors([]);
-                }
-              })),
-              h("div", { className: "tbAIActions" }, button("\u6821\u9A8C\u5E76\u9884\u89C8 JSON \u63D0\u6848", importPreview, { disabled: busy || disabled || !request2 || !proposalText.trim() }))
-            ),
-            livePreview ? h(
-              "section",
-              { className: "tbAIStep", "aria-labelledby": `${fieldId}-preview` },
-              h("h3", { id: `${fieldId}-preview`, ref: previewRef, tabIndex: -1 }, "4 \xB7 \u6838\u5BF9\u4EFB\u52A1\u4E0E\u65E5\u671F\uFF0C\u624B\u52A8\u786E\u8BA4"),
-              issueList(livePreview.errors, "\u51B2\u7A81\uFF1A\u4E0B\u5217\u95EE\u9898\u5168\u90E8\u89E3\u51B3\u524D\u4E0D\u80FD\u5E94\u7528"),
-              issueList(livePreview.warnings, "\u6838\u5BF9\u63D0\u9192", "tbAIWarnings"),
-              issueList(livePreview.proposal.assumptions, "AI \u5168\u5C40\u5047\u8BBE\uFF08\u4E0D\u662F\u4E8B\u5B9E\uFF09", "tbAIWarnings"),
-              issueList(livePreview.proposal.workspaceSuggestions, "\u5DE5\u4F5C\u57DF\u6587\u5B57\u5EFA\u8BAE\uFF08\u4EC5\u4F9B\u5BA1\u9605\uFF1B\u53EF\u5BFC\u5165\u4EFB\u52A1\u89C1\u4E0B\u65B9\uFF09", "tbAIWarnings"),
-              livePreview.creationRows.length ? h(
-                "section",
-                { className: "tbAINewTasks", "aria-label": "\u65B0\u589E\u4EFB\u52A1\u4E0E\u5B50\u4EFB\u52A1\u9884\u89C8" },
-                h("strong", null, `\u65B0\u589E ${livePreview.createdCount} \u9879\u5F85\u529E\u4EFB\u52A1\uFF08\u786E\u8BA4\u524D\u5C1A\u672A\u521B\u5EFA\uFF09`),
-                h("div", { className: "tbAIProposalList" }, livePreview.creationRows.map((row) => h(
-                  "article",
-                  {
-                    className: "tbAIProposal tbAINewTask",
-                    key: row.ref,
-                    style: { marginLeft: `${Math.min(row.depth, 6) * 14}px` }
-                  },
-                  h("div", { className: "tbAIProposalTitle" }, h("strong", null, row.title), h("span", { className: "tbAIStatus" }, row.automatic ? "\u65B0\u589E\u7236\u4EFB\u52A1 \xB7 \u5F85\u529E" : "\u65B0\u589E\u4EFB\u52A1 \xB7 \u5F85\u529E")),
-                  h("p", { className: "tbAIHelp" }, row.path),
-                  h("div", { className: "tbAIRange" }, h("span", null, row.automatic ? "\u81EA\u52A8\u6C47\u603B" : "\u8BA1\u5212"), h("code", null, formatAIPlanRange(row.after))),
-                  h("p", null, h("strong", null, "\u7B14\u8BB0\uFF1A"), row.note || "\u672A\u586B\u5199"),
-                  h("p", null, h("strong", null, "\u65B0\u589E\u7406\u7531\uFF1A"), row.reason),
-                  h("p", { className: "tbAIHelp" }, `AI \u9884\u8BA1\u5DE5\u671F\uFF1A${row.estimatedDurationDays === null ? "\u672A\u77E5" : `${row.estimatedDurationDays} \u5929\uFF08\u4F30\u8BA1\uFF09`}`),
-                  issueList(row.assumptions, "\u65B0\u589E\u5047\u8BBE\uFF08\u5F85\u6838\u5BF9\uFF09", "tbAIWarnings")
-                )))
-              ) : null,
-              h("div", { className: "tbAIProposalList" }, livePreview.rows.map((row) => h(
-                "article",
-                { className: "tbAIProposal", key: row.id },
-                h("div", { className: "tbAIProposalTitle" }, h("strong", null, row.title), h("span", { className: "tbAIStatus" }, row.changed ? "\u62DF\u53D8\u66F4" : "\u65E0\u53D8\u5316")),
-                h(
-                  "div",
-                  { className: "tbAIRange" },
-                  h("span", null, "\u53D8\u66F4\u524D"),
-                  h("code", null, formatAIPlanRange(row.before)),
-                  h("span", null, "\u5EFA\u8BAE\u540E"),
-                  h("code", null, formatAIPlanRange(row.after))
-                ),
-                h("p", null, h("strong", null, "\u7406\u7531\uFF1A"), row.reason),
-                h("p", { className: "tbAIHelp" }, `AI \u9884\u8BA1\u5DE5\u671F\uFF1A${row.estimatedDurationDays === null ? "\u672A\u77E5" : `${row.estimatedDurationDays} \u5929\uFF08\u4F30\u8BA1\uFF09`}${row.calendarSpanDays === null ? "" : `\uFF1B\u8BA1\u5212\u8DE8\u5EA6 ${row.calendarSpanDays} \u4E2A\u65E5\u5386\u65E5`}`),
-                issueList(row.assumptions, "\u672C\u9879\u5047\u8BBE/\u4F30\u8BA1\u4F9D\u636E", "tbAIWarnings")
-              ))),
-              livePreview.parentRows.length ? h(
-                "div",
-                { className: "tbAIParentChanges" },
-                h("strong", null, "\u81EA\u52A8\u7236\u7EA7\u6C47\u603B\u968F\u4E4B\u91CD\u65B0\u8BA1\u7B97\uFF08\u4E0D\u5199\u5165\u7236\u7EA7\u65E5\u671F\uFF09"),
-                livePreview.parentRows.map((row) => h("p", { key: row.id }, `${row.title}\uFF1A${formatAIPlanRange(row.before)} \u2192 ${formatAIPlanRange(row.after)}`))
-              ) : null,
-              !livePreview.rows.length && !livePreview.createdCount && !livePreview.errors.length ? h("p", { className: "tbAIHelp" }, "\u6CA1\u6709\u5EFA\u8BAE\u7684\u65E5\u671F\u53D8\u66F4\u6216\u65B0\u589E\u4EFB\u52A1\u3002") : null,
-              h("p", { className: "tbAIHelp" }, "\u5E94\u7528\u524D\u6838\u5BF9\u65B0\u589E\u540D\u79F0\u3001\u7236\u5B50\u5C42\u7EA7\u3001\u7B14\u8BB0\u4E0E\u65E5\u671F\uFF1B\u65B0\u4EFB\u52A1\u5747\u4E3A\u5F85\u529E\u3002\u82E5\u9884\u89C8\u5DF2\u8FC7\u671F\uFF0C\u6574\u6279\u62D2\u7EDD\uFF0C\u4E0D\u4F1A\u90E8\u5206\u5E94\u7528\u3002\u5DF2\u6709\u4EFB\u52A1\u7684\u8D1F\u8D23\u4EBA\u3001\u7B14\u8BB0\u3001\u72B6\u6001\u3001\u8BA1\u5212\u6A21\u5F0F\u4E0E\u5B9E\u9645\u5B8C\u6210\u65F6\u95F4\u4FDD\u6301\u4E0D\u53D8\u3002"),
-              h(
-                "div",
-                { className: "tbAIActions" },
-                button(
-                  applyBusy ? "\u6B63\u5728\u4FDD\u5B58\u2026" : applied ? "\u672C\u63D0\u6848\u5DF2\u5E94\u7528" : confirmLabel(livePreview),
-                  confirmApply,
-                  { className: "tbBtn tbBtnPrimary", disabled: busy || disabled || applied || !livePreview.canApply }
-                ),
-                livePreview.noOp ? h("span", { className: "tbAIHelp" }, "\u65E0\u5B9E\u9645\u53D8\u66F4\uFF0C\u4E0D\u4F1A\u5199\u5165\u3002") : null
               )
-            ) : null
+            ) : !model.messages.length ? h("p", { className: "tbPlanningHelp" }, "\u52FE\u9009\u540E\u9009\u62E9\u6587\u4EF6\uFF0C\u53D1\u9001\u524D\u53EF\u9884\u89C8\u3002") : null
+          ),
+          older.length ? h("details", { className: "tbPlanningDetails" }, h("summary", null, `\u524D\u9762\u7684\u5BF9\u8BDD \xB7 ${older.length} \u6761`), older.map(renderMessage)) : null,
+          recent.length ? h("div", { className: "tbPlanningMessages", "aria-label": "\u672C\u8F6E\u89C4\u5212\u5BF9\u8BDD" }, recent.map(renderMessage)) : null,
+          issueList([...errors, ...issues]),
+          progress ? h("p", { className: "tbPlanningProgress", role: "status" }, progress) : null,
+          busy && !scanBusy ? button("\u505C\u6B62\u7B49\u5F85", () => controller.current?.abort(), { disabled: false }) : null,
+          model.pending && !busy ? h(
+            "div",
+            { className: "tbPlanningPending" },
+            h("p", { className: "tbPlanningHelp" }, "\u672C\u8F6E\u8BF7\u6C42\u5DF2\u4FDD\u7559\uFF0C\u53EF\u63A5\u6536\u5B8C\u6210\u7684\u7ED3\u679C\uFF1B\u5F53\u524D\u9884\u89C8\u4ECD\u4FDD\u7559\u3002"),
+            button("\u63A5\u6536\u672C\u8F6E\u7ED3\u679C", importReply)
+          ) : null,
+          notice ? h("p", { className: "tbPlanningNotice", role: "status" }, notice) : null,
+          compare && model.index > 0 ? h(
+            "section",
+            { className: "tbPlanningComparison", "aria-label": "\u4E0E\u4E0A\u4E00\u7248\u6BD4\u8F83" },
+            h("strong", null, `\u7B2C ${revision.number - 1} \u7248 \u2192 \u7B2C ${revision.number} \u7248`),
+            comparePlanningRevisions(model.revisions[model.index - 1], revision).map((row) => h(
+              "p",
+              { key: row.key },
+              `${row.after?.title || row.before?.title || tasks.find((task) => task.id === (row.after?.id || row.before?.id))?.title || "\u4EFB\u52A1"}\uFF1A${row.before ? shortRange(row.before) : "\u4E0A\u7248\u672A\u63D0\u51FA"} \u2192 ${row.after ? shortRange(row.after) : "\u672C\u7248\u79FB\u9664"}${row.selectionChanged ? ` \xB7 ${row.afterSelected ? "\u63A5\u53D7" : "\u672A\u63A5\u53D7"}` : ""}`
+            )),
+            button("\u9000\u56DE\u4E0A\u4E00\u7248\u9884\u89C8", () => chooseVersion(model.index - 1))
+          ) : null,
+          revision ? h(
+            "section",
+            { className: "tbPlanningSuggestions", "aria-label": "\u9009\u62E9\u63A5\u53D7\u7684\u5EFA\u8BAE" },
+            h("header", null, h("strong", null, `\u5DF2\u9009 ${selectedCount} / ${rows.length} \u9879`), h(
+              "span",
+              { className: "tbPlanningHelp" },
+              `\u65B0\u589E ${revision.proposal.newTasks?.length || 0} \u9879 \xB7 \u6539\u671F ${revision.proposal.changes.length} \u9879`
+            )),
+            rows.map((row) => h(
+              "label",
+              { key: row.key, className: "tbPlanningSuggestion", "data-selected": selected.has(row.key) ? "true" : "false" },
+              h("input", {
+                type: "checkbox",
+                checked: selected.has(row.key),
+                disabled: busyNow || !draftVisible,
+                "aria-label": `\u63A5\u53D7\u5EFA\u8BAE\uFF1A${row.title}`,
+                onChange: (event) => toggle(row.key, event.target.checked)
+              }),
+              h(
+                "span",
+                null,
+                h("span", { className: "tbPlanningSuggestionName" }, row.title, h("small", { "data-kind": row.kind }, row.kind)),
+                h("span", { className: "tbPlanningSuggestionRange" }, row.range, !selected.has(row.key) ? " \xB7 \u6682\u4E0D\u52A0\u5165" : "")
+              )
+            )),
+            !rows.length ? h("p", { className: "tbPlanningHelp" }, "\u672C\u7248\u6CA1\u6709\u9700\u8981\u4FDD\u5B58\u7684\u4EFB\u52A1\u6216\u65E5\u671F\u53D8\u5316\uFF0C\u53EF\u4EE5\u7EE7\u7EED\u8BF4\u660E\u76EE\u6807\u3002") : null,
+            h(
+              "details",
+              { className: "tbPlanningDetails" },
+              h("summary", null, "\u65B9\u6848\u4F9D\u636E\u4E0E\u89E3\u91CA"),
+              explanation.map((text2, index) => h("p", { key: index }, text2)),
+              derived?.selected?.parentRows.map((row) => h("p", { key: row.id }, `\u7236\u7EA7\u6C47\u603B ${row.title}\uFF1A${formatAIPlanRange(row.before)} \u2192 ${formatAIPlanRange(row.after)}`))
+            ),
+            draftVisible && !issues.length && derived?.selected?.canApply ? h("p", { className: "tbPlanningValid" }, "\u6240\u9009\u65B9\u6848\u65E0\u65E5\u671F\u51B2\u7A81") : null
+          ) : null,
+          !capability.supported ? h("p", { className: "tbPlanningHelp" }, capability.reason) : !capability.workspaceId && !model.sessionId ? button("\u9009\u62E9\u4F1A\u8BDD\u4F4D\u7F6E", async () => {
+            try {
+              const id = await service.newWorkspaceSession?.();
+              if (id) {
+                update((previous) => ({ ...previous, sessionId: id }));
+                setNotice("\u4F1A\u8BDD\u4F4D\u7F6E\u5DF2\u9009\u5B9A\uFF0C\u53EF\u4EE5\u751F\u6210\u65B9\u6848\u3002");
+              }
+            } catch (error) {
+              setErrors([messageOf2(error)]);
+            }
+          }) : null,
+          !model.messages.length ? h(
+            "details",
+            { className: "tbPlanningDetails" },
+            h("summary", null, "\u8865\u5145\u6392\u671F\u7EA6\u675F\uFF08\u53EF\u9009\uFF09"),
+            h("label", { className: "tbPlanningLabel" }, "\u7528\u6237\u7ED9\u5B9A\u622A\u6B62", h("input", {
+              type: "date",
+              className: "tbInput",
+              value: model.deadline,
+              "aria-label": "\u7528\u6237\u7ED9\u5B9A\u622A\u6B62",
+              disabled: busyNow,
+              onChange: (event) => update((previous) => ({ ...previous, deadline: event.target.value }))
+            })),
+            h("label", { className: "tbPlanningCheck" }, h("input", {
+              type: "checkbox",
+              checked: model.allowOngoing,
+              disabled: busyNow,
+              onChange: (event) => update((previous) => ({ ...previous, allowOngoing: event.target.checked }))
+            }), "\u5141\u8BB8\u4E3A\u672A\u8BBE\u622A\u6B62\u7684\u6301\u7EED\u5DE5\u4F5C\u5EFA\u8BAE\u65E5\u671F")
+          ) : null,
+          h(
+            "details",
+            { className: "tbPlanningDetails tbPlanningAdvanced" },
+            h("summary", null, "\u4F1A\u8BDD\u4E0E\u5DF2\u6709\u5EFA\u8BAE"),
+            button("\u67E5\u770B\u539F\u751F\u4F1A\u8BDD", onOpenChat),
+            button("\u63A5\u6536\u672C\u8F6E\u7ED3\u679C / \u5BFC\u5165\u5DF2\u6709\u5EFA\u8BAE", importReply),
+            h("textarea", {
+              className: "tbArea",
+              "aria-label": "\u624B\u52A8\u5BFC\u5165\u5B8C\u6574\u5EFA\u8BAE",
+              rows: 3,
+              value: manualText,
+              maxLength: 15e4,
+              onChange: (event) => setManualText(event.target.value),
+              placeholder: "\u9700\u8981\u65F6\u7C98\u8D34\u5DF2\u6709\u5B8C\u6574\u56DE\u590D"
+            }),
+            button("\u9884\u89C8\u7C98\u8D34\u7684\u5EFA\u8BAE", () => {
+              try {
+                const request2 = liveModel.current.pending?.request || revision?.request;
+                if (!request2) throw new Error("\u6CA1\u6709\u5BF9\u5E94\u8BF7\u6C42\uFF0C\u8BF7\u5148\u751F\u6210\u89C4\u5212\u6216\u4ECE\u672C\u5DE5\u4F5C\u53F0\u4F1A\u8BDD\u5BFC\u5165\u3002");
+                accept({ text: manualText }, request2);
+              } catch (error) {
+                setErrors(error.issues || [messageOf2(error)]);
+              }
+            }, { disabled: busyNow || !manualText.trim() }),
+            button("\u5F00\u59CB\u65B0\u89C4\u5212", startNew),
+            [...cache.plans.keys()].some((key) => key.startsWith(`history:${scopeChoice}:`)) ? button("\u6062\u590D\u524D\u6B21\u89C4\u5212", () => {
+              const key = [...cache.plans.keys()].findLast((value) => value.startsWith(`history:${scopeChoice}:`));
+              if (key) {
+                update(cache.plans.get(key));
+                setErrors([]);
+                setNotice("\u5DF2\u6062\u590D\u524D\u6B21\u89C4\u5212\uFF0C\u4ECD\u4F1A\u6838\u5BF9\u5F53\u524D\u4EFB\u52A1\u662F\u5426\u53D8\u5316\u3002");
+              }
+            }) : null
           )
-        )
+        ),
+        composer,
+        revision || cache.undo ? h(
+          "footer",
+          { className: "tbPlanningFooter" },
+          revision ? h(
+            "button",
+            {
+              className: "tbBtn tbBtnPrimary",
+              type: "button",
+              onClick: confirm,
+              disabled: busyNow || !draftVisible || !derived?.selected?.canApply
+            },
+            model.phase === "applied" ? "\u672C\u7248\u65B9\u6848\u5DF2\u5E94\u7528" : model.phase === "undone" ? "\u672C\u7248\u5E94\u7528\u5DF2\u64A4\u9500" : `\u786E\u8BA4\u5E94\u7528\u6240\u9009 ${selectedCount} \u9879`
+          ) : null,
+          h(
+            "div",
+            null,
+            button("\u653E\u5F03\u65B9\u6848", () => {
+              update((previous) => ({ ...previous, index: -1, phase: "idle", pending: null }));
+              setNotice("\u5DF2\u653E\u5F03\u5F53\u524D\u9884\u89C8\uFF0C\u65B9\u6848\u7248\u672C\u548C\u5BF9\u8BDD\u4ECD\u4FDD\u7559\u3002");
+            }, { className: "tbPlanningLink" }),
+            button("\u64A4\u9500\u4E0A\u6B21\u5E94\u7528", undo, { className: "tbPlanningLink", disabled: busyNow || !cache.undo })
+          )
+        ) : null
       );
     };
   }
@@ -4925,7 +5434,7 @@ ${JSON.stringify(schema, null, 2)}
   // src/task-board.js
   function createTaskBoard(React, { ensureStyle, loadTasks: loadTasks2, saveTasks: saveTasks2, DomainPanel }) {
     const h = React.createElement;
-    const GanttView = createGanttView(React), ScheduleEditor = createScheduleEditor(React), AISchedulePanel = createAISchedulePanel(React), CalendarView = createCalendarView(React);
+    const GanttView = createGanttView(React), ScheduleEditor = createScheduleEditor(React), AISchedulePanel = createAIPlanningPanel(React), CalendarView = createCalendarView(React);
     const paths = {
       plus: ["M12 5v14M5 12h14"],
       close: ["m6 6 12 12M18 6 6 18"],
@@ -5144,11 +5653,14 @@ ${JSON.stringify(schema, null, 2)}
       const planGuardRef = React.useRef(null), ganttState = React.useRef(/* @__PURE__ */ new Map()), calendarState = React.useRef({});
       const [planAutoOpen, setPlanAutoOpen] = React.useState(false), [aiScope, setAIScope] = React.useState(void 0);
       const [aiImportNonce, setAIImportNonce] = React.useState(0);
+      const aiPlanningState = React.useRef(null), [aiChart, setAIChart] = React.useState(null);
+      const aiChartScope = React.useCallback((scopeId) => setView({ name: "gantt", scopeId }), []);
       React.useEffect(() => {
         mounted.current = true;
         return () => {
           mounted.current = false;
           dragCleanup.current?.();
+          releaseOwnedPlanningSession(aiPlanningState.current);
         };
       }, []);
       React.useEffect(() => {
@@ -5339,6 +5851,8 @@ ${JSON.stringify(schema, null, 2)}
       };
       const openGantt = async (scopeId = null) => {
         if (!await canLeave()) return false;
+        setAIScope(void 0);
+        setAIChart(null);
         dragCleanup.current?.();
         setMenu(null);
         setView({ name: "gantt", scopeId: scopeId || null });
@@ -5346,6 +5860,8 @@ ${JSON.stringify(schema, null, 2)}
       };
       const openCalendar = async (scopeId = null) => {
         if (!await canLeave()) return false;
+        setAIScope(void 0);
+        setAIChart(null);
         dragCleanup.current?.();
         setMenu(null);
         setView({ name: "calendar", scopeId: scopeId || null });
@@ -5358,9 +5874,13 @@ ${JSON.stringify(schema, null, 2)}
         returnFocus.current = document.activeElement;
         setAIImportNonce((value) => importReply ? value + 1 : 0);
         setAIScope(scopeId || null);
+        setChatOpen(false);
+        setView({ name: "gantt", scopeId: scopeId || null });
       };
       const goBoard = async () => {
         if (!await canLeave()) return;
+        setAIScope(void 0);
+        setAIChart(null);
         dragCleanup.current?.();
         setMenu(null);
         setView({ name: "board" });
@@ -6020,7 +6540,7 @@ ${JSON.stringify(schema, null, 2)}
       const noVisibleConversation = !conversation || conversation?.props?.style?.display === "none";
       return h(
         "div",
-        { className: `tbRoot${view.name === "task" ? " tbRootDetail" : ""}`, ref: rootRef },
+        { className: `tbRoot${view.name === "task" ? " tbRootDetail" : ""}${aiScope !== void 0 ? " tbRootPlanning" : ""}`, ref: rootRef },
         h(
           "header",
           { className: "tbBar", ref: barRef },
@@ -6039,7 +6559,13 @@ ${JSON.stringify(schema, null, 2)}
             "div",
             { className: "tbBarActions" },
             view.name === "board" ? h("button", { className: "tbBtn tbGhost", type: "button", "aria-pressed": showHistory, onClick: () => setShowHistory((value) => !value) }, icon("history"), showHistory ? "\u9690\u85CF\u5F80\u65E5\u7ED3\u7B97" : "\u67E5\u8BE2\u5386\u53F2") : null,
-            h("button", { className: "tbBtn", type: "button", "aria-expanded": chatOpen, "aria-controls": "tb-native-chat", onClick: () => setChatOpen((value) => !value) }, icon("chat"), "AI \u4F1A\u8BDD"),
+            h("button", { className: "tbBtn", type: "button", "aria-expanded": chatOpen, "aria-controls": "tb-native-chat", onClick: () => {
+              if (!chatOpen) {
+                setAIScope(void 0);
+                setAIChart(null);
+              }
+              setChatOpen((value) => !value);
+            } }, icon("chat"), "AI \u4F1A\u8BDD"),
             h("button", { className: "tbBtn tbBtnPrimary", type: "button", disabled, onClick: () => startCreate() }, icon("plus"), "\u65B0\u5EFA\u4EFB\u52A1")
           )
         ),
@@ -6053,6 +6579,8 @@ ${JSON.stringify(schema, null, 2)}
             tasks,
             commit,
             active,
+            planning: aiScope !== void 0,
+            proposal: aiScope !== void 0 ? aiChart : null,
             scopeId: view.scopeId || null,
             onTask: (id) => openTask(id),
             onEditPlan: (id) => openTask(id, { editPlan: true }),
@@ -6113,9 +6641,17 @@ ${JSON.stringify(schema, null, 2)}
           commit,
           disabled,
           importNonce: aiImportNonce,
-          onOpenChat: () => setChatOpen(true),
+          stateRef: aiPlanningState,
+          onPreviewChange: setAIChart,
+          onScopeChange: aiChartScope,
+          onOpenChat: () => {
+            setChatOpen(true);
+            setAIScope(void 0);
+            setAIChart(null);
+          },
           onClose: () => {
             setAIScope(void 0);
+            setAIChart(null);
             requestAnimationFrame(() => returnFocus.current?.isConnected && returnFocus.current.focus());
           }
         }) : null

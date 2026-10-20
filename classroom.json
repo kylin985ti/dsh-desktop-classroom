@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "version": "0.6.2",
-  "updated": "2026-10-16",
+  "version": "0.6.3",
+  "updated": "2026-10-20",
   "repository": "https://github.com/kylin985ti/dsh-desktop-classroom",
   "desktop": {
     "repository": "https://github.com/dataelement/dsh-desktop",
@@ -145,9 +145,9 @@
     {
       "path": "workbenches/task-board",
       "name": "dsh-task-board",
-      "version": "1.7.1",
+      "version": "1.8.1",
       "title": "任务栏工作台",
-      "capability": "多级任务、甘特图拖拽、连续任务月历、可选工作域扫描与原生 AI 混合导入",
+      "capability": "多级任务、甘特图与任务月历、可选工作域扫描、AI 连续规划、图上选择接受与整批撤销",
       "setup": "可单独打包安装；不随默认九插件安装器启用，不包含任务数据或个人会话",
       "distribution": "source-only"
     }

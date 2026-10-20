@@ -1,7 +1,7 @@
 {
   "name": "dsh-task-board",
-  "version": "1.7.1",
-  "description": "任务栏工作台：多级任务、甘特图与连续任务月历；工作域 Markdown 阅读编辑与原生 AI 会话。",
+  "version": "1.8.1",
+  "description": "任务栏工作台：多级任务、甘特图与任务月历；AI 连续规划、图上预览、选择应用与整批撤销。",
   "type": "module",
   "private": true,
   "author": "xudingsheng",
@@ -38,6 +38,7 @@
   ],
   "scripts": {
     "build": "node scripts/build-client.mjs",
+    "test:planning": "node scripts/test-ai-planning.mjs",
     "check:package": "node scripts/check-workbench-package.mjs"
   },
   "dependencies": {
