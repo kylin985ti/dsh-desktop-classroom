@@ -35,6 +35,13 @@ export async function verifyPayload(root) {
     if (pkg.name !== p.name || pkg.version !== p.version) throw new Error('Plugin version table is stale: ' + p.path);
     await fs.access(join(root, p.path, 'LICENSE'));
   }
+  const npmPlugins = config.npmPlugins ?? [];
+  if (!Array.isArray(npmPlugins)) throw new Error('Invalid npm plugin manifest');
+  for (const p of npmPlugins) {
+    if (typeof p.name !== 'string' || !/^(?:@[a-z0-9-]+\/)?[a-z0-9.-]+$/.test(p.name) || names.has(p.name)) throw new Error('Unsafe or duplicate npm plugin manifest');
+    if (typeof p.version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(p.version)) throw new Error('Invalid npm plugin version');
+    names.add(p.name);
+  }
   const workbenches = config.workbenches || [];
   if (!Array.isArray(workbenches)) throw new Error('Invalid workbench manifest');
   for (const p of workbenches) {
@@ -58,7 +65,7 @@ export async function verifyPayload(root) {
     const text = bytes.toString('utf8');
     if (secrets.some(pattern => pattern.test(text))) throw new Error('Potential credential/account value: ' + path);
   }
-  return { ok: true, files: Object.keys(actual).length, plugins: config.plugins.length, workbenches: workbenches.length };
+  return { ok: true, files: Object.keys(actual).length, plugins: config.plugins.length, npmPlugins: npmPlugins.length, workbenches: workbenches.length };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   console.log(JSON.stringify(await verifyPayload(resolve(fileURLToPath(new URL('..', import.meta.url))))));

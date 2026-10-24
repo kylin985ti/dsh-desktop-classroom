@@ -10,6 +10,7 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 test('public payload hashes, licenses and plugin versions agree', async () => {
   const result = await verifyPayload(root);
   assert.equal(result.plugins, 9);
+  assert.equal(result.npmPlugins, 1);
   assert.equal(result.workbenches, 1);
 });
 test('task-board source stays optional and retains the existing host identity', async () => {
