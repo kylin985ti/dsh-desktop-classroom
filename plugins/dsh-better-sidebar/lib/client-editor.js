@@ -20406,6 +20406,8 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		gitCommitModel: (scope, signal) => call$1("git.commit-model", scopePayload(scope, {}), signal),
 		gitBranch: (scope, worktree, signal) => call$1("git.branch", gitPayload(scope, worktree, {}), signal),
 		gitCheckout: (scope, branch, worktree) => call$1("git.checkout", gitPayload(scope, worktree, { branch })),
+		/** Read-only topological history; stale cursors require a fresh first page. */
+		gitGraph: (scope, options = {}, worktree, signal) => call$1("git.graph", gitPayload(scope, worktree, { ...options }), signal),
 		/** Recent commit history, lazily pageable (skip/count; defaults 0/30). */
 		gitLog: (scope, count, skip, worktree, signal) => call$1("git.log", gitPayload(scope, worktree, {
 			...count !== void 0 ? { count } : {},
@@ -20433,11 +20435,14 @@ globalThis.__dshChunks__["editor"] = (require) => {
 			startLine,
 			endLine
 		}), signal),
-		/** The session's file-tool events for the changes tab's session lens: the
-		*  `tool/call` + `tool/result` rows past `afterSeq` (0 = whole window),
-		*  capped to the recent window host-side. The client runtime exposes no
-		*  event-log face, so the lens polls this delta route. */
-		changesOps: (scope, afterSeq, signal) => call$1("changes.ops", scopePayload(scope, { ...afterSeq !== void 0 && afterSeq > 0 ? { afterSeq } : {} }), signal),
+		/** The session's file-tool events past `afterSeq` (absent = whole window,
+		*  floored at -1 host-side so a log opening on seq 0 is not dropped). With
+		*  `wait` the host parks the request until the next tool event (or 25 s)
+		*  instead of re-reading an unchanged window. */
+		changesOps: (scope, afterSeq, signal, wait = false) => call$1("changes.ops", scopePayload(scope, {
+			...afterSeq !== void 0 ? { afterSeq } : {},
+			...wait ? { wait: true } : {}
+		}), signal),
 		/** Discard the worktree changes of one file (the index is untouched). */
 		gitDiscard: (scope, path, worktree) => call$1("git.discard", gitPayload(scope, worktree, { path })),
 		/** Revert one commit onto the current branch. */
@@ -20938,8 +20943,6 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		changesMdRaw: "原文",
 		changesHtmlRender: "渲染",
 		changesHtmlRaw: "原文",
-		changesPdfRender: "渲染",
-		changesPdfRaw: "原文",
 		changesWrite: "写入",
 		changesEdit: "编辑",
 		changesRunning: "执行中",
@@ -21031,7 +21034,6 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		gitStatusRenamed: "已重命名",
 		gitStatusConflict: "有冲突",
 		changesClean: "工作区没有变更",
-		changesNoHistory: "还没有提交历史",
 		changesNewFile: "新文件",
 		changesStageFailed: "暂存失败：{message}",
 		changesOpGone: "该操作已不在会话记录中",
@@ -21120,7 +21122,18 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		unstage: "取消暂存",
 		stageAll: "全部暂存",
 		unstageAll: "全部取消暂存",
-		commitPlaceholder: "提交信息 (Ctrl+G 生成，Ctrl+Enter 提交)",
+		gitChanges: "更改",
+		gitGraph: "提交图",
+		gitMergeChanges: "合并更改",
+		gitStagedChanges: "暂存的更改",
+		gitMoreActions: "更多操作",
+		gitRepository: "仓库",
+		gitDetached: "游离 HEAD",
+		gitBranchesUnavailable: "没有可用分支",
+		gitNoUpstream: "未设置上游",
+		gitSyncUnavailable: "同步不可用",
+		gitSync: "同步更改",
+		commitPlaceholder: "Message ({shortcut} to commit on \"{branch}\")",
 		commit: "提交",
 		generateCommitMessage: "生成提交信息",
 		generateCommitMessageWith: "生成提交信息（使用 {model}）",
@@ -21146,12 +21159,25 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		worktree: "工作树",
 		checkoutError: "切换分支失败",
 		history: "历史",
-		changes: "文件变动",
+		changes: "Git",
 		changesGitLens: "Git",
+		graphAllBranches: "所有分支",
+		graphBranchFilter: "分支筛选",
+		graphEmpty: "暂无提交",
+		graphLoadError: "加载提交历史失败",
+		graphStale: "提交历史已变化，请刷新",
+		graphDetails: "提交详情",
+		graphParents: "父提交",
+		graphLoadMore: "加载更多",
 		changesSessionLens: "本轮文件",
 		changesFilterAll: "全部",
 		changesFilterEmpty: "没有此类操作",
 		changesOpenDiffTab: "在独立页签中打开",
+		changesDiffTab: "差异",
+		changesContentTab: "内容",
+		changesNoCommit: "未选择提交",
+		changesNoContent: "此视图暂无内容",
+		changesReadNoDiff: "读取没有差异",
 		changesClosePreview: "关闭预览",
 		changesResizePreview: "调整预览高度",
 		changesLoadError: "会话文件记录暂不可用",
@@ -21183,7 +21209,6 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		timeHoursAgo: "{n} 小时前",
 		timeYesterday: "昨天",
 		loadMore: "加载更多",
-		historyLoadError: "加载更多历史失败",
 		produced: "本次产出",
 		showInFolder: "在文件夹中显示",
 		disconnected: "终端连接断开，重连中…",
@@ -21344,6 +21369,7 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		sideChatBlockFailed: "失败",
 		sideChatBlockDone: "完成",
 		sideChatBlockNoOutput: "（无输出）",
+		sideChatBlockCommandLine: "命令第 {line} 行",
 		codeBlockTitle: "代码块",
 		codeBlockWrap: "自动换行",
 		codeBlockUnwrap: "取消自动换行",
@@ -21458,6 +21484,14 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		workflowPhaseUnnamed: "未命名阶段",
 		workflowMembers: "{done}/{total} 成员",
 		jobsAutoCollapsed: "代理较多，已自动折叠",
+		contextDiagnostics: "上下文诊断",
+		contextDiagnosticsTarget: "当前会话",
+		contextDiagnosticsFailed: "无法打开「{label}」的上下文诊断",
+		contextDiagnosticsUnavailable: "dsh-context 的「上下文」页面不可用（未安装或未注册）",
+		contextDiagnosticsNavigation: "无法定位到该会话",
+		contextDiagnosticsTimeout: "打开超时，请重试",
+		contextDiagnosticsOpenFailed: "页面打开失败",
+		contextDiagnosticsDismiss: "关闭提示",
 		catalogLoadFailed: "{count} 个分支加载失败",
 		addPluginsTabCard: "添加 Tab 插件",
 		addPluginsTabCardDesc: "注册新的侧边栏页面",
@@ -21539,8 +21573,6 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		changesMdRaw: "Raw",
 		changesHtmlRender: "Render",
 		changesHtmlRaw: "Raw",
-		changesPdfRender: "Render",
-		changesPdfRaw: "Raw",
 		changesWrite: "Write",
 		changesEdit: "Edit",
 		changesRunning: "running",
@@ -21632,7 +21664,6 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		gitStatusRenamed: "Renamed",
 		gitStatusConflict: "Conflicted",
 		changesClean: "No changes in the working tree",
-		changesNoHistory: "No commits yet",
 		changesNewFile: "New file",
 		changesStageFailed: "Staging failed: {message}",
 		changesOpGone: "This operation is no longer in the session log",
@@ -21721,7 +21752,18 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		unstage: "Unstage",
 		stageAll: "Stage all",
 		unstageAll: "Unstage all",
-		commitPlaceholder: "Commit message (Ctrl+G generate, Ctrl+Enter commit)",
+		gitChanges: "Changes",
+		gitGraph: "Graph",
+		gitMergeChanges: "Merge Changes",
+		gitStagedChanges: "Staged Changes",
+		gitMoreActions: "More Actions",
+		gitRepository: "Repository",
+		gitDetached: "Detached HEAD",
+		gitBranchesUnavailable: "No branches available",
+		gitNoUpstream: "No upstream",
+		gitSyncUnavailable: "Sync unavailable",
+		gitSync: "Sync Changes",
+		commitPlaceholder: "Message ({shortcut} to commit on \"{branch}\")",
 		commit: "Commit",
 		generateCommitMessage: "Generate commit message",
 		generateCommitMessageWith: "Generate commit message (using {model})",
@@ -21747,12 +21789,25 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		worktree: "Worktree",
 		checkoutError: "Branch switch failed",
 		history: "History",
-		changes: "Changes",
+		changes: "Git",
 		changesGitLens: "Git",
+		graphAllBranches: "All branches",
+		graphBranchFilter: "Branch filter",
+		graphEmpty: "No commits",
+		graphLoadError: "Failed to load commit history",
+		graphStale: "History has changed. Refresh to continue.",
+		graphDetails: "Commit details",
+		graphParents: "Parents",
+		graphLoadMore: "Load more",
 		changesSessionLens: "Session",
 		changesFilterAll: "All",
 		changesFilterEmpty: "No operations of this kind",
 		changesOpenDiffTab: "Open in a diff tab",
+		changesDiffTab: "Diff",
+		changesContentTab: "Content",
+		changesNoCommit: "No commit selected",
+		changesNoContent: "Nothing to show here",
+		changesReadNoDiff: "A read has no diff",
 		changesClosePreview: "Close preview",
 		changesResizePreview: "Resize preview",
 		changesLoadError: "Session file records are unavailable right now",
@@ -21784,7 +21839,6 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		timeHoursAgo: "{n} h ago",
 		timeYesterday: "yesterday",
 		loadMore: "Load more",
-		historyLoadError: "Failed to load more history",
 		produced: "Produced",
 		showInFolder: "Show in folder",
 		disconnected: "Terminal disconnected, reconnecting…",
@@ -21945,6 +21999,7 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		sideChatBlockFailed: "Failed",
 		sideChatBlockDone: "Done",
 		sideChatBlockNoOutput: "(no output)",
+		sideChatBlockCommandLine: "Command line {line}",
 		codeBlockTitle: "Code block",
 		codeBlockWrap: "Wrap lines",
 		codeBlockUnwrap: "Do not wrap lines",
@@ -22059,6 +22114,14 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		workflowPhaseUnnamed: "Unnamed phase",
 		workflowMembers: "{done}/{total} members",
 		jobsAutoCollapsed: "Auto-collapsed (many agents)",
+		contextDiagnostics: "Context diagnostics",
+		contextDiagnosticsTarget: "Current session",
+		contextDiagnosticsFailed: "Could not open Context diagnostics for \"{label}\"",
+		contextDiagnosticsUnavailable: "The dsh-context \"Context\" page is unavailable (not installed or not registered)",
+		contextDiagnosticsNavigation: "Could not locate that conversation",
+		contextDiagnosticsTimeout: "Opening timed out — try again",
+		contextDiagnosticsOpenFailed: "The page could not be opened",
+		contextDiagnosticsDismiss: "Dismiss",
 		catalogLoadFailed: "{count} branches failed to load",
 		addPluginsTabCard: "Add tab plugins",
 		addPluginsTabCardDesc: "Register a new sidebar page",
@@ -22210,6 +22273,24 @@ globalThis.__dshChunks__["editor"] = (require) => {
 	* Bumping the version on every tick re-rendered every consumer — the file
 	* tree's rows included — once per cadence for no reason, which is what the
 	* snapshot identity check above exists to prevent.
+	*
+	* Retention: remembering a key is not a lease on memory. The last consumer of
+	* a slot going away (unmount, a parked tab, a scope change) DROPS the slot —
+	* snapshot, index and listeners and all — so a long session that walks through
+	* files, worktrees and cwds cannot grow the map for the page's lifetime. Since
+	* v0.25 every visited native tab body stays mounted, so there is no host-side
+	* teardown that would have bounded this for us.
+	*
+	* Dropping is invisible to a consumer that still carries the slot object: its
+	* next render re-mints the key (`slotOf`) and `retain` re-registers that same
+	* object, so the next retain performs a FRESH fetch rather than serving a
+	* stale answer (and never mints a second slot for one key — two slots would
+	* mean two pollers). A slot with a fetch in flight is never dropped mid-flight
+	* (the answer has to land somewhere); it goes when that fetch settles. As a
+	* second bound the registry is capped at {@link SLOT_CAP} keys, because a
+	* consumer that mounts while invisible mints a slot it never retains and never
+	* releases — eviction only ever takes a slot with no retained consumer and no
+	* fetch in flight.
 	*/
 	/** The porcelain letter → tone rule (both sides share one vocabulary). */
 	function toneOfLetter(letter) {
@@ -22259,11 +22340,8 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		return `${root.replace(/[\\/]+$/, "")}/${rel.replace(/^[\\/]+/, "")}`;
 	}
 	/**
-	* Whether two entries carry the same line counts. A numstat-only change — an
-	* edit that adds lines without touching either porcelain letter, e.g. more
-	* lines appended to an already-modified file — must still publish a NEW
-	* snapshot: keeping the previous identity would freeze the row's numbers at
-	* their first reading for as long as the porcelain codes stay put.
+	* Whether two sides carry the same line counts (both absent counts as equal —
+	* the entry simply has no reading on that side).
 	*/
 	function sameCounts(left, right) {
 		if (left === right) return true;
@@ -22275,15 +22353,21 @@ globalThis.__dshChunks__["editor"] = (require) => {
 	* Whether two status snapshots carry the same information. Compared field by
 	* field (never by serializing the whole object): the entries are the payload
 	* and their order is stable, so a length + pairwise compare is enough.
+	*
+	* Both sides' counts are compared, each on its own: a numstat-only change — an
+	* edit that adds lines without touching either porcelain letter, e.g. more
+	* lines appended to an already-modified file — must still publish a NEW
+	* snapshot, because keeping the previous identity would freeze the row's
+	* numbers at their first reading for as long as the porcelain codes stay put.
 	*/
 	function sameStatus(a, b) {
 		if (a === b) return true;
-		if (a.isRepo !== b.isRepo || a.branch !== b.branch || a.root !== b.root || a.truncated !== b.truncated || a.entries.length !== b.entries.length) return false;
+		if (a.isRepo !== b.isRepo || a.branch !== b.branch || a.root !== b.root || a.upstream !== b.upstream || a.ahead !== b.ahead || a.behind !== b.behind || a.detached !== b.detached || a.operation !== b.operation || a.truncated !== b.truncated || a.entries.length !== b.entries.length) return false;
 		if (a.repositories?.length !== b.repositories?.length) return false;
 		if (a.repositories !== void 0 && b.repositories !== void 0 && a.repositories.some((root, index) => root !== b.repositories[index])) return false;
 		return a.entries.every((entry, index) => {
 			const other = b.entries[index];
-			return entry.path === other.path && entry.xy === other.xy && sameCounts(entry.counts, other.counts);
+			return entry.path === other.path && entry.xy === other.xy && sameCounts(entry.staged, other.staged) && sameCounts(entry.unstaged, other.unstaged);
 		});
 	}
 	/** Build the lookup index for one snapshot (once per snapshot, O(rows × depth)). */
@@ -22338,6 +22422,34 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		null
 	];
 	const slots = /* @__PURE__ */ new Map();
+	/**
+	* The registry's hard ceiling. The primary rule is release-driven (see
+	* {@link release}); this cap is the backstop for keys nobody ever released —
+	* a consumer that mounts while invisible mints its slot without retaining it,
+	* and only the cap bounds that path. Eviction never touches a slot a consumer
+	* holds or one with a fetch in flight, so the cap is soft while many slots are
+	* genuinely live.
+	*/
+	const SLOT_CAP = 256;
+	/** Whether nothing depends on this slot: no consumer holds the answer and no
+	*  fetch is in flight. */
+	function evictable(slot) {
+		return slot.visible === 0 && !slot.running;
+	}
+	/** Drop one slot from the registry. Identity-checked, so a key that was
+	*  re-minted meanwhile keeps its live entry. */
+	function forget(slot) {
+		if (slots.get(slot.key) === slot) slots.delete(slot.key);
+	}
+	/** Make room for one key about to be minted: evict the oldest slots nobody
+	*  holds while the registry is at {@link SLOT_CAP}. Map order is mint order. */
+	function trimSlots() {
+		if (slots.size < SLOT_CAP) return;
+		for (const slot of slots.values()) {
+			if (slots.size < SLOT_CAP) break;
+			if (evictable(slot)) forget(slot);
+		}
+	}
 	/** The automatic cadence of one slot; `null` = no timer (tier 3). */
 	function intervalOf(slot) {
 		const factor = TIER_FACTORS[slot.tier] ?? null;
@@ -22348,6 +22460,7 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		const key = `${sessionId}\u0000${cwd ?? ""}\u0000${repoRoot ?? ""}\u0000${worktree ?? ""}`;
 		const existing = slots.get(key);
 		if (existing !== void 0) return existing;
+		trimSlots();
 		const slot = {
 			key,
 			sessionId,
@@ -22436,6 +22549,7 @@ globalThis.__dshChunks__["editor"] = (require) => {
 				slot.pending = false;
 				fetchSlot(slot);
 			}
+			if (evictable(slot)) forget(slot);
 		});
 	}
 	function startTimer(slot) {
@@ -22462,6 +22576,7 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		startTimer(slot);
 	}
 	function retain(slot, poll) {
+		if (!slots.has(slot.key)) slots.set(slot.key, slot);
 		slot.visible += 1;
 		if (poll) slot.pollers += 1;
 		if (slot.visible === 1 && slot.snapshot === null) fetchSlot(slot);
@@ -22480,6 +22595,7 @@ globalThis.__dshChunks__["editor"] = (require) => {
 			slot.index = null;
 			slot.indexSource = null;
 			notify(slot);
+			if (!slot.running) forget(slot);
 		}
 	}
 	/** The index for the current snapshot, rebuilt only when the snapshot changed. */
@@ -22550,229 +22666,229 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		document.head.appendChild(tag);
 	}
 	var sidebar_module_css_default = {
-		"largeFileRecordNo": "nArs4W_largeFileRecordNo",
-		"editorBody": "nArs4W_editorBody",
-		"editorSearchResult": "nArs4W_editorSearchResult",
-		"editorError": "nArs4W_editorError",
-		"uploadOverlayTitle": "nArs4W_uploadOverlayTitle",
-		"split": "nArs4W_split",
-		"dropDown": "nArs4W_dropDown",
-		"dividerRow": "nArs4W_dividerRow",
-		"uploadDropZone": "nArs4W_uploadDropZone",
-		"explorerSelectionBar": "nArs4W_explorerSelectionBar",
-		"editorTreeToggleActive": "nArs4W_editorTreeToggleActive",
-		"editorTreePanelFull": "nArs4W_editorTreePanelFull",
-		"uploadDropArtAccent": "nArs4W_uploadDropArtAccent",
-		"editorGitAdd": "nArs4W_editorGitAdd",
-		"editorGitBarMod": "nArs4W_editorGitBarMod",
-		"mermaidMarkdown": "nArs4W_mermaidMarkdown",
-		"editorPdfToolbar": "nArs4W_editorPdfToolbar",
-		"explorerRenaming": "nArs4W_explorerRenaming",
-		"editorPathInput": "nArs4W_editorPathInput",
-		"terminalRetry": "nArs4W_terminalRetry",
-		"explorerHeader": "nArs4W_explorerHeader",
-		"mermaidWrap": "nArs4W_mermaidWrap",
-		"bottomResizeActive": "nArs4W_bottomResizeActive",
-		"editorSearchResultDir": "nArs4W_editorSearchResultDir",
-		"editorPdfDragShield": "nArs4W_editorPdfDragShield",
-		"editorSearchResultLabel": "nArs4W_editorSearchResultLabel",
-		"mermaidError": "nArs4W_mermaidError",
-		"editorPptxButton": "nArs4W_editorPptxButton",
-		"largeFileDownload": "nArs4W_largeFileDownload",
-		"largeFileRecords": "nArs4W_largeFileRecords",
-		"tabUnreadDot": "nArs4W_tabUnreadDot",
 		"gitPlaceholder": "nArs4W_gitPlaceholder",
-		"tabBarPlus": "nArs4W_tabBarPlus",
-		"browserBlockedDesc": "nArs4W_browserBlockedDesc",
-		"openWithChevron": "nArs4W_openWithChevron",
-		"editorBinary": "nArs4W_editorBinary",
-		"gitDiffTabTitle": "nArs4W_gitDiffTabTitle",
-		"largeFileList": "nArs4W_largeFileList",
-		"editorTreePanel": "nArs4W_editorTreePanel",
-		"largeFileRecord": "nArs4W_largeFileRecord",
+		"tabBadge": "nArs4W_tabBadge",
+		"explorerBroken": "nArs4W_explorerBroken",
+		"dockFallback": "nArs4W_dockFallback",
+		"tocBar": "nArs4W_tocBar",
+		"tocItemText": "nArs4W_tocItemText",
+		"uploadOverlayProgress": "nArs4W_uploadOverlayProgress",
 		"largeFileLine": "nArs4W_largeFileLine",
-		"explorerActionErrorText": "nArs4W_explorerActionErrorText",
-		"editorDownloadLink": "nArs4W_editorDownloadLink",
-		"editorBanner": "nArs4W_editorBanner",
-		"uploadDropZoneText": "nArs4W_uploadDropZoneText",
-		"editorGitBar": "nArs4W_editorGitBar",
-		"editorPdf": "nArs4W_editorPdf",
-		"openWithPin": "nArs4W_openWithPin",
-		"largeFileLineNo": "nArs4W_largeFileLineNo",
+		"explorerEmpty": "nArs4W_explorerEmpty",
+		"editorBinary": "nArs4W_editorBinary",
+		"explorerRow": "nArs4W_explorerRow",
+		"tocItem": "nArs4W_tocItem",
+		"editorCm": "nArs4W_editorCm",
+		"editorHtml": "nArs4W_editorHtml",
+		"iconButton": "nArs4W_iconButton",
+		"explorerRenameInput": "nArs4W_explorerRenameInput",
+		"editorDocxZoomRange": "nArs4W_editorDocxZoomRange",
+		"editorStatus": "nArs4W_editorStatus",
+		"browserBlockedActions": "nArs4W_browserBlockedActions",
+		"explorerName": "nArs4W_explorerName",
+		"largeFile": "nArs4W_largeFile",
+		"editorGitAdd": "nArs4W_editorGitAdd",
+		"dividerRow": "nArs4W_dividerRow",
+		"chipIcon": "nArs4W_chipIcon",
+		"editorGitBarSpacer": "nArs4W_editorGitBarSpacer",
+		"editorTitle": "nArs4W_editorTitle",
+		"editorPptxButton": "nArs4W_editorPptxButton",
+		"uploadDropArtAccent": "nArs4W_uploadDropArtAccent",
+		"dividerActive": "nArs4W_dividerActive",
+		"explorerRenaming": "nArs4W_explorerRenaming",
+		"explorerError": "nArs4W_explorerError",
+		"uploadDropArtCut": "nArs4W_uploadDropArtCut",
+		"browserBlockedTitle": "nArs4W_browserBlockedTitle",
+		"editorGitBarGutter": "nArs4W_editorGitBarGutter",
+		"editorGitBarMod": "nArs4W_editorGitBarMod",
+		"sandboxStatusOn": "nArs4W_sandboxStatusOn",
+		"sandboxStatusText": "nArs4W_sandboxStatusText",
+		"explorer": "nArs4W_explorer",
+		"splitChild": "nArs4W_splitChild",
+		"tabBarPlus": "nArs4W_tabBarPlus",
+		"editorSearchInput": "nArs4W_editorSearchInput",
+		"browserBar": "nArs4W_browserBar",
+		"browserBlocked": "nArs4W_browserBlocked",
+		"editorMd": "nArs4W_editorMd",
+		"splitRow": "nArs4W_splitRow",
+		"mermaidError": "nArs4W_mermaidError",
+		"editorTreeToggleActive": "nArs4W_editorTreeToggleActive",
+		"mermaidModalHint": "nArs4W_mermaidModalHint",
+		"boundaryError": "nArs4W_boundaryError",
+		"editorBannerAction": "nArs4W_editorBannerAction",
+		"tabBoundaryError": "nArs4W_tabBoundaryError",
+		"largeFileRecordNo": "nArs4W_largeFileRecordNo",
+		"browserInput": "nArs4W_browserInput",
+		"uploadDropZone": "nArs4W_uploadDropZone",
+		"largeFileRecordTree": "nArs4W_largeFileRecordTree",
+		"paneContent": "nArs4W_paneContent",
+		"largeFileLineText": "nArs4W_largeFileLineText",
+		"dropCenter": "nArs4W_dropCenter",
+		"editorTreePanel": "nArs4W_editorTreePanel",
+		"editorTreePanelFull": "nArs4W_editorTreePanelFull",
+		"bottomPanel": "nArs4W_bottomPanel",
+		"largeFileRecordExpanded": "nArs4W_largeFileRecordExpanded",
+		"editorPdfStage": "nArs4W_editorPdfStage",
+		"editorPdfDragShieldActive": "nArs4W_editorPdfDragShieldActive",
+		"editorError": "nArs4W_editorError",
+		"editorSearchResultDir": "nArs4W_editorSearchResultDir",
+		"dropUp": "nArs4W_dropUp",
+		"editorBlameSummary": "nArs4W_editorBlameSummary",
+		"browserBlockedButton": "nArs4W_browserBlockedButton",
+		"splitCol": "nArs4W_splitCol",
+		"editorModeButton": "nArs4W_editorModeButton",
+		"browserMessage": "nArs4W_browserMessage",
+		"toggleButton": "nArs4W_toggleButton",
+		"sandboxStatusOff": "nArs4W_sandboxStatusOff",
 		"explorerBody": "nArs4W_explorerBody",
 		"dirtyDot": "nArs4W_dirtyDot",
-		"explorerSymlink": "nArs4W_explorerSymlink",
-		"bottomPanel": "nArs4W_bottomPanel",
-		"uploadDropMask": "nArs4W_uploadDropMask",
-		"explorerAppIcon": "nArs4W_explorerAppIcon",
 		"browserStart": "nArs4W_browserStart",
-		"editorHeader": "nArs4W_editorHeader",
-		"editorGitMod": "nArs4W_editorGitMod",
-		"bottomClose": "nArs4W_bottomClose",
-		"editorPdfFrameBlocked": "nArs4W_editorPdfFrameBlocked",
-		"tocItemText": "nArs4W_tocItemText",
-		"largeFileNoticeAction": "nArs4W_largeFileNoticeAction",
-		"editorMd": "nArs4W_editorMd",
-		"splitCol": "nArs4W_splitCol",
-		"editorPdfFrame": "nArs4W_editorPdfFrame",
-		"explorerGitName": "nArs4W_explorerGitName",
-		"largeFileRecordTree": "nArs4W_largeFileRecordTree",
-		"splitChild": "nArs4W_splitChild",
-		"editorCmHidden": "nArs4W_editorCmHidden",
-		"largeFileRecordBody": "nArs4W_largeFileRecordBody",
-		"bottomPanelHidden": "nArs4W_bottomPanelHidden",
-		"largeFile": "nArs4W_largeFile",
-		"editorStatusError": "nArs4W_editorStatusError",
-		"largeFileRecordSummary": "nArs4W_largeFileRecordSummary",
-		"editorGitBarAdd": "nArs4W_editorGitBarAdd",
-		"uploadOverlayProgress": "nArs4W_uploadOverlayProgress",
-		"editorTreeDock": "nArs4W_editorTreeDock",
-		"editorBlameHead": "nArs4W_editorBlameHead",
-		"largeFileNotice": "nArs4W_largeFileNotice",
-		"dropCenter": "nArs4W_dropCenter",
-		"largeFilePager": "nArs4W_largeFilePager",
-		"mermaidModalHint": "nArs4W_mermaidModalHint",
-		"explorer": "nArs4W_explorer",
-		"gitError": "nArs4W_gitError",
-		"editorSearchHint": "nArs4W_editorSearchHint",
-		"nativeTabHost": "nArs4W_nativeTabHost",
-		"dividerCol": "nArs4W_dividerCol",
-		"browserBlockedActions": "nArs4W_browserBlockedActions",
-		"explorerRoot": "nArs4W_explorerRoot",
-		"workbench": "nArs4W_workbench",
-		"browserInput": "nArs4W_browserInput",
-		"dockFallback": "nArs4W_dockFallback",
-		"editorModeActive": "nArs4W_editorModeActive",
-		"explorerDirChanged": "nArs4W_explorerDirChanged",
-		"editorBinaryNotice": "nArs4W_editorBinaryNotice",
-		"dropOverlay": "nArs4W_dropOverlay",
-		"browser": "nArs4W_browser",
-		"divider": "nArs4W_divider",
-		"explorerHidden": "nArs4W_explorerHidden",
-		"tocButton": "nArs4W_tocButton",
-		"explorerRowSelected": "nArs4W_explorerRowSelected",
-		"paneEmptyCards": "nArs4W_paneEmptyCards",
-		"tabTitle": "nArs4W_tabTitle",
-		"editorStatus": "nArs4W_editorStatus",
-		"mermaidCopy": "nArs4W_mermaidCopy",
-		"gitDiffTab": "nArs4W_gitDiffTab",
-		"explorerName": "nArs4W_explorerName",
-		"largeFileLineText": "nArs4W_largeFileLineText",
-		"dropLeft": "nArs4W_dropLeft",
-		"uploadDropZonePill": "nArs4W_uploadDropZonePill",
-		"uploadOverlayStatus": "nArs4W_uploadOverlayStatus",
-		"explorerBroken": "nArs4W_explorerBroken",
-		"tabBarDrop": "nArs4W_tabBarDrop",
-		"explorerRowDropTarget": "nArs4W_explorerRowDropTarget",
-		"editorTreeResize": "nArs4W_editorTreeResize",
-		"browserMessage": "nArs4W_browserMessage",
-		"browserBlockedTitle": "nArs4W_browserBlockedTitle",
-		"editorDocxZoomRange": "nArs4W_editorDocxZoomRange",
-		"mermaidCode": "nArs4W_mermaidCode",
-		"explorerRow": "nArs4W_explorerRow",
-		"explorerError": "nArs4W_explorerError",
-		"tabList": "nArs4W_tabList",
-		"explorerCopied": "nArs4W_explorerCopied",
-		"uploadDropArtCut": "nArs4W_uploadDropArtCut",
-		"editorTreeSearch": "nArs4W_editorTreeSearch",
-		"bottomResize": "nArs4W_bottomResize",
-		"uploadOverlayCard": "nArs4W_uploadOverlayCard",
-		"explorerActionError": "nArs4W_explorerActionError",
-		"panelBody": "nArs4W_panelBody",
-		"tocFlash": "nArs4W_tocFlash",
-		"openWithName": "nArs4W_openWithName",
-		"paneTabHidden": "nArs4W_paneTabHidden",
-		"dsh-row-in": "nArs4W_dsh-row-in",
-		"editorBlame": "nArs4W_editorBlame",
-		"sandboxStatusOff": "nArs4W_sandboxStatusOff",
-		"chipIcon": "nArs4W_chipIcon",
-		"editorCm": "nArs4W_editorCm",
-		"editorModeButton": "nArs4W_editorModeButton",
-		"tocPanel": "nArs4W_tocPanel",
-		"tabBar": "nArs4W_tabBar",
-		"dividerActive": "nArs4W_dividerActive",
-		"editorHtmlBlock": "nArs4W_editorHtmlBlock",
-		"sandboxStatusOn": "nArs4W_sandboxStatusOn",
-		"gitEmpty": "nArs4W_gitEmpty",
-		"largeFileBody": "nArs4W_largeFileBody",
-		"largeFileRecordInvalid": "nArs4W_largeFileRecordInvalid",
-		"uploadDropHero": "nArs4W_uploadDropHero",
-		"dropRight": "nArs4W_dropRight",
-		"largeFileRecordRaw": "nArs4W_largeFileRecordRaw",
-		"largeFilePageLabel": "nArs4W_largeFilePageLabel",
-		"toggleButton": "nArs4W_toggleButton",
-		"paneCard": "nArs4W_paneCard",
-		"openWithLabel": "nArs4W_openWithLabel",
-		"browserFrame": "nArs4W_browserFrame",
-		"mermaidModalToolbar": "nArs4W_mermaidModalToolbar",
-		"editorPdfDragShieldActive": "nArs4W_editorPdfDragShieldActive",
-		"tabClose": "nArs4W_tabClose",
-		"editorSearchInput": "nArs4W_editorSearchInput",
-		"explorerEmpty": "nArs4W_explorerEmpty",
-		"paneDrop": "nArs4W_paneDrop",
-		"explorerRef": "nArs4W_explorerRef",
-		"uploadDropArtPrimary": "nArs4W_uploadDropArtPrimary",
-		"sandboxStatusText": "nArs4W_sandboxStatusText",
-		"sandboxStatus": "nArs4W_sandboxStatus",
-		"mermaidBody": "nArs4W_mermaidBody",
-		"splitRow": "nArs4W_splitRow",
-		"tabBarRightActions": "nArs4W_tabBarRightActions",
-		"selectionPopup": "nArs4W_selectionPopup",
-		"explorerSelectionText": "nArs4W_explorerSelectionText",
-		"paneTab": "nArs4W_paneTab",
-		"editorGitDel": "nArs4W_editorGitDel",
-		"editorGitBarSpacer": "nArs4W_editorGitBarSpacer",
-		"uploadDropChatCard": "nArs4W_uploadDropChatCard",
-		"editorMain": "nArs4W_editorMain",
-		"editorBannerAction": "nArs4W_editorBannerAction",
-		"editorGitBarGutter": "nArs4W_editorGitBarGutter",
-		"browserBar": "nArs4W_browserBar",
-		"editorPdfStage": "nArs4W_editorPdfStage",
-		"tocBar": "nArs4W_tocBar",
-		"explorerRowRevealed": "nArs4W_explorerRowRevealed",
-		"explorerDir": "nArs4W_explorerDir",
-		"explorerHiddenPane": "nArs4W_explorerHiddenPane",
-		"editorTitle": "nArs4W_editorTitle",
-		"tabBoundaryError": "nArs4W_tabBoundaryError",
-		"sandboxAction": "nArs4W_sandboxAction",
-		"pane": "nArs4W_pane",
-		"chipUnread": "nArs4W_chipUnread",
-		"uploadDropChatHint": "nArs4W_uploadDropChatHint",
-		"sandboxDot": "nArs4W_sandboxDot",
-		"editorHtml": "nArs4W_editorHtml",
-		"browserBlockedButton": "nArs4W_browserBlockedButton",
-		"mermaidModalButton": "nArs4W_mermaidModalButton",
-		"panel": "nArs4W_panel",
-		"openWithPinActive": "nArs4W_openWithPinActive",
-		"dsh-toc-flash": "nArs4W_dsh-toc-flash",
-		"largeFileRecordExpanded": "nArs4W_largeFileRecordExpanded",
-		"explorerSelectionActions": "nArs4W_explorerSelectionActions",
-		"editor": "nArs4W_editor",
-		"mermaidInfo": "nArs4W_mermaidInfo",
-		"mermaidModal": "nArs4W_mermaidModal",
-		"orphanedType": "nArs4W_orphanedType",
-		"editorGitBarDel": "nArs4W_editorGitBarDel",
-		"browserBlocked": "nArs4W_browserBlocked",
-		"largeFileLines": "nArs4W_largeFileLines",
-		"editorPlaceholder": "nArs4W_editorPlaceholder",
-		"paneContent": "nArs4W_paneContent",
-		"editorBlameSummary": "nArs4W_editorBlameSummary",
-		"explorerRenameInput": "nArs4W_explorerRenameInput",
-		"gitDiffTabHeader": "nArs4W_gitDiffTabHeader",
-		"tocItem": "nArs4W_tocItem",
-		"uploadOverlayCancel": "nArs4W_uploadOverlayCancel",
-		"uploadOverlayProgressFill": "nArs4W_uploadOverlayProgressFill",
-		"editorModeToggle": "nArs4W_editorModeToggle",
-		"dropUp": "nArs4W_dropUp",
-		"tabActive": "nArs4W_tabActive",
-		"mermaidModalStage": "nArs4W_mermaidModalStage",
-		"boundaryError": "nArs4W_boundaryError",
-		"tabBadge": "nArs4W_tabBadge",
-		"tocItemLevel": "nArs4W_tocItemLevel",
+		"mermaidMarkdown": "nArs4W_mermaidMarkdown",
+		"explorerActionErrorText": "nArs4W_explorerActionErrorText",
 		"uploadOverlay": "nArs4W_uploadOverlay",
-		"iconButton": "nArs4W_iconButton",
+		"largeFileNotice": "nArs4W_largeFileNotice",
+		"pane": "nArs4W_pane",
+		"editorBlameHead": "nArs4W_editorBlameHead",
+		"sandboxStatus": "nArs4W_sandboxStatus",
+		"split": "nArs4W_split",
+		"editorTreeResize": "nArs4W_editorTreeResize",
+		"uploadOverlayProgressFill": "nArs4W_uploadOverlayProgressFill",
+		"editorPdf": "nArs4W_editorPdf",
+		"mermaidModalToolbar": "nArs4W_mermaidModalToolbar",
+		"tocPanel": "nArs4W_tocPanel",
+		"tabClose": "nArs4W_tabClose",
+		"mermaidModalStage": "nArs4W_mermaidModalStage",
+		"explorerSelectionBar": "nArs4W_explorerSelectionBar",
+		"selectionPopup": "nArs4W_selectionPopup",
+		"paneEmptyCards": "nArs4W_paneEmptyCards",
+		"openWithName": "nArs4W_openWithName",
+		"editorHeader": "nArs4W_editorHeader",
+		"bottomResizeActive": "nArs4W_bottomResizeActive",
+		"uploadDropArtPrimary": "nArs4W_uploadDropArtPrimary",
+		"uploadDropZonePill": "nArs4W_uploadDropZonePill",
+		"editorPlaceholder": "nArs4W_editorPlaceholder",
+		"explorerRowRevealed": "nArs4W_explorerRowRevealed",
+		"dropDown": "nArs4W_dropDown",
+		"panelBody": "nArs4W_panelBody",
+		"paneTab": "nArs4W_paneTab",
+		"explorerRoot": "nArs4W_explorerRoot",
+		"dropRight": "nArs4W_dropRight",
+		"uploadDropHero": "nArs4W_uploadDropHero",
+		"editor": "nArs4W_editor",
+		"bottomClose": "nArs4W_bottomClose",
+		"tabBarDrop": "nArs4W_tabBarDrop",
+		"editorBanner": "nArs4W_editorBanner",
+		"editorGitMod": "nArs4W_editorGitMod",
+		"mermaidInfo": "nArs4W_mermaidInfo",
+		"mermaidCode": "nArs4W_mermaidCode",
+		"editorPdfDragShield": "nArs4W_editorPdfDragShield",
+		"gitDiffTab": "nArs4W_gitDiffTab",
+		"gitDiffTabTitle": "nArs4W_gitDiffTabTitle",
+		"editorTreeSearch": "nArs4W_editorTreeSearch",
+		"dividerCol": "nArs4W_dividerCol",
+		"workbench": "nArs4W_workbench",
+		"openWithLabel": "nArs4W_openWithLabel",
+		"paneTabHidden": "nArs4W_paneTabHidden",
+		"dsh-toc-flash": "nArs4W_dsh-toc-flash",
+		"tabActive": "nArs4W_tabActive",
+		"largeFileRecord": "nArs4W_largeFileRecord",
+		"tabBarRightActions": "nArs4W_tabBarRightActions",
+		"editorMain": "nArs4W_editorMain",
+		"largeFileRecordInvalid": "nArs4W_largeFileRecordInvalid",
+		"largeFileLineNo": "nArs4W_largeFileLineNo",
+		"sandboxDot": "nArs4W_sandboxDot",
+		"mermaidHeader": "nArs4W_mermaidHeader",
+		"explorerDir": "nArs4W_explorerDir",
+		"tabBar": "nArs4W_tabBar",
+		"explorerHiddenPane": "nArs4W_explorerHiddenPane",
+		"nativeTabHost": "nArs4W_nativeTabHost",
+		"editorGitBarAdd": "nArs4W_editorGitBarAdd",
+		"largeFilePageLabel": "nArs4W_largeFilePageLabel",
+		"bottomPanelHidden": "nArs4W_bottomPanelHidden",
+		"bottomResize": "nArs4W_bottomResize",
+		"explorerSelectionActions": "nArs4W_explorerSelectionActions",
+		"tabTitle": "nArs4W_tabTitle",
+		"tabUnreadDot": "nArs4W_tabUnreadDot",
+		"dropLeft": "nArs4W_dropLeft",
+		"explorerHeader": "nArs4W_explorerHeader",
+		"explorerCopied": "nArs4W_explorerCopied",
+		"editorPathInput": "nArs4W_editorPathInput",
+		"editorTreeDock": "nArs4W_editorTreeDock",
+		"orphanedType": "nArs4W_orphanedType",
+		"editorBlame": "nArs4W_editorBlame",
+		"uploadOverlayStatus": "nArs4W_uploadOverlayStatus",
+		"browser": "nArs4W_browser",
+		"uploadDropChatHint": "nArs4W_uploadDropChatHint",
 		"tab": "nArs4W_tab",
-		"mermaidHeader": "nArs4W_mermaidHeader"
+		"browserBlockedDesc": "nArs4W_browserBlockedDesc",
+		"mermaidModal": "nArs4W_mermaidModal",
+		"mermaidModalButton": "nArs4W_mermaidModalButton",
+		"gitDiffTabHeader": "nArs4W_gitDiffTabHeader",
+		"explorerDirChanged": "nArs4W_explorerDirChanged",
+		"explorerGitName": "nArs4W_explorerGitName",
+		"editorSearchHint": "nArs4W_editorSearchHint",
+		"paneCard": "nArs4W_paneCard",
+		"paneDrop": "nArs4W_paneDrop",
+		"editorModeActive": "nArs4W_editorModeActive",
+		"editorSearchResultLabel": "nArs4W_editorSearchResultLabel",
+		"editorDownloadLink": "nArs4W_editorDownloadLink",
+		"mermaidWrap": "nArs4W_mermaidWrap",
+		"openWithPin": "nArs4W_openWithPin",
+		"explorerAppIcon": "nArs4W_explorerAppIcon",
+		"openWithPinActive": "nArs4W_openWithPinActive",
+		"mermaidCopy": "nArs4W_mermaidCopy",
+		"openWithChevron": "nArs4W_openWithChevron",
+		"tocItemLevel": "nArs4W_tocItemLevel",
+		"explorerActionError": "nArs4W_explorerActionError",
+		"uploadDropMask": "nArs4W_uploadDropMask",
+		"tocFlash": "nArs4W_tocFlash",
+		"uploadOverlayCard": "nArs4W_uploadOverlayCard",
+		"largeFileDownload": "nArs4W_largeFileDownload",
+		"largeFileBody": "nArs4W_largeFileBody",
+		"editorModeToggle": "nArs4W_editorModeToggle",
+		"uploadDropChatCard": "nArs4W_uploadDropChatCard",
+		"editorBody": "nArs4W_editorBody",
+		"explorerHidden": "nArs4W_explorerHidden",
+		"editorCmHidden": "nArs4W_editorCmHidden",
+		"editorPdfFrame": "nArs4W_editorPdfFrame",
+		"editorSearchResult": "nArs4W_editorSearchResult",
+		"editorGitBarDel": "nArs4W_editorGitBarDel",
+		"gitError": "nArs4W_gitError",
+		"editorHtmlBlock": "nArs4W_editorHtmlBlock",
+		"editorPdfToolbar": "nArs4W_editorPdfToolbar",
+		"explorerRowDropTarget": "nArs4W_explorerRowDropTarget",
+		"dsh-row-in": "nArs4W_dsh-row-in",
+		"editorGitBar": "nArs4W_editorGitBar",
+		"editorGitDel": "nArs4W_editorGitDel",
+		"editorPdfFrameBlocked": "nArs4W_editorPdfFrameBlocked",
+		"tocButton": "nArs4W_tocButton",
+		"largeFileRecords": "nArs4W_largeFileRecords",
+		"largeFileRecordSummary": "nArs4W_largeFileRecordSummary",
+		"largeFileRecordRaw": "nArs4W_largeFileRecordRaw",
+		"largeFilePager": "nArs4W_largeFilePager",
+		"explorerRowSelected": "nArs4W_explorerRowSelected",
+		"explorerRef": "nArs4W_explorerRef",
+		"sandboxAction": "nArs4W_sandboxAction",
+		"dropOverlay": "nArs4W_dropOverlay",
+		"largeFileList": "nArs4W_largeFileList",
+		"largeFileRecordBody": "nArs4W_largeFileRecordBody",
+		"divider": "nArs4W_divider",
+		"largeFileLines": "nArs4W_largeFileLines",
+		"panel": "nArs4W_panel",
+		"editorBinaryNotice": "nArs4W_editorBinaryNotice",
+		"editorStatusError": "nArs4W_editorStatusError",
+		"explorerSelectionText": "nArs4W_explorerSelectionText",
+		"chipUnread": "nArs4W_chipUnread",
+		"uploadDropZoneText": "nArs4W_uploadDropZoneText",
+		"uploadOverlayCancel": "nArs4W_uploadOverlayCancel",
+		"browserFrame": "nArs4W_browserFrame",
+		"uploadOverlayTitle": "nArs4W_uploadOverlayTitle",
+		"largeFileNoticeAction": "nArs4W_largeFileNoticeAction",
+		"tabList": "nArs4W_tabList",
+		"terminalRetry": "nArs4W_terminalRetry",
+		"explorerSymlink": "nArs4W_explorerSymlink",
+		"mermaidBody": "nArs4W_mermaidBody",
+		"gitEmpty": "nArs4W_gitEmpty"
 	};
 	//#endregion
 	//#region src/client/editor-git-gutter.ts
@@ -23706,6 +23822,27 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		return `${sessionId}::${normalizeLocalPath(isAbsolutePath$1(path) ? path : joinPath(cwd ?? "", path)).replace(/\\/g, "/")}`;
 	}
 	/**
+	* Drop every parked fragment whose TTL ran out.
+	*
+	* The TTL is already honoured when a fragment is TAKEN, but a fragment parked
+	* for a document the reader never opens is never taken — it would sit in the
+	* map for the page's lifetime (since v0.25 every visited native tab body stays
+	* mounted, and every cross-file link click parks one entry). Sweeping on WRITE
+	* is what bounds it: a write is the only event that can add an entry.
+	*
+	* @returns how many expired entries were dropped.
+	*/
+	function sweepPendingAnchors() {
+		const now = Date.now();
+		let dropped = 0;
+		for (const [key, entry] of pendingAnchors) {
+			if (now - entry.at <= PENDING_TTL_MS) continue;
+			pendingAnchors.delete(key);
+			dropped += 1;
+		}
+		return dropped;
+	}
+	/**
 	* Park the fragment a cross-file link wants to land on, for the target
 	* document's own surface to take once it mounts.
 	* @param sessionId - the session both documents live in.
@@ -23715,6 +23852,7 @@ globalThis.__dshChunks__["editor"] = (require) => {
 	*/
 	function rememberMarkdownAnchor(sessionId, cwd, path, fragment) {
 		if (fragment === "") return;
+		sweepPendingAnchors();
 		pendingAnchors.set(anchorKey(sessionId, cwd, path), {
 			fragment,
 			at: Date.now()
@@ -53966,6 +54104,28 @@ globalThis.__dshChunks__["editor"] = (require) => {
 	*  (new file opens at the top), re-opens/toggles restore the last position. */
 	const previewScrollMemory = /* @__PURE__ */ new Map();
 	const previewScrollKey = (scope, path) => `${scope.sessionId}::${path}`;
+	/**
+	* Remember one document's preview offset. The write moves the key to the back
+	* of the eviction order, so the document forgotten past the cap is the one
+	* that has gone longest without a scroll.
+	*
+	* @param scope - the viewer's scope (its session id is part of the key).
+	* @param path - the document's absolute path.
+	* @param top - the preview container's `scrollTop`.
+	*/
+	function rememberPreviewScroll(scope, path, top) {
+		const key = previewScrollKey(scope, path);
+		previewScrollMemory.delete(key);
+		previewScrollMemory.set(key, top);
+		for (const stale of previewScrollMemory.keys()) {
+			if (previewScrollMemory.size <= 64) break;
+			previewScrollMemory.delete(stale);
+		}
+	}
+	/** The remembered offset of one document (0 = none: open it at the top). */
+	function previewScrollOf(scope, path) {
+		return previewScrollMemory.get(previewScrollKey(scope, path)) ?? 0;
+	}
 	/** Whether two spellings are the SAME document — byte-equal, or equal once
 	*  line endings are normalized CRLF/CR → LF. Line endings are not content:
 	*  CodeMirror keeps every document with `\n` endings whatever the file used,
@@ -54070,7 +54230,7 @@ globalThis.__dshChunks__["editor"] = (require) => {
 		*  element, so capture it on scroll and restore after each remount. Seeded
 		*  from the module-level per-file memory so a full viewer rebuild
 		*  (save-then-switch-to-preview reload) also keeps the position. */
-		const previewScrollRef = (0, react.useRef)(previewScrollMemory.get(previewScrollKey(scope, path)) ?? 0);
+		const previewScrollRef = (0, react.useRef)(previewScrollOf(scope, path));
 		/** True while a programmatic restore is in flight; raw scroll events caused
 		*  by the restore (or by the browser clamping a collapsed reload container
 		*  to 0) must not overwrite the remembered position. */
@@ -54123,7 +54283,7 @@ globalThis.__dshChunks__["editor"] = (require) => {
 			selectionPopup.hide();
 		}, [content]);
 		(0, react.useEffect)(() => {
-			previewScrollRef.current = previewScrollMemory.get(previewScrollKey(scope, path)) ?? 0;
+			previewScrollRef.current = previewScrollOf(scope, path);
 		}, [scope, path]);
 		(0, react.useEffect)(() => {
 			if (content === void 0) return;
@@ -54601,7 +54761,7 @@ globalThis.__dshChunks__["editor"] = (require) => {
 					const el = event.currentTarget;
 					if (!restoringRef.current && el.scrollHeight > el.clientHeight) {
 						previewScrollRef.current = el.scrollTop;
-						previewScrollMemory.set(previewScrollKey(scope, path), el.scrollTop);
+						rememberPreviewScroll(scope, path, el.scrollTop);
 					}
 					if (!anchorThrottleRef.current) {
 						anchorThrottleRef.current = true;

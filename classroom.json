@@ -1,21 +1,21 @@
 {
   "schemaVersion": 1,
-  "version": "0.6.3",
-  "updated": "2026-10-20",
+  "version": "0.7.0",
+  "updated": "2026-10-24",
   "repository": "https://github.com/kylin985ti/dsh-desktop-classroom",
   "desktop": {
     "repository": "https://github.com/dataelement/dsh-desktop",
-    "version": "0.11.1",
+    "version": "0.12.1",
     "bundleId": "io.dsh.desktop",
     "minimumMacOS": "12.0",
     "assets": {
       "arm64": {
         "filename": "dsh-desktop-mac-arm64.zip",
-        "sha256": "a0a3eb7d5638c1e61ab1bba8f00101f6871d71a0a943a18c1d769a5febee58cd"
+        "sha256": "aaa0aabee4977bd908a8f2ea4b708dcc74ff0a85653e51d1ec4cdb0c4b4e47f1"
       },
       "x64": {
         "filename": "dsh-desktop-mac-x64.zip",
-        "sha256": "7d24210b82d6d67844ded006c7b47185e5237649a31e94013243c27e263f22d4"
+        "sha256": "dc8acad2eb5a14ab54284b03a299cd6080f9e516d816b0115272c99c9701d127"
       }
     }
   },
@@ -41,7 +41,7 @@
     {
       "path": "plugins/dsh-better-sidebar",
       "name": "dsh-better-sidebar",
-      "version": "0.26.0",
+      "version": "0.28.0",
       "title": "增强侧栏",
       "capability": "会话文件树、侧边提问与编辑",
       "setup": "上游插件，依赖宿主文件/终端权限",

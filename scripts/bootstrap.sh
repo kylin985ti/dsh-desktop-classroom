@@ -29,9 +29,9 @@ if [ ! -e "$APP" ]; then
   [ "$DOCTOR" = 0 ] || { echo 'Desktop not installed.' >&2; exit 2; }
   # These lines are generated from classroom.json by scripts/refresh.mjs.
   # BEGIN DESKTOP PINS
-  VERSION='0.11.1'
-  ARM64_SHA='a0a3eb7d5638c1e61ab1bba8f00101f6871d71a0a943a18c1d769a5febee58cd'
-  X64_SHA='7d24210b82d6d67844ded006c7b47185e5237649a31e94013243c27e263f22d4'
+  VERSION='0.12.1'
+  ARM64_SHA='aaa0aabee4977bd908a8f2ea4b708dcc74ff0a85653e51d1ec4cdb0c4b4e47f1'
+  X64_SHA='dc8acad2eb5a14ab54284b03a299cd6080f9e516d816b0115272c99c9701d127'
   # END DESKTOP PINS
   case "$(uname -m)" in
     arm64) ARCH=arm64; EXPECTED="$ARM64_SHA" ;;

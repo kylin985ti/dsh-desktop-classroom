@@ -1,5 +1,14 @@
 # 验证记录
 
+## 0.7.0 Desktop 0.12.1 与增强侧栏 0.28.0
+
+日期：2026-10-24。环境：macOS 26.3.1（Apple Silicon），Desktop 0.12.1 / Harness 0.2.1-rc.2。本轮只更新 Desktop 固定版本、两个安装包 SHA256 与增强侧栏版本，其余插件、工作台与安装协议不变。
+
+- 上游 v0.12.1 的两个 macOS ZIP 经 GitHub Release API 核对 SHA256 后写入 `classroom.json`；本仓库不重打包 App。
+- 增强侧栏 0.26.0 的宿主入口声明 `inject: webRuntime`，在 0.2.1-rc.2 上启动时等待该服务，被 Desktop 启动修复移除。0.28.0 的构建产物已无该引用，`cordis.patch.yml` 与 0.26.0 逐字节一致，入口 ID 不变。
+- 在维护者 web profile 直接安装 0.28.0 并加入 bundle 后，宿主返回的客户端注入表包含 `dsh-better-sidebar/client.js`；未重启 Desktop，未在全新临时 DSH home 重跑九插件安装，也未做界面截图验收。
+- Intel 真机与完整学员机验收仍未进行；Windows/Linux 仍不支持。
+
 ## 0.6.3 可选任务栏 1.8.1 同步
 
 日期：2026-10-20。仅更新可选工作台源码、必要客户端构建产物、测试与公开摘要；默认九插件及安装器不变，未访问或操作维护者运行中的 DSH。
