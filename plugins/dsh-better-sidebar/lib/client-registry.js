@@ -689,6 +689,16 @@ window.__ModuleLoader__.load({
 				};
 			}
 		}
+		/**
+		* How many session states stay in memory at once. `bySession` used to grow for
+		* the life of the page — nothing deleted an entry — which under the host's
+		* `keepMounted` tab bodies means one permanent entry per conversation ever
+		* visited. The CURRENT session is always kept; everything else is an LRU of
+		* the most recently touched sessions. Eviction is transparent: the state also
+		* lives in localStorage (a pending debounced write is flushed first), so
+		* switching back to an evicted session reloads exactly what was there.
+		*/
+		const SESSION_STATE_CAP = 32;
 		/** The session-scoped store: one state per conversation, localStorage-backed. */
 		var SidebarStore = class {
 			bySession = /* @__PURE__ */ new Map();
@@ -701,6 +711,12 @@ window.__ModuleLoader__.load({
 			/** Per-session persist debounce timers (v0.12.0+: one per session, so a
 			*  targeted open never cancels another session's pending write). */
 			persistTimers = /* @__PURE__ */ new Map();
+			/**
+			* The `getSessionStates()` answer, rebuilt on the next read after a write.
+			* Callers use the map as a memo input / `useSyncExternalStore` value, so a
+			* fresh copy per call invalidated every downstream memo on each render.
+			*/
+			sessionStatesCache;
 			/** User-facing side card prefs seeding brand-new session states (defaults until the settings RPC resolves). */
 			prefs = { ...SIDEBAR_PREFS_DEFAULTS };
 			/**
@@ -748,16 +764,15 @@ window.__ModuleLoader__.load({
 					prefs: this.prefs
 				};
 				else {
-					let state = this.bySession.get(sessionId);
-					if (state === void 0) {
-						state = loadState(sessionId);
-						this.bySession.set(sessionId, state);
-					} else nextIdCounter = maxCounterId(state);
+					const cached = this.bySession.get(sessionId);
+					const state = cached ?? loadState(sessionId);
+					if (cached !== void 0) nextIdCounter = maxCounterId(state);
 					this.snapshot = {
 						sessionId,
 						state,
 						prefs: this.prefs
 					};
+					this.putSession(sessionId, state);
 				}
 				this.notify();
 			}
@@ -809,7 +824,7 @@ window.__ModuleLoader__.load({
 				}
 				const stored = this.bySession.get(target);
 				if (stored === void 0 || !stored.unread.includes(type)) return false;
-				this.bySession.set(target, clearUnread(stored, type));
+				this.putSession(target, clearUnread(stored, type));
 				return true;
 			}
 			getSnapshot() {
@@ -822,12 +837,12 @@ window.__ModuleLoader__.load({
 				if (sessionId === void 0 || state === void 0) return;
 				const draft = structuredClone(state);
 				mutator(draft);
-				this.bySession.set(sessionId, draft);
 				this.snapshot = {
 					sessionId,
 					state: draft,
 					prefs: this.prefs
 				};
+				this.putSession(sessionId, draft);
 				this.schedulePersist(sessionId, draft);
 				this.notify();
 			}
@@ -845,16 +860,31 @@ window.__ModuleLoader__.load({
 				return state !== void 0 && tabOpenIn(state, tabId);
 			}
 			/**
-			* Read-only view of EVERY cached session's state (v0.17.0+). The
-			* PinnedRail uses this to collect pinned terminals across sessions
-			* without each render reading private fields. The map is the live
-			* `bySession` reference — callers MUST treat it as read-only (mutations
-			* go through {@link reduce} / {@link reduceFor}). A session that has
-			* never been visited in this run is absent (its pinned tabs are not
-			* visible until first load — accepted as YAGNI by the design).
+			* One session's cached state, or `undefined` when it has never been loaded
+			* in this run (see {@link getSessionStates} for the whole map). The
+			* reference is STABLE while nothing writes that session — the store's state
+			* objects are immutable and replaced wholesale — so a hot reader may use it
+			* as a memo input instead of copying the whole map per render.
+			*/
+			getSessionState(sessionId) {
+				return this.bySession.get(sessionId);
+			}
+			/**
+			* Read-only view of EVERY cached session's state (v0.17.0+): the whole-map
+			* read, for a caller that needs several sessions at once (a per-session
+			* question should use {@link getSessionState} — it does not allocate).
+			* Callers MUST treat the returned map as read-only (mutations go through
+			* {@link reduce} / {@link reduceFor}); it is a cached SNAPSHOT, invalidated
+			* by the next write, so two reads with no write between them return the same
+			* object — a fresh copy per call invalidated every consumer's memo on every
+			* render. A session that has never been visited in this run is absent (its
+			* pinned tabs are not visible until first load — accepted as YAGNI by the
+			* design), and the same is true of a session evicted by the retention cap
+			* ({@link SESSION_STATE_CAP}) until it is loaded again.
 			*/
 			getSessionStates() {
-				return new Map(this.bySession);
+				if (this.sessionStatesCache === void 0) this.sessionStatesCache = new Map(this.bySession);
+				return this.sessionStatesCache;
 			}
 			/** Apply a pure reducer (returns the next state). */
 			reduce(reducer) {
@@ -863,12 +893,12 @@ window.__ModuleLoader__.load({
 				if (sessionId === void 0 || state === void 0) return;
 				const next = reducer(state);
 				if (next === state) return;
-				this.bySession.set(sessionId, next);
 				this.snapshot = {
 					sessionId,
 					state: next,
 					prefs: this.prefs
 				};
+				this.putSession(sessionId, next);
 				this.schedulePersist(sessionId, next);
 				this.notify();
 			}
@@ -881,25 +911,66 @@ window.__ModuleLoader__.load({
 			*/
 			reduceFor(sessionId, reducer) {
 				const counterBefore = nextIdCounter;
-				let state = this.bySession.get(sessionId);
-				if (state === void 0) {
-					state = loadState(sessionId);
-					this.bySession.set(sessionId, state);
-				} else nextIdCounter = maxCounterId(state);
+				const cached = this.bySession.get(sessionId);
+				const state = cached ?? loadState(sessionId);
+				if (cached !== void 0) nextIdCounter = maxCounterId(state);
 				const next = reducer(state);
 				nextIdCounter = Math.max(nextIdCounter, counterBefore);
+				if (next === state && cached !== void 0) return;
+				this.putSession(sessionId, next);
 				if (next === state) return;
-				this.bySession.set(sessionId, next);
 				this.schedulePersist(sessionId, next);
+			}
+			/**
+			* Record one session's state: refresh its recency and bound the map.
+			* Every write to `bySession` goes through here, so the LRU order and the
+			* `getSessionStates()` snapshot stay in step with the entries.
+			*/
+			putSession(sessionId, state) {
+				this.bySession.delete(sessionId);
+				this.bySession.set(sessionId, state);
+				this.sessionStatesCache = void 0;
+				this.evictSessions();
+			}
+			/**
+			* Drop the least recently touched sessions beyond {@link SESSION_STATE_CAP}.
+			* The current session is never dropped, and an evicted session's state is
+			* not lost: it lives in localStorage, so the next `setSession` reloads it.
+			*/
+			evictSessions() {
+				if (this.bySession.size <= SESSION_STATE_CAP) return;
+				for (const id of [...this.bySession.keys()]) {
+					if (this.bySession.size <= SESSION_STATE_CAP) return;
+					if (id === this.snapshot.sessionId) continue;
+					this.flushPersist(id);
+					this.bySession.delete(id);
+				}
+			}
+			/**
+			* Write one session's state NOW instead of waiting for its debounce timer.
+			* Eviction flushes before dropping an entry: the in-memory copy is what the
+			* reader sees until they switch back, and a pending write that landed after
+			* a switch-back would leave the reloaded state behind the storage one.
+			*/
+			flushPersist(sessionId) {
+				const timer = this.persistTimers.get(sessionId);
+				if (timer === void 0) return;
+				window.clearTimeout(timer);
+				this.persistTimers.delete(sessionId);
+				const state = this.bySession.get(sessionId);
+				if (state !== void 0) this.writePersisted(sessionId, state);
+			}
+			writePersisted(sessionId, state) {
+				try {
+					localStorage.setItem(`${STORAGE_PREFIX}:${sessionId}`, JSON.stringify(state));
+				} catch {}
 			}
 			schedulePersist(sessionId, state) {
 				const existing = this.persistTimers.get(sessionId);
 				if (existing !== void 0) window.clearTimeout(existing);
 				const timer = window.setTimeout(() => {
 					this.persistTimers.delete(sessionId);
-					try {
-						localStorage.setItem(`${STORAGE_PREFIX}:${sessionId}`, JSON.stringify(state));
-					} catch {}
+					this.writePersisted(sessionId, state);
 				}, 200);
 				this.persistTimers.set(sessionId, timer);
 			}
@@ -1256,7 +1327,7 @@ window.__ModuleLoader__.load({
 		* The plugin version this service instance reports. Keep in lockstep with
 		* `package.json`'s version — `tests/service.spec.ts` asserts the pair.
 		*/
-		const SIDEBAR_SERVICE_VERSION = "0.26.0";
+		const SIDEBAR_SERVICE_VERSION = "0.28.0";
 		/**
 		* Monotonic capability list consumers use to gate new API usage (features
 		* are never removed). Each string names a v0.12.0+ capability:
@@ -1949,22 +2020,22 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:/home/runner/work/DSH-better-sidebar/DSH-better-sidebar/src/client/builtins/tab-icons.module.css.mjs
-		const css$12 = ".SyUHSa_files{color:var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary))}.SyUHSa_changes{color:var(--dsw-alias-state-success-primary,var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary)))}.SyUHSa_tasks{color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-label-primary))}.SyUHSa_sidechat{color:var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary)))}.SyUHSa_terminal{color:var(--dsw-alias-label-primary)}.SyUHSa_browser{color:var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary)))}";
-		const tagId$11 = "dsh-external/dsh-better-sidebar/tab-icons.module.css";
-		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$11) + "]") === null) {
+		const css$14 = ".SyUHSa_files{color:var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary))}.SyUHSa_changes{color:var(--dsw-alias-state-success-primary,var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary)))}.SyUHSa_tasks{color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-label-primary))}.SyUHSa_sidechat{color:var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary)))}.SyUHSa_terminal{color:var(--dsw-alias-label-primary)}.SyUHSa_browser{color:var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary)))}";
+		const tagId$13 = "dsh-external/dsh-better-sidebar/tab-icons.module.css";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$13) + "]") === null) {
 			const tag = document.createElement("style");
 			tag.dataset.plugin = "dsh-external/dsh-better-sidebar";
-			tag.dataset.pluginCss = tagId$11;
-			tag.textContent = css$12;
+			tag.dataset.pluginCss = tagId$13;
+			tag.textContent = css$14;
 			document.head.appendChild(tag);
 		}
 		var tab_icons_module_css_default = {
+			"browser": "SyUHSa_browser",
+			"tasks": "SyUHSa_tasks",
 			"changes": "SyUHSa_changes",
 			"terminal": "SyUHSa_terminal",
-			"browser": "SyUHSa_browser",
-			"files": "SyUHSa_files",
-			"tasks": "SyUHSa_tasks",
-			"sidechat": "SyUHSa_sidechat"
+			"sidechat": "SyUHSa_sidechat",
+			"files": "SyUHSa_files"
 		};
 		//#endregion
 		//#region node_modules/.pnpm/react-icons@5.7.0_react@18.2.0/node_modules/react-icons/lib/iconContext.mjs
@@ -2209,7 +2280,7 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region src/client/builtins/tab-icons.tsx
 		/** The styled wrapper classes; typed so a renamed rule fails the build. */
-		const css$11 = tab_icons_module_css_default;
+		const css$13 = tab_icons_module_css_default;
 		/** Surround a glyph with the class that hands it its token-driven color. */
 		function themed(className, glyph) {
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
@@ -2219,28 +2290,28 @@ window.__ModuleLoader__.load({
 		}
 		/** The Files tab: the host's folder artwork, like the rows it opens. */
 		const filesTabIcon = (size) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-			className: css$11.files,
+			className: css$13.files,
 			children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.FileTypeIcon, {
 				kind: "folder",
 				size
 			})
 		});
 		/** Changes / diff: the commit glyph, green like the diff affordances. */
-		const changesTabIcon = (size) => themed(css$11.changes, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VscGitCommit, { size }));
+		const changesTabIcon = (size) => themed(css$13.changes, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VscGitCommit, { size }));
 		/**
 		* Tasks (subagents and background jobs) — the live-activity amber. The glyph
 		* is layered sheets, not a checklist: this page lists RUNNING work (subagent
 		* sessions plus the host's background jobs), not a to-do list.
 		*/
-		const tasksTabIcon = (size) => themed(css$11.tasks, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VscLayers, { size }));
+		const tasksTabIcon = (size) => themed(css$13.tasks, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VscLayers, { size }));
 		/** Side chat — the conversational/secondary accent. */
-		const sidechatTabIcon = (size) => themed(css$11.sidechat, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VscCommentDiscussion, { size }));
+		const sidechatTabIcon = (size) => themed(css$13.sidechat, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VscCommentDiscussion, { size }));
 		/**
 		* Terminal — primary ink, the shell is text. Rendered one step down from the
 		* strip's 14px: the VSCodicon terminal is a wide filled rectangle and read
 		* heavier than its neighbours at full size.
 		*/
-		const terminalTabIcon = (size) => themed(css$11.terminal, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VscTerminal, { size: Math.max(10, Math.round(size * .85)) }));
+		const terminalTabIcon = (size) => themed(css$13.terminal, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VscTerminal, { size: Math.max(10, Math.round(size * .85)) }));
 		//#endregion
 		//#region src/client/locales.ts
 		/**
@@ -2280,8 +2351,6 @@ window.__ModuleLoader__.load({
 			changesMdRaw: "原文",
 			changesHtmlRender: "渲染",
 			changesHtmlRaw: "原文",
-			changesPdfRender: "渲染",
-			changesPdfRaw: "原文",
 			changesWrite: "写入",
 			changesEdit: "编辑",
 			changesRunning: "执行中",
@@ -2373,7 +2442,6 @@ window.__ModuleLoader__.load({
 			gitStatusRenamed: "已重命名",
 			gitStatusConflict: "有冲突",
 			changesClean: "工作区没有变更",
-			changesNoHistory: "还没有提交历史",
 			changesNewFile: "新文件",
 			changesStageFailed: "暂存失败：{message}",
 			changesOpGone: "该操作已不在会话记录中",
@@ -2462,7 +2530,18 @@ window.__ModuleLoader__.load({
 			unstage: "取消暂存",
 			stageAll: "全部暂存",
 			unstageAll: "全部取消暂存",
-			commitPlaceholder: "提交信息 (Ctrl+G 生成，Ctrl+Enter 提交)",
+			gitChanges: "更改",
+			gitGraph: "提交图",
+			gitMergeChanges: "合并更改",
+			gitStagedChanges: "暂存的更改",
+			gitMoreActions: "更多操作",
+			gitRepository: "仓库",
+			gitDetached: "游离 HEAD",
+			gitBranchesUnavailable: "没有可用分支",
+			gitNoUpstream: "未设置上游",
+			gitSyncUnavailable: "同步不可用",
+			gitSync: "同步更改",
+			commitPlaceholder: "Message ({shortcut} to commit on \"{branch}\")",
 			commit: "提交",
 			generateCommitMessage: "生成提交信息",
 			generateCommitMessageWith: "生成提交信息（使用 {model}）",
@@ -2488,12 +2567,25 @@ window.__ModuleLoader__.load({
 			worktree: "工作树",
 			checkoutError: "切换分支失败",
 			history: "历史",
-			changes: "文件变动",
+			changes: "Git",
 			changesGitLens: "Git",
+			graphAllBranches: "所有分支",
+			graphBranchFilter: "分支筛选",
+			graphEmpty: "暂无提交",
+			graphLoadError: "加载提交历史失败",
+			graphStale: "提交历史已变化，请刷新",
+			graphDetails: "提交详情",
+			graphParents: "父提交",
+			graphLoadMore: "加载更多",
 			changesSessionLens: "本轮文件",
 			changesFilterAll: "全部",
 			changesFilterEmpty: "没有此类操作",
 			changesOpenDiffTab: "在独立页签中打开",
+			changesDiffTab: "差异",
+			changesContentTab: "内容",
+			changesNoCommit: "未选择提交",
+			changesNoContent: "此视图暂无内容",
+			changesReadNoDiff: "读取没有差异",
 			changesClosePreview: "关闭预览",
 			changesResizePreview: "调整预览高度",
 			changesLoadError: "会话文件记录暂不可用",
@@ -2525,7 +2617,6 @@ window.__ModuleLoader__.load({
 			timeHoursAgo: "{n} 小时前",
 			timeYesterday: "昨天",
 			loadMore: "加载更多",
-			historyLoadError: "加载更多历史失败",
 			produced: "本次产出",
 			showInFolder: "在文件夹中显示",
 			disconnected: "终端连接断开，重连中…",
@@ -2686,6 +2777,7 @@ window.__ModuleLoader__.load({
 			sideChatBlockFailed: "失败",
 			sideChatBlockDone: "完成",
 			sideChatBlockNoOutput: "（无输出）",
+			sideChatBlockCommandLine: "命令第 {line} 行",
 			codeBlockTitle: "代码块",
 			codeBlockWrap: "自动换行",
 			codeBlockUnwrap: "取消自动换行",
@@ -2800,6 +2892,14 @@ window.__ModuleLoader__.load({
 			workflowPhaseUnnamed: "未命名阶段",
 			workflowMembers: "{done}/{total} 成员",
 			jobsAutoCollapsed: "代理较多，已自动折叠",
+			contextDiagnostics: "上下文诊断",
+			contextDiagnosticsTarget: "当前会话",
+			contextDiagnosticsFailed: "无法打开「{label}」的上下文诊断",
+			contextDiagnosticsUnavailable: "dsh-context 的「上下文」页面不可用（未安装或未注册）",
+			contextDiagnosticsNavigation: "无法定位到该会话",
+			contextDiagnosticsTimeout: "打开超时，请重试",
+			contextDiagnosticsOpenFailed: "页面打开失败",
+			contextDiagnosticsDismiss: "关闭提示",
 			catalogLoadFailed: "{count} 个分支加载失败",
 			addPluginsTabCard: "添加 Tab 插件",
 			addPluginsTabCardDesc: "注册新的侧边栏页面",
@@ -2881,8 +2981,6 @@ window.__ModuleLoader__.load({
 			changesMdRaw: "Raw",
 			changesHtmlRender: "Render",
 			changesHtmlRaw: "Raw",
-			changesPdfRender: "Render",
-			changesPdfRaw: "Raw",
 			changesWrite: "Write",
 			changesEdit: "Edit",
 			changesRunning: "running",
@@ -2974,7 +3072,6 @@ window.__ModuleLoader__.load({
 			gitStatusRenamed: "Renamed",
 			gitStatusConflict: "Conflicted",
 			changesClean: "No changes in the working tree",
-			changesNoHistory: "No commits yet",
 			changesNewFile: "New file",
 			changesStageFailed: "Staging failed: {message}",
 			changesOpGone: "This operation is no longer in the session log",
@@ -3063,7 +3160,18 @@ window.__ModuleLoader__.load({
 			unstage: "Unstage",
 			stageAll: "Stage all",
 			unstageAll: "Unstage all",
-			commitPlaceholder: "Commit message (Ctrl+G generate, Ctrl+Enter commit)",
+			gitChanges: "Changes",
+			gitGraph: "Graph",
+			gitMergeChanges: "Merge Changes",
+			gitStagedChanges: "Staged Changes",
+			gitMoreActions: "More Actions",
+			gitRepository: "Repository",
+			gitDetached: "Detached HEAD",
+			gitBranchesUnavailable: "No branches available",
+			gitNoUpstream: "No upstream",
+			gitSyncUnavailable: "Sync unavailable",
+			gitSync: "Sync Changes",
+			commitPlaceholder: "Message ({shortcut} to commit on \"{branch}\")",
 			commit: "Commit",
 			generateCommitMessage: "Generate commit message",
 			generateCommitMessageWith: "Generate commit message (using {model})",
@@ -3089,12 +3197,25 @@ window.__ModuleLoader__.load({
 			worktree: "Worktree",
 			checkoutError: "Branch switch failed",
 			history: "History",
-			changes: "Changes",
+			changes: "Git",
 			changesGitLens: "Git",
+			graphAllBranches: "All branches",
+			graphBranchFilter: "Branch filter",
+			graphEmpty: "No commits",
+			graphLoadError: "Failed to load commit history",
+			graphStale: "History has changed. Refresh to continue.",
+			graphDetails: "Commit details",
+			graphParents: "Parents",
+			graphLoadMore: "Load more",
 			changesSessionLens: "Session",
 			changesFilterAll: "All",
 			changesFilterEmpty: "No operations of this kind",
 			changesOpenDiffTab: "Open in a diff tab",
+			changesDiffTab: "Diff",
+			changesContentTab: "Content",
+			changesNoCommit: "No commit selected",
+			changesNoContent: "Nothing to show here",
+			changesReadNoDiff: "A read has no diff",
 			changesClosePreview: "Close preview",
 			changesResizePreview: "Resize preview",
 			changesLoadError: "Session file records are unavailable right now",
@@ -3126,7 +3247,6 @@ window.__ModuleLoader__.load({
 			timeHoursAgo: "{n} h ago",
 			timeYesterday: "yesterday",
 			loadMore: "Load more",
-			historyLoadError: "Failed to load more history",
 			produced: "Produced",
 			showInFolder: "Show in folder",
 			disconnected: "Terminal disconnected, reconnecting…",
@@ -3287,6 +3407,7 @@ window.__ModuleLoader__.load({
 			sideChatBlockFailed: "Failed",
 			sideChatBlockDone: "Done",
 			sideChatBlockNoOutput: "(no output)",
+			sideChatBlockCommandLine: "Command line {line}",
 			codeBlockTitle: "Code block",
 			codeBlockWrap: "Wrap lines",
 			codeBlockUnwrap: "Do not wrap lines",
@@ -3401,6 +3522,14 @@ window.__ModuleLoader__.load({
 			workflowPhaseUnnamed: "Unnamed phase",
 			workflowMembers: "{done}/{total} members",
 			jobsAutoCollapsed: "Auto-collapsed (many agents)",
+			contextDiagnostics: "Context diagnostics",
+			contextDiagnosticsTarget: "Current session",
+			contextDiagnosticsFailed: "Could not open Context diagnostics for \"{label}\"",
+			contextDiagnosticsUnavailable: "The dsh-context \"Context\" page is unavailable (not installed or not registered)",
+			contextDiagnosticsNavigation: "Could not locate that conversation",
+			contextDiagnosticsTimeout: "Opening timed out — try again",
+			contextDiagnosticsOpenFailed: "The page could not be opened",
+			contextDiagnosticsDismiss: "Dismiss",
 			catalogLoadFailed: "{count} branches failed to load",
 			addPluginsTabCard: "Add tab plugins",
 			addPluginsTabCardDesc: "Register a new sidebar page",
@@ -4112,6 +4241,8 @@ window.__ModuleLoader__.load({
 			gitCommitModel: (scope, signal) => call("git.commit-model", scopePayload(scope, {}), signal),
 			gitBranch: (scope, worktree, signal) => call("git.branch", gitPayload(scope, worktree, {}), signal),
 			gitCheckout: (scope, branch, worktree) => call("git.checkout", gitPayload(scope, worktree, { branch })),
+			/** Read-only topological history; stale cursors require a fresh first page. */
+			gitGraph: (scope, options = {}, worktree, signal) => call("git.graph", gitPayload(scope, worktree, { ...options }), signal),
 			/** Recent commit history, lazily pageable (skip/count; defaults 0/30). */
 			gitLog: (scope, count, skip, worktree, signal) => call("git.log", gitPayload(scope, worktree, {
 				...count !== void 0 ? { count } : {},
@@ -4139,11 +4270,14 @@ window.__ModuleLoader__.load({
 				startLine,
 				endLine
 			}), signal),
-			/** The session's file-tool events for the changes tab's session lens: the
-			*  `tool/call` + `tool/result` rows past `afterSeq` (0 = whole window),
-			*  capped to the recent window host-side. The client runtime exposes no
-			*  event-log face, so the lens polls this delta route. */
-			changesOps: (scope, afterSeq, signal) => call("changes.ops", scopePayload(scope, { ...afterSeq !== void 0 && afterSeq > 0 ? { afterSeq } : {} }), signal),
+			/** The session's file-tool events past `afterSeq` (absent = whole window,
+			*  floored at -1 host-side so a log opening on seq 0 is not dropped). With
+			*  `wait` the host parks the request until the next tool event (or 25 s)
+			*  instead of re-reading an unchanged window. */
+			changesOps: (scope, afterSeq, signal, wait = false) => call("changes.ops", scopePayload(scope, {
+				...afterSeq !== void 0 ? { afterSeq } : {},
+				...wait ? { wait: true } : {}
+			}), signal),
 			/** Discard the worktree changes of one file (the index is untouched). */
 			gitDiscard: (scope, path, worktree) => call("git.discard", gitPayload(scope, worktree, { path })),
 			/** Revert one commit onto the current branch. */
@@ -4313,239 +4447,239 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:/home/runner/work/DSH-better-sidebar/DSH-better-sidebar/src/client/sidebar.module.css.mjs
-		const css$10 = "[data-dsh-panel-host]{z-index:25;pointer-events:none;height:100vh;position:fixed;inset:0;overflow:clip}html[data-platform] body>[data-dsh-better-sidebar],[data-dsh-panel-host]{-webkit-app-region:initial!important}[data-dsh-panel-host]>*{-webkit-app-region:no-drag}[data-dsh-panel-host][data-dsh-panel-host-degraded]{position:absolute;top:0;left:0}.nArs4W_dockFallback{z-index:40;align-items:center;gap:2px;display:inline-flex;position:fixed}.nArs4W_toggleButton{width:28px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background var(--ds-transition-duration-slow) var(--ds-ease-in-out), color var(--ds-transition-duration-slow) var(--ds-ease-in-out);background:0 0;border:none;border-radius:50%;justify-content:center;align-items:center;display:flex}.nArs4W_toggleButton:hover:not(:disabled):not([aria-disabled=true]){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_toggleButton:disabled,.nArs4W_toggleButton[aria-disabled=true]{opacity:.4;cursor:default}.nArs4W_panelBody{flex:1;min-width:0;min-height:0;display:flex}.nArs4W_bottomPanel{z-index:40;background:var(--dsw-alias-bg-layer-1);border-top:1px solid var(--dsw-alias-border-l2);pointer-events:auto;padding-bottom:env(safe-area-inset-bottom);transition:transform var(--ds-transition-duration-slow) var(--ds-ease-in-out), height var(--ds-transition-duration-slow) var(--ds-ease-in-out);flex-direction:column;display:flex;position:absolute;bottom:0}.nArs4W_bottomPanelHidden{pointer-events:none;visibility:hidden;transition:transform var(--ds-transition-duration-slow) var(--ds-ease-in-out), height var(--ds-transition-duration-slow) var(--ds-ease-in-out), visibility 0s linear var(--ds-transition-duration-slow);transform:translateY(102%)}.nArs4W_bottomPanel[data-dragging]{transition:none}.nArs4W_bottomPanel{contain:layout style}body[data-dsh-sidebar-dragging] .nArs4W_panel,body[data-dsh-sidebar-dragging] .nArs4W_bottomPanel{will-change:transform}.nArs4W_bottomResize{cursor:row-resize;z-index:2;touch-action:none;height:8px;position:absolute;top:-4px;left:0;right:0}.nArs4W_bottomResizeActive{background:var(--dsw-alias-interactive-bg-hover-accent)}.nArs4W_bottomClose{z-index:4;width:28px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:50%;flex:none;justify-content:center;align-items:center;padding:0;display:inline-flex;position:absolute;top:3px;right:6px}.nArs4W_bottomClose:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_bottomPanel .nArs4W_tabBar{padding-right:40px}.nArs4W_toggleButton,.nArs4W_tabBar{-webkit-app-region:no-drag}.nArs4W_iconButton{width:28px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:50%;flex:none;justify-content:center;align-items:center;padding:0;display:inline-flex}.nArs4W_iconButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_iconButton:disabled{opacity:.4;cursor:default}.nArs4W_workbench,.nArs4W_split{flex:1;min-width:0;min-height:0;display:flex}.nArs4W_splitRow{flex-direction:row}.nArs4W_splitCol{flex-direction:column}.nArs4W_splitChild{display:flex;position:relative;overflow:hidden}.nArs4W_divider{z-index:3;touch-action:none;flex:none;position:relative}.nArs4W_dividerRow:after,.nArs4W_dividerCol:after{content:\"\";background:var(--dsw-alias-border-l2);transition:background var(--ds-transition-duration-slow) var(--ds-ease-in-out);position:absolute}.nArs4W_dividerRow{cursor:col-resize;width:7px;margin:0 -2px}.nArs4W_dividerRow:after{width:1px;top:0;bottom:0;left:50%;transform:translate(-50%)}.nArs4W_dividerCol{cursor:row-resize;height:7px;margin:-2px 0}.nArs4W_dividerCol:after{height:1px;top:50%;left:0;right:0;transform:translateY(-50%)}.nArs4W_divider:hover:after,.nArs4W_dividerActive:after{background:var(--dsw-alias-interactive-bg-hover-accent)}.nArs4W_pane{background:var(--dsw-alias-bg-base);flex-direction:column;flex:1;min-width:0;min-height:0;display:flex;position:relative}.nArs4W_paneDrop{outline:1px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.nArs4W_dropOverlay{z-index:6;pointer-events:none;background:var(--dsw-alias-interactive-bg-hover-accent);opacity:.5;position:absolute}.nArs4W_dropLeft{width:25%;top:0;bottom:0;left:0}.nArs4W_dropRight{width:25%;top:0;bottom:0;right:0}.nArs4W_dropUp{height:25%;top:0;left:0;right:0}.nArs4W_dropDown{height:25%;bottom:0;left:0;right:0}.nArs4W_dropCenter{outline:2px dashed var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-2px;background:0 0;inset:25%}.nArs4W_paneContent{flex-direction:column;flex:1;min-height:0;display:flex;overflow:hidden}.nArs4W_chipIcon{flex:none;align-items:center;margin-right:6px;display:inline-flex}.nArs4W_chipUnread{background:var(--dsw-alias-danger);vertical-align:middle;border-radius:50%;width:6px;height:6px;margin-left:6px;display:inline-block}.nArs4W_tabUnreadDot{background:var(--dsw-alias-danger);border-radius:50%;flex:none;width:7px;height:7px}.nArs4W_paneTab{flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_paneTabHidden{display:none}.nArs4W_paneEmptyCards{flex:1;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));align-content:start;gap:12px;min-height:0;padding:12px;display:grid;overflow:hidden}.nArs4W_paneCard{box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-1);min-width:0;min-height:56px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-s-strong-14);cursor:pointer;text-align:left;border-radius:24px;flex-direction:row;justify-content:flex-start;align-items:center;gap:14px;padding:14px 20px;display:flex}.nArs4W_paneCard>svg{color:var(--dsw-alias-label-secondary);flex:none}.nArs4W_paneCard:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l4)}.nArs4W_paneCard:disabled{opacity:.45;cursor:default}.nArs4W_tabBar{border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);flex:none;align-items:stretch;height:34px;display:flex}.nArs4W_tabBarDrop{outline:1px dashed var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.nArs4W_tabList{scrollbar-width:none;flex:1;min-width:0;display:flex;overflow-x:auto}.nArs4W_tabList::-webkit-scrollbar{display:none}.nArs4W_tab{min-width:64px;max-width:160px;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-secondary);border-right:1px solid var(--dsw-alias-border-l1);cursor:pointer;user-select:none;background:0 0;flex:none;align-items:center;gap:4px;padding:0 4px 0 10px;display:flex}.nArs4W_tab:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_tabActive{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-active)}.nArs4W_tabTitle{text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;overflow:hidden}.nArs4W_tabBadge{min-width:16px;height:15px;font:var(--dsw-font-xxxs-strong-11);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-brand-primary);border-radius:8px;flex:none;justify-content:center;align-items:center;padding:0 4px;display:inline-flex}.nArs4W_tabClose{width:18px;height:18px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:4px;flex:none;justify-content:center;align-items:center;padding:0;display:inline-flex}.nArs4W_tabClose:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_tabBarPlus{background:var(--dsw-alias-bg-layer-1);width:22px;height:22px;color:var(--dsw-alias-label-tertiary);cursor:pointer;border:none;border-radius:5px;flex:none;justify-content:center;align-self:center;align-items:center;margin:0 6px;padding:0;display:inline-flex;position:sticky;right:0}.nArs4W_tabBarPlus:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_tabBarRightActions{flex:0 auto;justify-content:flex-end;align-items:center;gap:2px;min-width:0;padding-right:4px;display:flex;overflow:hidden}.nArs4W_explorer{flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_explorerHeader{flex:none;justify-content:space-between;align-items:center;gap:8px;height:36px;padding:0 8px 0 12px;display:flex}.nArs4W_explorerRoot{font:var(--dsw-font-s-14);color:var(--dsw-alias-label-secondary);text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.nArs4W_explorerBody{flex:1;min-height:0;padding:4px 8px 8px;overflow:hidden auto}.nArs4W_explorerRow{box-sizing:border-box;width:100%;max-width:100%;height:28px;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;white-space:nowrap;animation:nArs4W_dsh-row-in .15s var(--ds-ease-in-out);background:0 0;border:none;border-radius:4px;align-items:center;gap:6px;padding:0 8px;display:flex;position:relative}.nArs4W_explorerRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_explorerRowSelected{background:var(--dsw-alias-interactive-bg-active)}.nArs4W_explorerRowSelected:before{content:\"\";background:var(--dsw-alias-state-business-primary);border-radius:1px;width:2px;position:absolute;top:4px;bottom:4px;left:0}.nArs4W_explorerGitName[data-git-tone=modified]{color:var(--dsw-alias-state-warn-primary)}.nArs4W_explorerGitName[data-git-tone=added],.nArs4W_explorerGitName[data-git-tone=untracked]{color:var(--dsw-alias-state-success-primary)}.nArs4W_explorerGitName[data-git-tone=deleted]{color:var(--dsw-alias-state-error-primary)}.nArs4W_explorerGitName[data-git-tone=renamed]{color:var(--dsw-alias-state-business-primary)}.nArs4W_explorerGitName[data-git-tone=copied]{color:var(--dsw-alias-state-success-primary)}.nArs4W_explorerGitName[data-git-tone=conflict]{color:var(--dsw-alias-state-error-primary)}.nArs4W_explorerDirChanged{color:var(--dsw-alias-state-business-primary)}.nArs4W_explorerRowRevealed{background:var(--dsw-alias-state-business-tertiary)}.nArs4W_explorerRowRevealed+.nArs4W_explorerRowRevealed{border-top-left-radius:0;border-top-right-radius:0}.nArs4W_explorerRowRevealed:has(+.nArs4W_explorerRowRevealed){border-bottom-right-radius:0;border-bottom-left-radius:0}.nArs4W_explorerDir{font:var(--dsw-font-xxs-strong-12)}.nArs4W_explorerHidden{opacity:.45}.nArs4W_explorerSymlink{color:var(--dsw-alias-label-tertiary);flex:none}.nArs4W_explorerBroken .nArs4W_explorerName{color:var(--dsw-alias-state-error-primary)}.nArs4W_explorerName{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.nArs4W_explorerRenaming{cursor:text}.nArs4W_explorerRenameInput{box-sizing:border-box;border:1px solid var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-layer-1);min-width:0;height:22px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);border-radius:3px;flex:auto;padding:0 6px}.nArs4W_explorerRenameInput:focus{border-color:var(--dsw-alias-state-business-primary);outline:none}.nArs4W_explorerActionError{box-sizing:border-box;border:1px solid var(--dsw-alias-state-error-primary);background:var(--dsw-alias-bg-layer-1);border-radius:8px;align-items:flex-start;gap:6px;width:100%;margin-bottom:4px;padding:6px 8px;display:flex}.nArs4W_explorerActionErrorText{overflow-wrap:anywhere;min-width:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);flex:auto}.nArs4W_explorerSelectionBar{z-index:1;box-sizing:border-box;background:var(--dsw-alias-bg-layer-2);border-radius:4px;align-items:center;gap:6px;width:100%;min-height:28px;margin-top:4px;padding:2px 8px;display:flex;position:sticky;bottom:0}.nArs4W_explorerSelectionText{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-secondary);flex:auto;overflow:hidden}.nArs4W_explorerSelectionActions{flex-wrap:wrap;flex:none;justify-content:flex-end;gap:4px;max-width:72%;display:flex}.nArs4W_explorerAppIcon{object-fit:contain;width:14px;height:14px;display:block}.nArs4W_explorerHiddenPane{display:none}.nArs4W_explorerRef,.nArs4W_explorerCopied{margin-left:auto}.nArs4W_explorerRef{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);height:20px;color:var(--dsw-alias-label-tertiary);font:var(--dsw-font-xxxs-strong-11);cursor:pointer;border-radius:999px;flex:none;align-items:center;padding:0 8px;display:none}.nArs4W_explorerRef:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_explorerRow:hover .nArs4W_explorerRef,.nArs4W_explorerRow:focus-within .nArs4W_explorerRef{display:inline-flex}.nArs4W_explorerCopied{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);flex:none}.nArs4W_explorerError{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);cursor:default}@keyframes nArs4W_dsh-row-in{0%{opacity:0}}.nArs4W_explorerEmpty{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);text-align:center;padding:16px}.nArs4W_explorerRowDropTarget{background:var(--dsw-alias-interactive-bg-hover-accent);outline:1px dashed var(--dsw-alias-state-business-primary);outline-offset:-1px}.nArs4W_uploadDropMask{z-index:1001;pointer-events:none;background:color-mix(in srgb, var(--dsw-alias-bg-base) 62%, transparent);animation:nArs4W_dsh-row-in .15s var(--ds-ease-in-out);position:fixed;inset:0}.nArs4W_uploadDropZone{z-index:1002;pointer-events:none;border:2px dashed var(--dsw-alias-border-l2);background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 4%, transparent);animation:nArs4W_dsh-row-in .15s var(--ds-ease-in-out);border-radius:8px;justify-content:center;align-items:flex-start;padding:12px;display:flex;position:fixed}.nArs4W_uploadDropHero{flex-direction:column;align-items:center;gap:8px;max-width:100%;padding-top:8px;display:flex}.nArs4W_uploadDropArtPrimary{color:var(--dsw-alias-state-business-primary)}.nArs4W_uploadDropArtAccent{color:var(--dsw-alias-state-business-tertiary)}.nArs4W_uploadDropArtCut{color:var(--dsw-alias-bg-layer-1)}.nArs4W_uploadDropZonePill{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);max-width:100%;height:28px;box-shadow:var(--dsw-shadow-lv2);color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxxs-11);border-radius:999px;align-items:center;gap:6px;padding:0 12px;display:flex}.nArs4W_uploadDropZoneText{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.nArs4W_uploadDropChatHint{z-index:1003;pointer-events:none;animation:nArs4W_dsh-row-in .15s var(--ds-ease-in-out);justify-content:center;align-items:center;padding:24px;display:flex;position:fixed;top:0;bottom:0;left:0}.nArs4W_uploadDropChatCard{text-align:center;max-width:100%;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-strong-12);flex-direction:column;align-items:center;gap:10px;display:flex}.nArs4W_uploadOverlay{z-index:30;background:var(--dsw-alias-bg-mask-1);backdrop-filter:var(--dsw-mask-blur);animation:nArs4W_dsh-row-in .15s var(--ds-ease-in-out);justify-content:center;align-items:center;display:flex;position:absolute;inset:0}.nArs4W_uploadOverlayCard{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);min-width:240px;max-width:min(420px,100% - 48px);box-shadow:var(--dsw-shadow-lv3);border-radius:8px;flex-direction:column;gap:10px;padding:16px;display:flex}.nArs4W_uploadOverlayTitle{font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);align-items:center;gap:6px;display:flex}.nArs4W_uploadOverlayTitle>svg{flex:none}.nArs4W_uploadOverlayTitle>span{white-space:nowrap;text-overflow:ellipsis;min-width:0;overflow:hidden}.nArs4W_uploadOverlayProgress{background:var(--dsw-alias-border-l2);border-radius:3px;height:6px;overflow:hidden}.nArs4W_uploadOverlayProgressFill{background:var(--dsw-alias-interactive-bg-hover-accent);height:100%;transition:width .15s var(--ds-ease-in-out);border-radius:3px}.nArs4W_uploadOverlayStatus{min-height:1em;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.nArs4W_uploadOverlayCancel{border:1px solid var(--dsw-alias-border-l2);height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-strong-12);cursor:pointer;background:0 0;border-radius:4px;align-self:flex-end;padding:0 12px}.nArs4W_uploadOverlayCancel:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}.nArs4W_uploadOverlayCancel:disabled{opacity:.4;cursor:default}.nArs4W_editor{flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_editorHeader{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:6px;padding:6px 8px;display:flex}.nArs4W_editorTitle{min-width:0;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-secondary);text-overflow:ellipsis;white-space:nowrap;flex:1;overflow:hidden}.nArs4W_editorPathInput{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);min-width:0;height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);border-radius:6px;flex:1;padding:0 10px}.nArs4W_editorPathInput:focus{border-color:var(--dsw-alias-border-l2);outline:none}.nArs4W_editorTreeToggleActive{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-active)}.nArs4W_editorBody{flex:1;min-height:0;display:flex}.nArs4W_editorMain{flex-direction:column;flex:1;min-width:0;min-height:0;display:flex}.nArs4W_editorTreeDock{border-left:1px solid var(--dsw-alias-border-l1);flex:none;min-height:0;display:flex;position:relative}.nArs4W_editorTreeResize{cursor:col-resize;touch-action:none;z-index:3;width:6px;position:absolute;top:0;bottom:0;left:0}.nArs4W_editorTreeResize:hover{background:var(--dsw-alias-border-l2)}.nArs4W_editorTreePanel{flex-direction:column;flex:1;min-width:0;min-height:0;display:flex;position:relative}.nArs4W_editorTreePanelFull{flex:1}.nArs4W_editorTreeSearch{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:6px;padding:6px 8px;display:flex}.nArs4W_editorSearchInput{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);min-width:0;height:26px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);border-radius:6px;flex:1;padding:0 10px}.nArs4W_editorSearchInput:focus{border-color:var(--dsw-alias-border-l2);outline:none}.nArs4W_editorSearchHint{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);padding:8px 12px}.nArs4W_editorSearchResult{box-sizing:border-box;width:100%;height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);text-align:left;cursor:pointer;background:0 0;border:none;border-radius:4px;align-items:center;gap:6px;padding:0 8px;line-height:28px;display:flex;overflow:hidden}.nArs4W_editorSearchResultDir{color:var(--dsw-alias-label-secondary)}.nArs4W_editorSearchResultLabel{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.nArs4W_editorSearchResult:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_editorStatus{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary)}.nArs4W_editorStatusError{color:var(--dsw-alias-state-error-primary)}.nArs4W_dirtyDot{background:var(--dsw-alias-state-warn-primary);border-radius:50%;flex:none;width:7px;height:7px}.nArs4W_editorPlaceholder{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);text-align:center;flex:1;justify-content:center;align-items:center;padding:16px;display:flex}.nArs4W_orphanedType{opacity:.7;overflow-wrap:anywhere;margin-top:8px;font-size:12px;display:block}.nArs4W_editorBinary{text-align:center;flex-direction:column;flex:1;justify-content:center;align-items:center;gap:12px;padding:24px 16px;display:flex}.nArs4W_editorBinaryNotice{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary)}.nArs4W_editorDownloadLink{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-strong-12);cursor:pointer;transition:background var(--ds-transition-duration-slow) var(--ds-ease-in-out), border-color var(--ds-transition-duration-slow) var(--ds-ease-in-out);border-radius:6px;align-items:center;gap:6px;padding:6px 14px;text-decoration:none;display:inline-flex}.nArs4W_editorDownloadLink:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}.nArs4W_editorError{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);padding:12px 16px}.nArs4W_editorBanner{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-state-warn-label);background:var(--dsw-alias-state-warn-tertiary);flex:none;padding:4px 8px}.nArs4W_editorBannerAction{font:inherit;color:inherit;cursor:pointer;background:0 0;border:0;margin-left:8px;padding:0;text-decoration:underline}.nArs4W_editorGitAdd{color:var(--dsw-alias-state-success-primary)}.nArs4W_editorGitMod{color:var(--dsw-alias-state-warn-primary)}.nArs4W_editorGitDel{color:var(--dsw-alias-state-error-primary)}.nArs4W_editorGitBarGutter{width:2px;min-width:2px}.nArs4W_editorGitBar,.nArs4W_editorGitBarSpacer{width:2px;height:100%}.nArs4W_editorGitBarAdd{background:var(--dsw-alias-state-success-primary)}.nArs4W_editorGitBarMod{background:var(--dsw-alias-state-warn-primary)}.nArs4W_editorGitBarDel{background:var(--dsw-alias-state-error-primary)}.nArs4W_editorBlame{max-width:420px;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-primary);padding:4px 8px}.nArs4W_editorBlameHead{color:var(--dsw-alias-label-secondary)}.nArs4W_editorBlameSummary{color:var(--dsw-alias-label-primary);white-space:pre-wrap;overflow-wrap:anywhere;margin-top:2px}.nArs4W_sandboxStatus{font:var(--dsw-font-xxxs-11);flex:none;align-items:center;gap:8px;padding:4px 10px;display:flex}.nArs4W_sandboxStatusOn{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border-bottom:1px solid var(--dsw-alias-border-l1)}.nArs4W_sandboxStatusOff{color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);border-bottom:1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent)}.nArs4W_sandboxDot{background:var(--dsw-alias-state-success-primary);border-radius:50%;flex:none;width:6px;height:6px}.nArs4W_sandboxStatusOff .nArs4W_sandboxDot{background:var(--dsw-alias-state-error-primary)}.nArs4W_sandboxStatusText{text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;overflow:hidden}.nArs4W_sandboxAction{border:1px solid var(--dsw-alias-border-l2);font:inherit;color:inherit;cursor:pointer;background:0 0;border-radius:6px;flex:none;padding:2px 8px}.nArs4W_sandboxAction:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_editorHtml{background:var(--dsw-alias-bg-base);border:none;flex:1;width:100%;min-height:0}.nArs4W_browser{flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_browserBar{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:4px;padding:6px 8px;display:flex}.nArs4W_browserInput{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);min-width:0;height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);border-radius:6px;flex:1;padding:0 10px}.nArs4W_browserInput:focus{border-color:var(--dsw-alias-border-l2);outline:none}.nArs4W_browserMessage{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-state-warn-label);background:var(--dsw-alias-state-warn-tertiary);flex:none;padding:4px 12px}.nArs4W_browserFrame{background:var(--dsw-alias-bg-base);border:none;flex:1;width:100%;min-height:0}.nArs4W_browserStart{text-align:center;min-height:0;font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-tertiary);flex:1;justify-content:center;align-items:center;padding:20px;display:flex}.nArs4W_browserBlocked{text-align:center;min-height:0;color:var(--dsw-alias-state-warn-primary);flex-direction:column;flex:1;justify-content:center;align-items:center;gap:6px;padding:24px;display:flex}.nArs4W_browserBlockedTitle{font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary)}.nArs4W_browserBlockedDesc{max-width:280px;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary)}.nArs4W_browserBlockedActions{gap:8px;margin-top:6px;display:flex}.nArs4W_browserBlockedButton{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxxs-11);cursor:pointer;border-radius:6px;padding:4px 12px}.nArs4W_browserBlockedButton:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_editorCm{background:0 0;flex:1;min-height:0;overflow:hidden}.nArs4W_editorCmHidden{display:none}.nArs4W_editorCm .cm-editor{height:100%}.nArs4W_editorCm .cm-scroller{padding:12px 16px}.nArs4W_editorCm .cm-editor.cm-focused{outline:none}.nArs4W_editorModeToggle{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:6px;flex:none;align-items:center;gap:2px;padding:2px;display:inline-flex}.nArs4W_editorModeButton{color:var(--dsw-alias-label-tertiary);font:var(--dsw-font-xxxs-11);cursor:pointer;background:0 0;border:none;border-radius:4px;padding:2px 8px}.nArs4W_editorModeButton:hover{color:var(--dsw-alias-label-primary)}.nArs4W_editorModeActive{background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}.nArs4W_editorMd{min-height:0;font:var(--dsw-font-xs-13);flex:1;padding:12px 16px;overflow-y:auto}.nArs4W_editorMd .md-code-block:not([data-mermaid-processed])>div:first-child{z-index:auto;position:static}.nArs4W_mermaidWrap{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:6px;margin:6px 0;overflow:hidden}.nArs4W_mermaidHeader{border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);justify-content:space-between;align-items:center;gap:6px;padding:4px 8px;display:flex}.nArs4W_mermaidInfo{font:var(--dsw-font-xxxs-strong-11);color:var(--dsw-alias-label-tertiary)}.nArs4W_mermaidCopy{height:20px;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-11);cursor:pointer;background:0 0;border:none;border-radius:4px;align-items:center;gap:4px;padding:0 6px;display:inline-flex}.nArs4W_mermaidCopy:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_mermaidBody{cursor:zoom-in;justify-content:center;padding:10px;display:flex;overflow:auto}.nArs4W_mermaidBody svg{max-width:100%;height:auto}.nArs4W_mermaidError{border-bottom:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-state-error-primary);font:var(--dsw-font-xxxs-11);padding:6px 10px}.nArs4W_mermaidCode{font:var(--dsw-font-xxxs-11);margin:0;padding:8px 10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow:auto}.nArs4W_mermaidMarkdown .md-code-block[data-mermaid-processed]{display:contents}.nArs4W_mermaidModal{z-index:1000;background:var(--dsw-alias-bg-mask-1);backdrop-filter:blur(2px);flex-direction:column;justify-content:center;align-items:center;display:flex;position:fixed;inset:0;-webkit-app-region:initial!important}.nArs4W_mermaidModalToolbar{z-index:10;gap:8px;display:flex;position:absolute;top:16px;right:16px}.nArs4W_mermaidModalButton{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);width:36px;height:36px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xs-strong-13);cursor:pointer;border-radius:8px;justify-content:center;align-items:center;display:inline-flex}.nArs4W_mermaidModalButton:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_mermaidModalStage{justify-content:center;align-items:center;width:90vw;height:80vh;display:flex;position:relative;overflow:hidden}.nArs4W_mermaidModalStage svg{cursor:grab;transform-origin:50%;user-select:none;-webkit-user-drag:none;background:var(--dsw-alias-bg-layer-1);border-radius:12px;max-width:none;max-height:none;padding:16px}.nArs4W_mermaidModalStage svg:active{cursor:grabbing}.nArs4W_mermaidModalHint{color:var(--dsw-alias-label-tertiary);font:var(--dsw-font-xxxs-11);pointer-events:none;position:absolute;bottom:16px;left:50%;transform:translate(-50%)}.nArs4W_selectionPopup{z-index:60;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-specific-menu);height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxxs-strong-11);white-space:nowrap;cursor:pointer;border-radius:6px;align-items:center;padding:0 10px;display:inline-flex;position:fixed;transform:translate(-50%,calc(-100% - 8px))}.nArs4W_selectionPopup:hover{background:var(--dsw-alias-interactive-bg-hover-solid)}.nArs4W_editorPdf{background:var(--dsw-alias-bg-base);flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_editorPdfToolbar{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;justify-content:flex-end;padding:6px 8px;display:flex}.nArs4W_editorPdfStage{flex:1;min-height:0;display:flex;position:relative}.nArs4W_editorPdfFrame{background:var(--dsw-alias-bg-base);border:none;flex:1;width:100%;min-height:0}.nArs4W_editorPdfFrameBlocked{pointer-events:none}.nArs4W_editorPdfDragShield{z-index:4;pointer-events:none;background:0 0;position:absolute;inset:0}.nArs4W_editorPdfDragShieldActive{pointer-events:auto}body[data-dsh-tab-dragging] .nArs4W_editorPdfFrame{pointer-events:none!important}body[data-dsh-tab-dragging] .nArs4W_editorPdfDragShield{pointer-events:auto!important}.nArs4W_boundaryError{z-index:50;background:var(--dsw-alias-bg-layer-1);border-left:1px solid var(--dsw-alias-border-l2);font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);flex-direction:column;align-items:flex-start;gap:8px;padding:16px;display:flex;position:fixed;top:0;bottom:0;right:0;overflow:auto}.nArs4W_terminalRetry{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-strong-11);cursor:pointer;border-radius:999px;flex:none;padding:1px 8px}.nArs4W_terminalRetry:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_tabBoundaryError{min-height:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);flex-direction:column;flex:1;align-items:flex-start;gap:8px;padding:12px 16px;display:flex;overflow:auto}.nArs4W_nativeTabHost{flex-direction:column;height:100%;min-height:0;display:flex}.nArs4W_gitEmpty{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);padding:4px 12px 8px}.nArs4W_gitPlaceholder{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);text-align:center;padding:16px}.nArs4W_gitError{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);white-space:pre-wrap;padding:8px 12px}.nArs4W_gitDiffTab{flex-direction:column;flex:1;min-width:0;min-height:0;display:flex;overflow:hidden auto}.nArs4W_gitDiffTabHeader{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:8px;height:36px;padding:0 8px 0 12px;display:flex}.nArs4W_gitDiffTabTitle{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);flex:1;overflow:hidden}.nArs4W_toggleButton:focus-visible,.nArs4W_bottomClose:focus-visible,.nArs4W_iconButton:focus-visible,.nArs4W_tab:focus-visible,.nArs4W_tabClose:focus-visible,.nArs4W_tabBarPlus:focus-visible,.nArs4W_paneCard:focus-visible,.nArs4W_explorerRow:focus-visible,.nArs4W_explorerRef:focus-visible,.nArs4W_terminalRetry:focus-visible,.nArs4W_editorModeButton:focus-visible,.nArs4W_editorDownloadLink:focus-visible,.nArs4W_editorPptxButton:focus-visible,.nArs4W_editorDocxZoomRange:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}@media (prefers-reduced-motion:reduce){.nArs4W_bottomPanel,.nArs4W_bottomPanelHidden,.nArs4W_toggleButton,.nArs4W_tab,.nArs4W_tabBarPlus,.nArs4W_paneCard,.nArs4W_explorerRow,.nArs4W_divider,.nArs4W_dividerRow:after,.nArs4W_dividerCol:after{transition:none;animation:none}}@media (width<=767px){.nArs4W_tab{min-width:48px;max-width:128px}}.nArs4W_openWithLabel{align-items:center;gap:8px;width:100%;min-width:0;display:flex}.nArs4W_openWithName{text-overflow:ellipsis;white-space:nowrap;flex:auto;min-width:0;overflow:hidden}.nArs4W_openWithChevron{color:var(--dsw-alias-label-tertiary);flex:none}.nArs4W_openWithPin{width:16px;height:16px;color:var(--dsw-alias-label-tertiary);cursor:pointer;border-radius:5px;flex:none;justify-content:center;align-items:center;display:inline-flex}.nArs4W_openWithPin:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_openWithPinActive{color:var(--dsw-alias-state-business-primary)}.nArs4W_editorHtmlBlock{margin:8px 0}.nArs4W_editorHtmlBlock img,.nArs4W_editorHtmlBlock video{max-width:100%}.nArs4W_editorHtmlBlock details{margin:4px 0;padding:4px 0}.nArs4W_editorHtmlBlock summary,.nArs4W_editorMd details>summary{cursor:pointer}.nArs4W_tocBar{z-index:7;pointer-events:none;justify-content:flex-end;height:0;display:flex;position:sticky;top:0}.nArs4W_tocButton{pointer-events:auto;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);width:26px;height:26px;color:var(--dsw-alias-label-secondary);cursor:pointer;border-radius:6px;justify-content:center;align-items:center;margin:4px 2px 0 0;padding:0;display:inline-flex}.nArs4W_tocButton:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_tocPanel{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);width:min(300px,82%);max-height:60vh;box-shadow:var(--dsw-shadow-lv2);pointer-events:auto;border-radius:8px;flex-direction:column;padding:4px;display:flex;position:absolute;top:32px;right:2px;overflow-y:auto}.nArs4W_tocItem{min-width:0;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxs-12);text-align:left;cursor:pointer;background:0 0;border:none;border-radius:6px;align-items:baseline;gap:8px;padding:4px 8px;display:flex}.nArs4W_tocItem:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_tocItem[data-level=\"2\"]{padding-left:18px}.nArs4W_tocItem[data-level=\"3\"]{padding-left:28px}.nArs4W_tocItem[data-level=\"4\"]{padding-left:38px}.nArs4W_tocItem[data-level=\"5\"]{padding-left:48px}.nArs4W_tocItem[data-level=\"6\"]{padding-left:58px}.nArs4W_tocItemLevel{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);flex:none}.nArs4W_tocItemText{text-overflow:ellipsis;white-space:nowrap;flex:auto;min-width:0;overflow:hidden}@keyframes nArs4W_dsh-toc-flash{0%,60%{background:var(--dsw-alias-interactive-bg-hover)}to{background:0 0}}.nArs4W_tocFlash{border-radius:4px;animation:1.2s ease-out nArs4W_dsh-toc-flash}.nArs4W_largeFile{flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_largeFileNotice{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-state-warn-label);background:var(--dsw-alias-state-warn-tertiary);flex:none;align-items:baseline;gap:8px;padding:4px 8px;display:flex}.nArs4W_largeFileDownload{color:inherit;text-decoration:underline}.nArs4W_largeFileNoticeAction{font:inherit;color:inherit;cursor:pointer;background:0 0;border:1px solid;border-radius:4px;margin-left:auto;padding:0 6px}.nArs4W_largeFileNoticeAction:disabled{opacity:.5;cursor:default}.nArs4W_largeFileBody{flex:1;min-height:0;overflow:auto}.nArs4W_largeFileRecords{padding:4px 0}.nArs4W_largeFileList{margin:0;padding:0;list-style:none}.nArs4W_largeFileRecord{gap:8px;padding:2px 8px;display:flex}.nArs4W_largeFileRecordExpanded{background:var(--dsw-alias-bg-layer-1)}.nArs4W_largeFileRecordInvalid{color:var(--dsw-alias-state-error-primary)}.nArs4W_largeFileRecordNo{text-align:right;min-width:4ch;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);user-select:none;flex:none}.nArs4W_largeFileRecordBody{flex:1;min-width:0}.nArs4W_largeFileRecordSummary{text-align:left;width:100%;font:var(--ds-font-family-code);color:var(--dsw-alias-label-primary);white-space:pre;text-overflow:ellipsis;cursor:pointer;background:0 0;border:0;padding:0;font-size:12px;display:block;overflow:hidden}.nArs4W_largeFileRecordSummary:disabled{cursor:default}.nArs4W_largeFileRecordRaw{font:var(--ds-font-family-code);white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;margin:2px 0 0;font-size:12px}.nArs4W_largeFileRecordTree{font:var(--ds-font-family-code);margin-top:2px;font-size:12px}.nArs4W_largeFileLines{font:var(--ds-font-family-code);white-space:pre;padding:4px 0;font-size:12px}.nArs4W_largeFileLine{gap:8px;padding:0 8px;display:flex}.nArs4W_largeFileLineNo{text-align:right;min-width:5ch;color:var(--dsw-alias-label-tertiary);user-select:none;flex:none}.nArs4W_largeFileLineText{color:var(--dsw-alias-label-primary);flex:none}.nArs4W_largeFilePager{border-top:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);flex:none;align-items:center;gap:4px;padding:2px 8px;display:flex}.nArs4W_largeFilePageLabel{text-align:center;min-width:0;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;flex:1;overflow:hidden}";
-		const tagId$10 = "dsh-external/dsh-better-sidebar/sidebar.module.css";
-		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$10) + "]") === null) {
+		const css$12 = "[data-dsh-panel-host]{z-index:25;pointer-events:none;height:100vh;position:fixed;inset:0;overflow:clip}html[data-platform] body>[data-dsh-better-sidebar],[data-dsh-panel-host]{-webkit-app-region:initial!important}[data-dsh-panel-host]>*{-webkit-app-region:no-drag}[data-dsh-panel-host][data-dsh-panel-host-degraded]{position:absolute;top:0;left:0}.nArs4W_dockFallback{z-index:40;align-items:center;gap:2px;display:inline-flex;position:fixed}.nArs4W_toggleButton{width:28px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background var(--ds-transition-duration-slow) var(--ds-ease-in-out), color var(--ds-transition-duration-slow) var(--ds-ease-in-out);background:0 0;border:none;border-radius:50%;justify-content:center;align-items:center;display:flex}.nArs4W_toggleButton:hover:not(:disabled):not([aria-disabled=true]){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_toggleButton:disabled,.nArs4W_toggleButton[aria-disabled=true]{opacity:.4;cursor:default}.nArs4W_panelBody{flex:1;min-width:0;min-height:0;display:flex}.nArs4W_bottomPanel{z-index:40;background:var(--dsw-alias-bg-layer-1);border-top:1px solid var(--dsw-alias-border-l2);pointer-events:auto;padding-bottom:env(safe-area-inset-bottom);transition:transform var(--ds-transition-duration-slow) var(--ds-ease-in-out), height var(--ds-transition-duration-slow) var(--ds-ease-in-out);flex-direction:column;display:flex;position:absolute;bottom:0}.nArs4W_bottomPanelHidden{pointer-events:none;visibility:hidden;transition:transform var(--ds-transition-duration-slow) var(--ds-ease-in-out), height var(--ds-transition-duration-slow) var(--ds-ease-in-out), visibility 0s linear var(--ds-transition-duration-slow);transform:translateY(102%)}.nArs4W_bottomPanel[data-dragging]{transition:none}.nArs4W_bottomPanel{contain:layout style}body[data-dsh-sidebar-dragging] .nArs4W_panel,body[data-dsh-sidebar-dragging] .nArs4W_bottomPanel{will-change:transform}.nArs4W_bottomResize{cursor:row-resize;z-index:2;touch-action:none;height:8px;position:absolute;top:-4px;left:0;right:0}.nArs4W_bottomResizeActive{background:var(--dsw-alias-interactive-bg-hover-accent)}.nArs4W_bottomClose{z-index:4;width:28px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:50%;flex:none;justify-content:center;align-items:center;padding:0;display:inline-flex;position:absolute;top:3px;right:6px}.nArs4W_bottomClose:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_bottomPanel .nArs4W_tabBar{padding-right:40px}.nArs4W_toggleButton,.nArs4W_tabBar{-webkit-app-region:no-drag}.nArs4W_iconButton{width:28px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:50%;flex:none;justify-content:center;align-items:center;padding:0;display:inline-flex}.nArs4W_iconButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_iconButton:disabled{opacity:.4;cursor:default}.nArs4W_workbench,.nArs4W_split{flex:1;min-width:0;min-height:0;display:flex}.nArs4W_splitRow{flex-direction:row}.nArs4W_splitCol{flex-direction:column}.nArs4W_splitChild{display:flex;position:relative;overflow:hidden}.nArs4W_divider{z-index:3;touch-action:none;flex:none;position:relative}.nArs4W_dividerRow:after,.nArs4W_dividerCol:after{content:\"\";background:var(--dsw-alias-border-l2);transition:background var(--ds-transition-duration-slow) var(--ds-ease-in-out);position:absolute}.nArs4W_dividerRow{cursor:col-resize;width:7px;margin:0 -2px}.nArs4W_dividerRow:after{width:1px;top:0;bottom:0;left:50%;transform:translate(-50%)}.nArs4W_dividerCol{cursor:row-resize;height:7px;margin:-2px 0}.nArs4W_dividerCol:after{height:1px;top:50%;left:0;right:0;transform:translateY(-50%)}.nArs4W_divider:hover:after,.nArs4W_dividerActive:after{background:var(--dsw-alias-interactive-bg-hover-accent)}.nArs4W_pane{background:var(--dsw-alias-bg-base);flex-direction:column;flex:1;min-width:0;min-height:0;display:flex;position:relative}.nArs4W_paneDrop{outline:1px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.nArs4W_dropOverlay{z-index:6;pointer-events:none;background:var(--dsw-alias-interactive-bg-hover-accent);opacity:.5;position:absolute}.nArs4W_dropLeft{width:25%;top:0;bottom:0;left:0}.nArs4W_dropRight{width:25%;top:0;bottom:0;right:0}.nArs4W_dropUp{height:25%;top:0;left:0;right:0}.nArs4W_dropDown{height:25%;bottom:0;left:0;right:0}.nArs4W_dropCenter{outline:2px dashed var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-2px;background:0 0;inset:25%}.nArs4W_paneContent{flex-direction:column;flex:1;min-height:0;display:flex;overflow:hidden}.nArs4W_chipIcon{flex:none;align-items:center;margin-right:6px;display:inline-flex}.nArs4W_chipUnread{background:var(--dsw-alias-danger);vertical-align:middle;border-radius:50%;width:6px;height:6px;margin-left:6px;display:inline-block}.nArs4W_tabUnreadDot{background:var(--dsw-alias-danger);border-radius:50%;flex:none;width:7px;height:7px}.nArs4W_paneTab{flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_paneTabHidden{display:none}.nArs4W_paneEmptyCards{flex:1;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));align-content:start;gap:12px;min-height:0;padding:12px;display:grid;overflow:hidden}.nArs4W_paneCard{box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-1);min-width:0;min-height:56px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-s-strong-14);cursor:pointer;text-align:left;border-radius:24px;flex-direction:row;justify-content:flex-start;align-items:center;gap:14px;padding:14px 20px;display:flex}.nArs4W_paneCard>svg{color:var(--dsw-alias-label-secondary);flex:none}.nArs4W_paneCard:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l4)}.nArs4W_paneCard:disabled{opacity:.45;cursor:default}.nArs4W_tabBar{border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);flex:none;align-items:stretch;height:34px;display:flex}.nArs4W_tabBarDrop{outline:1px dashed var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.nArs4W_tabList{scrollbar-width:none;flex:1;min-width:0;display:flex;overflow-x:auto}.nArs4W_tabList::-webkit-scrollbar{display:none}.nArs4W_tab{min-width:64px;max-width:160px;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-secondary);border-right:1px solid var(--dsw-alias-border-l1);cursor:pointer;user-select:none;background:0 0;flex:none;align-items:center;gap:4px;padding:0 4px 0 10px;display:flex}.nArs4W_tab:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_tabActive{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-active)}.nArs4W_tabTitle{text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;overflow:hidden}.nArs4W_tabBadge{min-width:16px;height:15px;font:var(--dsw-font-xxxs-strong-11);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-brand-primary);border-radius:8px;flex:none;justify-content:center;align-items:center;padding:0 4px;display:inline-flex}.nArs4W_tabClose{width:18px;height:18px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:4px;flex:none;justify-content:center;align-items:center;padding:0;display:inline-flex}.nArs4W_tabClose:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_tabBarPlus{background:var(--dsw-alias-bg-layer-1);width:22px;height:22px;color:var(--dsw-alias-label-tertiary);cursor:pointer;border:none;border-radius:5px;flex:none;justify-content:center;align-self:center;align-items:center;margin:0 6px;padding:0;display:inline-flex;position:sticky;right:0}.nArs4W_tabBarPlus:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_tabBarRightActions{flex:0 auto;justify-content:flex-end;align-items:center;gap:2px;min-width:0;padding-right:4px;display:flex;overflow:hidden}.nArs4W_explorer{flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_explorerHeader{flex:none;justify-content:space-between;align-items:center;gap:8px;height:36px;padding:0 8px 0 12px;display:flex}.nArs4W_explorerRoot{font:var(--dsw-font-s-14);color:var(--dsw-alias-label-secondary);text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.nArs4W_explorerBody{flex:1;min-height:0;padding:4px 8px 8px;overflow:hidden auto}.nArs4W_explorerRow{box-sizing:border-box;width:100%;max-width:100%;height:28px;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;white-space:nowrap;animation:nArs4W_dsh-row-in .15s var(--ds-ease-in-out);background:0 0;border:none;border-radius:4px;align-items:center;gap:6px;padding:0 8px;display:flex;position:relative}.nArs4W_explorerRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_explorerRowSelected{background:var(--dsw-alias-interactive-bg-active)}.nArs4W_explorerRowSelected:before{content:\"\";background:var(--dsw-alias-state-business-primary);border-radius:1px;width:2px;position:absolute;top:4px;bottom:4px;left:0}.nArs4W_explorerGitName[data-git-tone=modified]{color:var(--dsw-alias-state-warn-primary)}.nArs4W_explorerGitName[data-git-tone=added],.nArs4W_explorerGitName[data-git-tone=untracked]{color:var(--dsw-alias-state-success-primary)}.nArs4W_explorerGitName[data-git-tone=deleted]{color:var(--dsw-alias-state-error-primary)}.nArs4W_explorerGitName[data-git-tone=renamed]{color:var(--dsw-alias-state-business-primary)}.nArs4W_explorerGitName[data-git-tone=copied]{color:var(--dsw-alias-state-success-primary)}.nArs4W_explorerGitName[data-git-tone=conflict]{color:var(--dsw-alias-state-error-primary)}.nArs4W_explorerDirChanged{color:var(--dsw-alias-state-business-primary)}.nArs4W_explorerRowRevealed{background:var(--dsw-alias-state-business-tertiary)}.nArs4W_explorerRowRevealed+.nArs4W_explorerRowRevealed{border-top-left-radius:0;border-top-right-radius:0}.nArs4W_explorerRowRevealed:has(+.nArs4W_explorerRowRevealed){border-bottom-right-radius:0;border-bottom-left-radius:0}.nArs4W_explorerDir{font:var(--dsw-font-xxs-strong-12)}.nArs4W_explorerHidden{opacity:.45}.nArs4W_explorerSymlink{color:var(--dsw-alias-label-tertiary);flex:none}.nArs4W_explorerBroken .nArs4W_explorerName{color:var(--dsw-alias-state-error-primary)}.nArs4W_explorerName{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.nArs4W_explorerRenaming{cursor:text}.nArs4W_explorerRenameInput{box-sizing:border-box;border:1px solid var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-layer-1);min-width:0;height:22px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);border-radius:3px;flex:auto;padding:0 6px}.nArs4W_explorerRenameInput:focus{border-color:var(--dsw-alias-state-business-primary);outline:none}.nArs4W_explorerActionError{box-sizing:border-box;border:1px solid var(--dsw-alias-state-error-primary);background:var(--dsw-alias-bg-layer-1);border-radius:8px;align-items:flex-start;gap:6px;width:100%;margin-bottom:4px;padding:6px 8px;display:flex}.nArs4W_explorerActionErrorText{overflow-wrap:anywhere;min-width:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);flex:auto}.nArs4W_explorerSelectionBar{z-index:1;box-sizing:border-box;background:var(--dsw-alias-bg-layer-2);border-radius:4px;align-items:center;gap:6px;width:100%;min-height:28px;margin-top:4px;padding:2px 8px;display:flex;position:sticky;bottom:0}.nArs4W_explorerSelectionText{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-secondary);flex:auto;overflow:hidden}.nArs4W_explorerSelectionActions{flex-wrap:wrap;flex:none;justify-content:flex-end;gap:4px;max-width:72%;display:flex}.nArs4W_explorerAppIcon{object-fit:contain;width:14px;height:14px;display:block}.nArs4W_explorerHiddenPane{display:none}.nArs4W_explorerRef,.nArs4W_explorerCopied{margin-left:auto}.nArs4W_explorerRef{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);height:20px;color:var(--dsw-alias-label-tertiary);font:var(--dsw-font-xxxs-strong-11);cursor:pointer;border-radius:999px;flex:none;align-items:center;padding:0 8px;display:none}.nArs4W_explorerRef:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_explorerRow:hover .nArs4W_explorerRef,.nArs4W_explorerRow:focus-within .nArs4W_explorerRef{display:inline-flex}.nArs4W_explorerCopied{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);flex:none}.nArs4W_explorerError{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);cursor:default}@keyframes nArs4W_dsh-row-in{0%{opacity:0}}.nArs4W_explorerEmpty{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);text-align:center;padding:16px}.nArs4W_explorerRowDropTarget{background:var(--dsw-alias-interactive-bg-hover-accent);outline:1px dashed var(--dsw-alias-state-business-primary);outline-offset:-1px}.nArs4W_uploadDropMask{z-index:1001;pointer-events:none;background:color-mix(in srgb, var(--dsw-alias-bg-base) 62%, transparent);animation:nArs4W_dsh-row-in .15s var(--ds-ease-in-out);position:fixed;inset:0}.nArs4W_uploadDropZone{z-index:1002;pointer-events:none;border:2px dashed var(--dsw-alias-border-l2);background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 4%, transparent);animation:nArs4W_dsh-row-in .15s var(--ds-ease-in-out);border-radius:8px;justify-content:center;align-items:flex-start;padding:12px;display:flex;position:fixed}.nArs4W_uploadDropHero{flex-direction:column;align-items:center;gap:8px;max-width:100%;padding-top:8px;display:flex}.nArs4W_uploadDropArtPrimary{color:var(--dsw-alias-state-business-primary)}.nArs4W_uploadDropArtAccent{color:var(--dsw-alias-state-business-tertiary)}.nArs4W_uploadDropArtCut{color:var(--dsw-alias-bg-layer-1)}.nArs4W_uploadDropZonePill{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);max-width:100%;height:28px;box-shadow:var(--dsw-shadow-lv2);color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxxs-11);border-radius:999px;align-items:center;gap:6px;padding:0 12px;display:flex}.nArs4W_uploadDropZoneText{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.nArs4W_uploadDropChatHint{z-index:1003;pointer-events:none;animation:nArs4W_dsh-row-in .15s var(--ds-ease-in-out);justify-content:center;align-items:center;padding:24px;display:flex;position:fixed;top:0;bottom:0;left:0}.nArs4W_uploadDropChatCard{text-align:center;max-width:100%;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-strong-12);flex-direction:column;align-items:center;gap:10px;display:flex}.nArs4W_uploadOverlay{z-index:30;background:var(--dsw-alias-bg-mask-1);backdrop-filter:var(--dsw-mask-blur);animation:nArs4W_dsh-row-in .15s var(--ds-ease-in-out);justify-content:center;align-items:center;display:flex;position:absolute;inset:0}.nArs4W_uploadOverlayCard{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);min-width:240px;max-width:min(420px,100% - 48px);box-shadow:var(--dsw-shadow-lv3);border-radius:8px;flex-direction:column;gap:10px;padding:16px;display:flex}.nArs4W_uploadOverlayTitle{font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);align-items:center;gap:6px;display:flex}.nArs4W_uploadOverlayTitle>svg{flex:none}.nArs4W_uploadOverlayTitle>span{white-space:nowrap;text-overflow:ellipsis;min-width:0;overflow:hidden}.nArs4W_uploadOverlayProgress{background:var(--dsw-alias-border-l2);border-radius:3px;height:6px;overflow:hidden}.nArs4W_uploadOverlayProgressFill{background:var(--dsw-alias-interactive-bg-hover-accent);height:100%;transition:width .15s var(--ds-ease-in-out);border-radius:3px}.nArs4W_uploadOverlayStatus{min-height:1em;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.nArs4W_uploadOverlayCancel{border:1px solid var(--dsw-alias-border-l2);height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-strong-12);cursor:pointer;background:0 0;border-radius:4px;align-self:flex-end;padding:0 12px}.nArs4W_uploadOverlayCancel:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}.nArs4W_uploadOverlayCancel:disabled{opacity:.4;cursor:default}.nArs4W_editor{flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_editorHeader{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:6px;padding:6px 8px;display:flex}.nArs4W_editorTitle{min-width:0;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-secondary);text-overflow:ellipsis;white-space:nowrap;flex:1;overflow:hidden}.nArs4W_editorPathInput{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);min-width:0;height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);border-radius:6px;flex:1;padding:0 10px}.nArs4W_editorPathInput:focus{border-color:var(--dsw-alias-border-l2);outline:none}.nArs4W_editorTreeToggleActive{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-active)}.nArs4W_editorBody{flex:1;min-height:0;display:flex}.nArs4W_editorMain{flex-direction:column;flex:1;min-width:0;min-height:0;display:flex}.nArs4W_editorTreeDock{border-left:1px solid var(--dsw-alias-border-l1);flex:none;min-height:0;display:flex;position:relative}.nArs4W_editorTreeResize{cursor:col-resize;touch-action:none;z-index:3;width:6px;position:absolute;top:0;bottom:0;left:0}.nArs4W_editorTreeResize:hover{background:var(--dsw-alias-border-l2)}.nArs4W_editorTreePanel{flex-direction:column;flex:1;min-width:0;min-height:0;display:flex;position:relative}.nArs4W_editorTreePanelFull{flex:1}.nArs4W_editorTreeSearch{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:6px;padding:6px 8px;display:flex}.nArs4W_editorSearchInput{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);min-width:0;height:26px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);border-radius:6px;flex:1;padding:0 10px}.nArs4W_editorSearchInput:focus{border-color:var(--dsw-alias-border-l2);outline:none}.nArs4W_editorSearchHint{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);padding:8px 12px}.nArs4W_editorSearchResult{box-sizing:border-box;width:100%;height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);text-align:left;cursor:pointer;background:0 0;border:none;border-radius:4px;align-items:center;gap:6px;padding:0 8px;line-height:28px;display:flex;overflow:hidden}.nArs4W_editorSearchResultDir{color:var(--dsw-alias-label-secondary)}.nArs4W_editorSearchResultLabel{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.nArs4W_editorSearchResult:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_editorStatus{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary)}.nArs4W_editorStatusError{color:var(--dsw-alias-state-error-primary)}.nArs4W_dirtyDot{background:var(--dsw-alias-state-warn-primary);border-radius:50%;flex:none;width:7px;height:7px}.nArs4W_editorPlaceholder{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);text-align:center;flex:1;justify-content:center;align-items:center;padding:16px;display:flex}.nArs4W_orphanedType{opacity:.7;overflow-wrap:anywhere;margin-top:8px;font-size:12px;display:block}.nArs4W_editorBinary{text-align:center;flex-direction:column;flex:1;justify-content:center;align-items:center;gap:12px;padding:24px 16px;display:flex}.nArs4W_editorBinaryNotice{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary)}.nArs4W_editorDownloadLink{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-strong-12);cursor:pointer;transition:background var(--ds-transition-duration-slow) var(--ds-ease-in-out), border-color var(--ds-transition-duration-slow) var(--ds-ease-in-out);border-radius:6px;align-items:center;gap:6px;padding:6px 14px;text-decoration:none;display:inline-flex}.nArs4W_editorDownloadLink:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}.nArs4W_editorError{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);padding:12px 16px}.nArs4W_editorBanner{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-state-warn-label);background:var(--dsw-alias-state-warn-tertiary);flex:none;padding:4px 8px}.nArs4W_editorBannerAction{font:inherit;color:inherit;cursor:pointer;background:0 0;border:0;margin-left:8px;padding:0;text-decoration:underline}.nArs4W_editorGitAdd{color:var(--dsw-alias-state-success-primary)}.nArs4W_editorGitMod{color:var(--dsw-alias-state-warn-primary)}.nArs4W_editorGitDel{color:var(--dsw-alias-state-error-primary)}.nArs4W_editorGitBarGutter{width:2px;min-width:2px}.nArs4W_editorGitBar,.nArs4W_editorGitBarSpacer{width:2px;height:100%}.nArs4W_editorGitBarAdd{background:var(--dsw-alias-state-success-primary)}.nArs4W_editorGitBarMod{background:var(--dsw-alias-state-warn-primary)}.nArs4W_editorGitBarDel{background:var(--dsw-alias-state-error-primary)}.nArs4W_editorBlame{max-width:420px;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-primary);padding:4px 8px}.nArs4W_editorBlameHead{color:var(--dsw-alias-label-secondary)}.nArs4W_editorBlameSummary{color:var(--dsw-alias-label-primary);white-space:pre-wrap;overflow-wrap:anywhere;margin-top:2px}.nArs4W_sandboxStatus{font:var(--dsw-font-xxxs-11);flex:none;align-items:center;gap:8px;padding:4px 10px;display:flex}.nArs4W_sandboxStatusOn{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border-bottom:1px solid var(--dsw-alias-border-l1)}.nArs4W_sandboxStatusOff{color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);border-bottom:1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent)}.nArs4W_sandboxDot{background:var(--dsw-alias-state-success-primary);border-radius:50%;flex:none;width:6px;height:6px}.nArs4W_sandboxStatusOff .nArs4W_sandboxDot{background:var(--dsw-alias-state-error-primary)}.nArs4W_sandboxStatusText{text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;overflow:hidden}.nArs4W_sandboxAction{border:1px solid var(--dsw-alias-border-l2);font:inherit;color:inherit;cursor:pointer;background:0 0;border-radius:6px;flex:none;padding:2px 8px}.nArs4W_sandboxAction:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_editorHtml{background:var(--dsw-alias-bg-base);border:none;flex:1;width:100%;min-height:0}.nArs4W_browser{flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_browserBar{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:4px;padding:6px 8px;display:flex}.nArs4W_browserInput{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);min-width:0;height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);border-radius:6px;flex:1;padding:0 10px}.nArs4W_browserInput:focus{border-color:var(--dsw-alias-border-l2);outline:none}.nArs4W_browserMessage{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-state-warn-label);background:var(--dsw-alias-state-warn-tertiary);flex:none;padding:4px 12px}.nArs4W_browserFrame{background:var(--dsw-alias-bg-base);border:none;flex:1;width:100%;min-height:0}.nArs4W_browserStart{text-align:center;min-height:0;font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-tertiary);flex:1;justify-content:center;align-items:center;padding:20px;display:flex}.nArs4W_browserBlocked{text-align:center;min-height:0;color:var(--dsw-alias-state-warn-primary);flex-direction:column;flex:1;justify-content:center;align-items:center;gap:6px;padding:24px;display:flex}.nArs4W_browserBlockedTitle{font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary)}.nArs4W_browserBlockedDesc{max-width:280px;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary)}.nArs4W_browserBlockedActions{gap:8px;margin-top:6px;display:flex}.nArs4W_browserBlockedButton{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxxs-11);cursor:pointer;border-radius:6px;padding:4px 12px}.nArs4W_browserBlockedButton:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_editorCm{background:0 0;flex:1;min-height:0;overflow:hidden}.nArs4W_editorCmHidden{display:none}.nArs4W_editorCm .cm-editor{height:100%}.nArs4W_editorCm .cm-scroller{padding:12px 16px}.nArs4W_editorCm .cm-editor.cm-focused{outline:none}.nArs4W_editorModeToggle{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:6px;flex:none;align-items:center;gap:2px;padding:2px;display:inline-flex}.nArs4W_editorModeButton{color:var(--dsw-alias-label-tertiary);font:var(--dsw-font-xxxs-11);cursor:pointer;background:0 0;border:none;border-radius:4px;padding:2px 8px}.nArs4W_editorModeButton:hover{color:var(--dsw-alias-label-primary)}.nArs4W_editorModeActive{background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}.nArs4W_editorMd{min-height:0;font:var(--dsw-font-xs-13);flex:1;padding:12px 16px;overflow-y:auto}.nArs4W_editorMd .md-code-block:not([data-mermaid-processed])>div:first-child{z-index:auto;position:static}.nArs4W_mermaidWrap{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:6px;margin:6px 0;overflow:hidden}.nArs4W_mermaidHeader{border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);justify-content:space-between;align-items:center;gap:6px;padding:4px 8px;display:flex}.nArs4W_mermaidInfo{font:var(--dsw-font-xxxs-strong-11);color:var(--dsw-alias-label-tertiary)}.nArs4W_mermaidCopy{height:20px;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-11);cursor:pointer;background:0 0;border:none;border-radius:4px;align-items:center;gap:4px;padding:0 6px;display:inline-flex}.nArs4W_mermaidCopy:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_mermaidBody{cursor:zoom-in;justify-content:center;padding:10px;display:flex;overflow:auto}.nArs4W_mermaidBody svg{max-width:100%;height:auto}.nArs4W_mermaidError{border-bottom:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-state-error-primary);font:var(--dsw-font-xxxs-11);padding:6px 10px}.nArs4W_mermaidCode{font:var(--dsw-font-xxxs-11);margin:0;padding:8px 10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow:auto}.nArs4W_mermaidMarkdown .md-code-block[data-mermaid-processed]{display:contents}.nArs4W_mermaidModal{z-index:1000;background:var(--dsw-alias-bg-mask-1);backdrop-filter:blur(2px);flex-direction:column;justify-content:center;align-items:center;display:flex;position:fixed;inset:0;-webkit-app-region:initial!important}.nArs4W_mermaidModalToolbar{z-index:10;gap:8px;display:flex;position:absolute;top:16px;right:16px}.nArs4W_mermaidModalButton{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);width:36px;height:36px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xs-strong-13);cursor:pointer;border-radius:8px;justify-content:center;align-items:center;display:inline-flex}.nArs4W_mermaidModalButton:hover{background:var(--dsw-alias-interactive-bg-hover)}.nArs4W_mermaidModalStage{justify-content:center;align-items:center;width:90vw;height:80vh;display:flex;position:relative;overflow:hidden}.nArs4W_mermaidModalStage svg{cursor:grab;transform-origin:50%;user-select:none;-webkit-user-drag:none;background:var(--dsw-alias-bg-layer-1);border-radius:12px;max-width:none;max-height:none;padding:16px}.nArs4W_mermaidModalStage svg:active{cursor:grabbing}.nArs4W_mermaidModalHint{color:var(--dsw-alias-label-tertiary);font:var(--dsw-font-xxxs-11);pointer-events:none;position:absolute;bottom:16px;left:50%;transform:translate(-50%)}.nArs4W_selectionPopup{z-index:60;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-specific-menu);height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxxs-strong-11);white-space:nowrap;cursor:pointer;border-radius:6px;align-items:center;padding:0 10px;display:inline-flex;position:fixed;transform:translate(-50%,calc(-100% - 8px))}.nArs4W_selectionPopup:hover{background:var(--dsw-alias-interactive-bg-hover-solid)}.nArs4W_editorPdf{background:var(--dsw-alias-bg-base);flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_editorPdfToolbar{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;justify-content:flex-end;padding:6px 8px;display:flex}.nArs4W_editorPdfStage{flex:1;min-height:0;display:flex;position:relative}.nArs4W_editorPdfFrame{background:var(--dsw-alias-bg-base);border:none;flex:1;width:100%;min-height:0}.nArs4W_editorPdfFrameBlocked{pointer-events:none}.nArs4W_editorPdfDragShield{z-index:4;pointer-events:none;background:0 0;position:absolute;inset:0}.nArs4W_editorPdfDragShieldActive{pointer-events:auto}body[data-dsh-tab-dragging] .nArs4W_editorPdfFrame{pointer-events:none!important}body[data-dsh-tab-dragging] .nArs4W_editorPdfDragShield{pointer-events:auto!important}.nArs4W_boundaryError{z-index:50;background:var(--dsw-alias-bg-layer-1);border-left:1px solid var(--dsw-alias-border-l2);font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);flex-direction:column;align-items:flex-start;gap:8px;padding:16px;display:flex;position:fixed;top:0;bottom:0;right:0;overflow:auto}.nArs4W_terminalRetry{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-strong-11);cursor:pointer;border-radius:999px;flex:none;padding:1px 8px}.nArs4W_terminalRetry:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_tabBoundaryError{min-height:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);flex-direction:column;flex:1;align-items:flex-start;gap:8px;padding:12px 16px;display:flex;overflow:auto}.nArs4W_nativeTabHost{flex-direction:column;height:100%;min-height:0;display:flex}.nArs4W_gitEmpty{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);padding:4px 12px 8px}.nArs4W_gitPlaceholder{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);text-align:center;padding:16px}.nArs4W_gitError{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-state-error-primary);white-space:pre-wrap;padding:8px 12px}.nArs4W_gitDiffTab{flex-direction:column;flex:1;min-width:0;min-height:0;display:flex;overflow:hidden auto}.nArs4W_gitDiffTabHeader{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:8px;height:36px;padding:0 8px 0 12px;display:flex}.nArs4W_gitDiffTabTitle{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);flex:1;overflow:hidden}.nArs4W_toggleButton:focus-visible,.nArs4W_bottomClose:focus-visible,.nArs4W_iconButton:focus-visible,.nArs4W_tab:focus-visible,.nArs4W_tabClose:focus-visible,.nArs4W_tabBarPlus:focus-visible,.nArs4W_paneCard:focus-visible,.nArs4W_explorerRow:focus-visible,.nArs4W_explorerRef:focus-visible,.nArs4W_terminalRetry:focus-visible,.nArs4W_editorModeButton:focus-visible,.nArs4W_editorDownloadLink:focus-visible,.nArs4W_editorPptxButton:focus-visible,.nArs4W_editorDocxZoomRange:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}@media (prefers-reduced-motion:reduce){.nArs4W_bottomPanel,.nArs4W_bottomPanelHidden,.nArs4W_toggleButton,.nArs4W_tab,.nArs4W_tabBarPlus,.nArs4W_paneCard,.nArs4W_explorerRow,.nArs4W_divider,.nArs4W_dividerRow:after,.nArs4W_dividerCol:after{transition:none;animation:none}}@media (width<=767px){.nArs4W_tab{min-width:48px;max-width:128px}}.nArs4W_openWithLabel{align-items:center;gap:8px;width:100%;min-width:0;display:flex}.nArs4W_openWithName{text-overflow:ellipsis;white-space:nowrap;flex:auto;min-width:0;overflow:hidden}.nArs4W_openWithChevron{color:var(--dsw-alias-label-tertiary);flex:none}.nArs4W_openWithPin{width:16px;height:16px;color:var(--dsw-alias-label-tertiary);cursor:pointer;border-radius:5px;flex:none;justify-content:center;align-items:center;display:inline-flex}.nArs4W_openWithPin:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_openWithPinActive{color:var(--dsw-alias-state-business-primary)}.nArs4W_editorHtmlBlock{margin:8px 0}.nArs4W_editorHtmlBlock img,.nArs4W_editorHtmlBlock video{max-width:100%}.nArs4W_editorHtmlBlock details{margin:4px 0;padding:4px 0}.nArs4W_editorHtmlBlock summary,.nArs4W_editorMd details>summary{cursor:pointer}.nArs4W_tocBar{z-index:7;pointer-events:none;justify-content:flex-end;height:0;display:flex;position:sticky;top:0}.nArs4W_tocButton{pointer-events:auto;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);width:26px;height:26px;color:var(--dsw-alias-label-secondary);cursor:pointer;border-radius:6px;justify-content:center;align-items:center;margin:4px 2px 0 0;padding:0;display:inline-flex}.nArs4W_tocButton:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_tocPanel{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);width:min(300px,82%);max-height:60vh;box-shadow:var(--dsw-shadow-lv2);pointer-events:auto;border-radius:8px;flex-direction:column;padding:4px;display:flex;position:absolute;top:32px;right:2px;overflow-y:auto}.nArs4W_tocItem{min-width:0;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxs-12);text-align:left;cursor:pointer;background:0 0;border:none;border-radius:6px;align-items:baseline;gap:8px;padding:4px 8px;display:flex}.nArs4W_tocItem:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.nArs4W_tocItem[data-level=\"2\"]{padding-left:18px}.nArs4W_tocItem[data-level=\"3\"]{padding-left:28px}.nArs4W_tocItem[data-level=\"4\"]{padding-left:38px}.nArs4W_tocItem[data-level=\"5\"]{padding-left:48px}.nArs4W_tocItem[data-level=\"6\"]{padding-left:58px}.nArs4W_tocItemLevel{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);flex:none}.nArs4W_tocItemText{text-overflow:ellipsis;white-space:nowrap;flex:auto;min-width:0;overflow:hidden}@keyframes nArs4W_dsh-toc-flash{0%,60%{background:var(--dsw-alias-interactive-bg-hover)}to{background:0 0}}.nArs4W_tocFlash{border-radius:4px;animation:1.2s ease-out nArs4W_dsh-toc-flash}.nArs4W_largeFile{flex-direction:column;flex:1;min-height:0;display:flex}.nArs4W_largeFileNotice{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-state-warn-label);background:var(--dsw-alias-state-warn-tertiary);flex:none;align-items:baseline;gap:8px;padding:4px 8px;display:flex}.nArs4W_largeFileDownload{color:inherit;text-decoration:underline}.nArs4W_largeFileNoticeAction{font:inherit;color:inherit;cursor:pointer;background:0 0;border:1px solid;border-radius:4px;margin-left:auto;padding:0 6px}.nArs4W_largeFileNoticeAction:disabled{opacity:.5;cursor:default}.nArs4W_largeFileBody{flex:1;min-height:0;overflow:auto}.nArs4W_largeFileRecords{padding:4px 0}.nArs4W_largeFileList{margin:0;padding:0;list-style:none}.nArs4W_largeFileRecord{gap:8px;padding:2px 8px;display:flex}.nArs4W_largeFileRecordExpanded{background:var(--dsw-alias-bg-layer-1)}.nArs4W_largeFileRecordInvalid{color:var(--dsw-alias-state-error-primary)}.nArs4W_largeFileRecordNo{text-align:right;min-width:4ch;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);user-select:none;flex:none}.nArs4W_largeFileRecordBody{flex:1;min-width:0}.nArs4W_largeFileRecordSummary{text-align:left;width:100%;font:var(--ds-font-family-code);color:var(--dsw-alias-label-primary);white-space:pre;text-overflow:ellipsis;cursor:pointer;background:0 0;border:0;padding:0;font-size:12px;display:block;overflow:hidden}.nArs4W_largeFileRecordSummary:disabled{cursor:default}.nArs4W_largeFileRecordRaw{font:var(--ds-font-family-code);white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;margin:2px 0 0;font-size:12px}.nArs4W_largeFileRecordTree{font:var(--ds-font-family-code);margin-top:2px;font-size:12px}.nArs4W_largeFileLines{font:var(--ds-font-family-code);white-space:pre;padding:4px 0;font-size:12px}.nArs4W_largeFileLine{gap:8px;padding:0 8px;display:flex}.nArs4W_largeFileLineNo{text-align:right;min-width:5ch;color:var(--dsw-alias-label-tertiary);user-select:none;flex:none}.nArs4W_largeFileLineText{color:var(--dsw-alias-label-primary);flex:none}.nArs4W_largeFilePager{border-top:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);flex:none;align-items:center;gap:4px;padding:2px 8px;display:flex}.nArs4W_largeFilePageLabel{text-align:center;min-width:0;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;flex:1;overflow:hidden}";
+		const tagId$12 = "dsh-external/dsh-better-sidebar/sidebar.module.css";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$12) + "]") === null) {
 			const tag = document.createElement("style");
 			tag.dataset.plugin = "dsh-external/dsh-better-sidebar";
-			tag.dataset.pluginCss = tagId$10;
-			tag.textContent = css$10;
+			tag.dataset.pluginCss = tagId$12;
+			tag.textContent = css$12;
 			document.head.appendChild(tag);
 		}
 		var sidebar_module_css_default = {
-			"mermaidWrap": "nArs4W_mermaidWrap",
-			"browserBar": "nArs4W_browserBar",
-			"mermaidModal": "nArs4W_mermaidModal",
-			"largeFileRecordBody": "nArs4W_largeFileRecordBody",
-			"editorTreeSearch": "nArs4W_editorTreeSearch",
-			"pane": "nArs4W_pane",
-			"tabList": "nArs4W_tabList",
-			"mermaidMarkdown": "nArs4W_mermaidMarkdown",
-			"editorPdfDragShield": "nArs4W_editorPdfDragShield",
-			"largeFileRecordRaw": "nArs4W_largeFileRecordRaw",
-			"editorGitBarGutter": "nArs4W_editorGitBarGutter",
-			"openWithPinActive": "nArs4W_openWithPinActive",
-			"largeFileRecordTree": "nArs4W_largeFileRecordTree",
-			"largeFileLines": "nArs4W_largeFileLines",
-			"browserInput": "nArs4W_browserInput",
-			"dropRight": "nArs4W_dropRight",
-			"uploadOverlay": "nArs4W_uploadOverlay",
-			"gitDiffTab": "nArs4W_gitDiffTab",
-			"uploadOverlayCancel": "nArs4W_uploadOverlayCancel",
-			"editorSearchResult": "nArs4W_editorSearchResult",
-			"toggleButton": "nArs4W_toggleButton",
-			"gitEmpty": "nArs4W_gitEmpty",
-			"terminalRetry": "nArs4W_terminalRetry",
-			"editorDocxZoomRange": "nArs4W_editorDocxZoomRange",
-			"explorerRowRevealed": "nArs4W_explorerRowRevealed",
-			"largeFileDownload": "nArs4W_largeFileDownload",
-			"uploadDropMask": "nArs4W_uploadDropMask",
-			"editorTreeResize": "nArs4W_editorTreeResize",
-			"dropUp": "nArs4W_dropUp",
-			"browserFrame": "nArs4W_browserFrame",
-			"explorerAppIcon": "nArs4W_explorerAppIcon",
-			"uploadOverlayCard": "nArs4W_uploadOverlayCard",
-			"explorerSymlink": "nArs4W_explorerSymlink",
-			"bottomResizeActive": "nArs4W_bottomResizeActive",
-			"sandboxStatus": "nArs4W_sandboxStatus",
-			"browserBlockedActions": "nArs4W_browserBlockedActions",
-			"mermaidBody": "nArs4W_mermaidBody",
-			"tabUnreadDot": "nArs4W_tabUnreadDot",
-			"explorerDirChanged": "nArs4W_explorerDirChanged",
-			"paneEmptyCards": "nArs4W_paneEmptyCards",
-			"uploadDropArtCut": "nArs4W_uploadDropArtCut",
-			"editorStatusError": "nArs4W_editorStatusError",
-			"editorGitBarSpacer": "nArs4W_editorGitBarSpacer",
-			"mermaidInfo": "nArs4W_mermaidInfo",
-			"mermaidModalToolbar": "nArs4W_mermaidModalToolbar",
-			"tocBar": "nArs4W_tocBar",
-			"bottomPanelHidden": "nArs4W_bottomPanelHidden",
-			"browserBlockedButton": "nArs4W_browserBlockedButton",
-			"largeFileBody": "nArs4W_largeFileBody",
-			"editorSearchResultDir": "nArs4W_editorSearchResultDir",
-			"splitChild": "nArs4W_splitChild",
-			"boundaryError": "nArs4W_boundaryError",
-			"tabBadge": "nArs4W_tabBadge",
-			"uploadOverlayStatus": "nArs4W_uploadOverlayStatus",
-			"dropDown": "nArs4W_dropDown",
-			"editorTreePanel": "nArs4W_editorTreePanel",
-			"paneTabHidden": "nArs4W_paneTabHidden",
-			"tabBarPlus": "nArs4W_tabBarPlus",
-			"explorerRef": "nArs4W_explorerRef",
-			"bottomResize": "nArs4W_bottomResize",
-			"dirtyDot": "nArs4W_dirtyDot",
-			"explorer": "nArs4W_explorer",
-			"editorBinary": "nArs4W_editorBinary",
-			"editorMd": "nArs4W_editorMd",
-			"editorPptxButton": "nArs4W_editorPptxButton",
-			"editorBanner": "nArs4W_editorBanner",
-			"openWithName": "nArs4W_openWithName",
-			"editorDownloadLink": "nArs4W_editorDownloadLink",
-			"openWithChevron": "nArs4W_openWithChevron",
-			"editorGitBar": "nArs4W_editorGitBar",
-			"split": "nArs4W_split",
-			"explorerBroken": "nArs4W_explorerBroken",
-			"uploadDropZonePill": "nArs4W_uploadDropZonePill",
-			"editorMain": "nArs4W_editorMain",
-			"largeFileLineNo": "nArs4W_largeFileLineNo",
-			"divider": "nArs4W_divider",
-			"largeFileRecord": "nArs4W_largeFileRecord",
-			"dockFallback": "nArs4W_dockFallback",
-			"dividerRow": "nArs4W_dividerRow",
-			"uploadDropChatCard": "nArs4W_uploadDropChatCard",
-			"browserBlocked": "nArs4W_browserBlocked",
-			"tabTitle": "nArs4W_tabTitle",
-			"editorGitAdd": "nArs4W_editorGitAdd",
-			"explorerEmpty": "nArs4W_explorerEmpty",
-			"chipIcon": "nArs4W_chipIcon",
-			"mermaidHeader": "nArs4W_mermaidHeader",
-			"mermaidCopy": "nArs4W_mermaidCopy",
-			"browserMessage": "nArs4W_browserMessage",
-			"iconButton": "nArs4W_iconButton",
-			"browserBlockedDesc": "nArs4W_browserBlockedDesc",
-			"editorHtmlBlock": "nArs4W_editorHtmlBlock",
-			"editorBannerAction": "nArs4W_editorBannerAction",
-			"largeFileList": "nArs4W_largeFileList",
-			"largeFileNotice": "nArs4W_largeFileNotice",
-			"tab": "nArs4W_tab",
-			"explorerRowDropTarget": "nArs4W_explorerRowDropTarget",
-			"workbench": "nArs4W_workbench",
-			"uploadDropHero": "nArs4W_uploadDropHero",
-			"explorerActionErrorText": "nArs4W_explorerActionErrorText",
 			"mermaidModalButton": "nArs4W_mermaidModalButton",
-			"editorTreeDock": "nArs4W_editorTreeDock",
-			"chipUnread": "nArs4W_chipUnread",
-			"editorGitBarDel": "nArs4W_editorGitBarDel",
-			"splitCol": "nArs4W_splitCol",
-			"explorerSelectionActions": "nArs4W_explorerSelectionActions",
-			"largeFileRecords": "nArs4W_largeFileRecords",
-			"sandboxStatusOn": "nArs4W_sandboxStatusOn",
-			"largeFileLine": "nArs4W_largeFileLine",
-			"editorPdfStage": "nArs4W_editorPdfStage",
-			"orphanedType": "nArs4W_orphanedType",
-			"explorerBody": "nArs4W_explorerBody",
 			"editorCmHidden": "nArs4W_editorCmHidden",
-			"editorPdfToolbar": "nArs4W_editorPdfToolbar",
-			"openWithPin": "nArs4W_openWithPin",
-			"explorerActionError": "nArs4W_explorerActionError",
-			"editorBlameSummary": "nArs4W_editorBlameSummary",
-			"editorBlame": "nArs4W_editorBlame",
-			"tabClose": "nArs4W_tabClose",
-			"editorPathInput": "nArs4W_editorPathInput",
-			"gitDiffTabTitle": "nArs4W_gitDiffTabTitle",
-			"editorSearchResultLabel": "nArs4W_editorSearchResultLabel",
-			"splitRow": "nArs4W_splitRow",
-			"editorPdf": "nArs4W_editorPdf",
-			"dropLeft": "nArs4W_dropLeft",
-			"uploadOverlayTitle": "nArs4W_uploadOverlayTitle",
-			"largeFilePager": "nArs4W_largeFilePager",
-			"bottomPanel": "nArs4W_bottomPanel",
-			"largeFilePageLabel": "nArs4W_largeFilePageLabel",
-			"editorBinaryNotice": "nArs4W_editorBinaryNotice",
-			"editorModeActive": "nArs4W_editorModeActive",
-			"editorPlaceholder": "nArs4W_editorPlaceholder",
-			"explorerName": "nArs4W_explorerName",
-			"editorPdfFrame": "nArs4W_editorPdfFrame",
-			"largeFileRecordInvalid": "nArs4W_largeFileRecordInvalid",
-			"gitPlaceholder": "nArs4W_gitPlaceholder",
-			"explorerRenameInput": "nArs4W_explorerRenameInput",
-			"sandboxDot": "nArs4W_sandboxDot",
-			"largeFileLineText": "nArs4W_largeFileLineText",
-			"editorGitDel": "nArs4W_editorGitDel",
-			"tocItem": "nArs4W_tocItem",
-			"explorerSelectionBar": "nArs4W_explorerSelectionBar",
-			"dividerCol": "nArs4W_dividerCol",
-			"tocItemLevel": "nArs4W_tocItemLevel",
-			"uploadDropChatHint": "nArs4W_uploadDropChatHint",
-			"editorStatus": "nArs4W_editorStatus",
-			"largeFileRecordNo": "nArs4W_largeFileRecordNo",
-			"largeFileRecordSummary": "nArs4W_largeFileRecordSummary",
-			"editorBlameHead": "nArs4W_editorBlameHead",
-			"explorerError": "nArs4W_explorerError",
-			"dropOverlay": "nArs4W_dropOverlay",
-			"browser": "nArs4W_browser",
-			"gitError": "nArs4W_gitError",
-			"editorPdfFrameBlocked": "nArs4W_editorPdfFrameBlocked",
-			"uploadOverlayProgressFill": "nArs4W_uploadOverlayProgressFill",
-			"tabBar": "nArs4W_tabBar",
-			"explorerHidden": "nArs4W_explorerHidden",
-			"bottomClose": "nArs4W_bottomClose",
-			"tabBoundaryError": "nArs4W_tabBoundaryError",
+			"orphanedType": "nArs4W_orphanedType",
 			"tocButton": "nArs4W_tocButton",
-			"mermaidModalStage": "nArs4W_mermaidModalStage",
-			"editorCm": "nArs4W_editorCm",
-			"editorHeader": "nArs4W_editorHeader",
-			"paneCard": "nArs4W_paneCard",
-			"explorerRowSelected": "nArs4W_explorerRowSelected",
-			"explorerRenaming": "nArs4W_explorerRenaming",
-			"uploadDropArtAccent": "nArs4W_uploadDropArtAccent",
-			"uploadOverlayProgress": "nArs4W_uploadOverlayProgress",
-			"explorerSelectionText": "nArs4W_explorerSelectionText",
+			"workbench": "nArs4W_workbench",
+			"editorPptxButton": "nArs4W_editorPptxButton",
+			"editorGitBar": "nArs4W_editorGitBar",
 			"selectionPopup": "nArs4W_selectionPopup",
-			"gitDiffTabHeader": "nArs4W_gitDiffTabHeader",
-			"dropCenter": "nArs4W_dropCenter",
-			"editorModeButton": "nArs4W_editorModeButton",
-			"panelBody": "nArs4W_panelBody",
-			"paneTab": "nArs4W_paneTab",
-			"tabActive": "nArs4W_tabActive",
-			"editorGitBarMod": "nArs4W_editorGitBarMod",
-			"mermaidError": "nArs4W_mermaidError",
-			"nativeTabHost": "nArs4W_nativeTabHost",
-			"openWithLabel": "nArs4W_openWithLabel",
-			"paneContent": "nArs4W_paneContent",
-			"uploadDropZone": "nArs4W_uploadDropZone",
-			"tocItemText": "nArs4W_tocItemText",
-			"tocFlash": "nArs4W_tocFlash",
-			"editorError": "nArs4W_editorError",
-			"mermaidModalHint": "nArs4W_mermaidModalHint",
-			"largeFile": "nArs4W_largeFile",
-			"largeFileRecordExpanded": "nArs4W_largeFileRecordExpanded",
-			"editorBody": "nArs4W_editorBody",
-			"largeFileNoticeAction": "nArs4W_largeFileNoticeAction",
-			"dividerActive": "nArs4W_dividerActive",
-			"explorerRoot": "nArs4W_explorerRoot",
-			"sandboxStatusOff": "nArs4W_sandboxStatusOff",
-			"tocPanel": "nArs4W_tocPanel",
-			"editorSearchHint": "nArs4W_editorSearchHint",
-			"editor": "nArs4W_editor",
-			"paneDrop": "nArs4W_paneDrop",
-			"explorerCopied": "nArs4W_explorerCopied",
-			"editorSearchInput": "nArs4W_editorSearchInput",
-			"panel": "nArs4W_panel",
-			"sandboxStatusText": "nArs4W_sandboxStatusText",
-			"explorerHiddenPane": "nArs4W_explorerHiddenPane",
-			"explorerGitName": "nArs4W_explorerGitName",
-			"sandboxAction": "nArs4W_sandboxAction",
-			"editorHtml": "nArs4W_editorHtml",
-			"uploadDropZoneText": "nArs4W_uploadDropZoneText",
-			"browserStart": "nArs4W_browserStart",
-			"editorModeToggle": "nArs4W_editorModeToggle",
-			"mermaidCode": "nArs4W_mermaidCode",
-			"editorPdfDragShieldActive": "nArs4W_editorPdfDragShieldActive",
-			"editorTitle": "nArs4W_editorTitle",
-			"editorGitBarAdd": "nArs4W_editorGitBarAdd",
-			"explorerDir": "nArs4W_explorerDir",
-			"editorTreeToggleActive": "nArs4W_editorTreeToggleActive",
-			"dsh-toc-flash": "nArs4W_dsh-toc-flash",
-			"tabBarDrop": "nArs4W_tabBarDrop",
-			"tabBarRightActions": "nArs4W_tabBarRightActions",
-			"uploadDropArtPrimary": "nArs4W_uploadDropArtPrimary",
-			"explorerHeader": "nArs4W_explorerHeader",
-			"explorerRow": "nArs4W_explorerRow",
-			"editorTreePanelFull": "nArs4W_editorTreePanelFull",
+			"dropDown": "nArs4W_dropDown",
 			"editorGitMod": "nArs4W_editorGitMod",
+			"explorerSymlink": "nArs4W_explorerSymlink",
+			"editorModeButton": "nArs4W_editorModeButton",
+			"largeFileLine": "nArs4W_largeFileLine",
+			"paneTab": "nArs4W_paneTab",
+			"paneEmptyCards": "nArs4W_paneEmptyCards",
+			"explorerRoot": "nArs4W_explorerRoot",
+			"divider": "nArs4W_divider",
+			"explorerError": "nArs4W_explorerError",
+			"editorBlameSummary": "nArs4W_editorBlameSummary",
+			"editorCm": "nArs4W_editorCm",
+			"editorTreeToggleActive": "nArs4W_editorTreeToggleActive",
+			"split": "nArs4W_split",
+			"chipUnread": "nArs4W_chipUnread",
+			"explorerCopied": "nArs4W_explorerCopied",
+			"browserBlockedDesc": "nArs4W_browserBlockedDesc",
+			"editorPdfDragShield": "nArs4W_editorPdfDragShield",
+			"gitDiffTabHeader": "nArs4W_gitDiffTabHeader",
+			"sandboxStatusOn": "nArs4W_sandboxStatusOn",
+			"largeFileNoticeAction": "nArs4W_largeFileNoticeAction",
+			"largeFileDownload": "nArs4W_largeFileDownload",
+			"uploadDropZone": "nArs4W_uploadDropZone",
+			"explorerAppIcon": "nArs4W_explorerAppIcon",
+			"tabTitle": "nArs4W_tabTitle",
+			"editorTreePanelFull": "nArs4W_editorTreePanelFull",
+			"editorMain": "nArs4W_editorMain",
+			"tabBar": "nArs4W_tabBar",
+			"explorerRef": "nArs4W_explorerRef",
+			"editorSearchHint": "nArs4W_editorSearchHint",
+			"editorGitAdd": "nArs4W_editorGitAdd",
+			"bottomResize": "nArs4W_bottomResize",
+			"explorerName": "nArs4W_explorerName",
+			"uploadOverlayTitle": "nArs4W_uploadOverlayTitle",
+			"explorerRenaming": "nArs4W_explorerRenaming",
+			"browserMessage": "nArs4W_browserMessage",
+			"openWithLabel": "nArs4W_openWithLabel",
+			"editorTreePanel": "nArs4W_editorTreePanel",
+			"mermaidBody": "nArs4W_mermaidBody",
+			"editorHtmlBlock": "nArs4W_editorHtmlBlock",
+			"dropOverlay": "nArs4W_dropOverlay",
+			"editorStatus": "nArs4W_editorStatus",
+			"largeFileBody": "nArs4W_largeFileBody",
+			"largeFileList": "nArs4W_largeFileList",
+			"largeFileRecordInvalid": "nArs4W_largeFileRecordInvalid",
+			"explorerHeader": "nArs4W_explorerHeader",
+			"largeFileRecordNo": "nArs4W_largeFileRecordNo",
+			"explorerGitName": "nArs4W_explorerGitName",
+			"panelBody": "nArs4W_panelBody",
+			"editorGitBarDel": "nArs4W_editorGitBarDel",
+			"mermaidModal": "nArs4W_mermaidModal",
+			"editorGitBarSpacer": "nArs4W_editorGitBarSpacer",
+			"largeFileRecordSummary": "nArs4W_largeFileRecordSummary",
+			"mermaidModalStage": "nArs4W_mermaidModalStage",
+			"paneContent": "nArs4W_paneContent",
+			"editorStatusError": "nArs4W_editorStatusError",
+			"browserBlockedButton": "nArs4W_browserBlockedButton",
+			"bottomPanel": "nArs4W_bottomPanel",
+			"uploadOverlayProgress": "nArs4W_uploadOverlayProgress",
+			"gitDiffTab": "nArs4W_gitDiffTab",
+			"tabBarDrop": "nArs4W_tabBarDrop",
+			"largeFile": "nArs4W_largeFile",
+			"largeFileLines": "nArs4W_largeFileLines",
+			"editorSearchResult": "nArs4W_editorSearchResult",
+			"browserFrame": "nArs4W_browserFrame",
+			"dockFallback": "nArs4W_dockFallback",
+			"editorPdfFrameBlocked": "nArs4W_editorPdfFrameBlocked",
+			"editorGitBarAdd": "nArs4W_editorGitBarAdd",
+			"tocItemLevel": "nArs4W_tocItemLevel",
+			"largeFileRecordRaw": "nArs4W_largeFileRecordRaw",
+			"editorBlameHead": "nArs4W_editorBlameHead",
+			"largeFileRecordBody": "nArs4W_largeFileRecordBody",
+			"uploadOverlayCard": "nArs4W_uploadOverlayCard",
+			"editorBannerAction": "nArs4W_editorBannerAction",
+			"editorSearchResultLabel": "nArs4W_editorSearchResultLabel",
+			"sandboxStatusText": "nArs4W_sandboxStatusText",
+			"bottomResizeActive": "nArs4W_bottomResizeActive",
+			"largeFileRecordTree": "nArs4W_largeFileRecordTree",
+			"explorerRowDropTarget": "nArs4W_explorerRowDropTarget",
+			"uploadDropArtAccent": "nArs4W_uploadDropArtAccent",
+			"uploadOverlayProgressFill": "nArs4W_uploadOverlayProgressFill",
+			"openWithChevron": "nArs4W_openWithChevron",
+			"editorBlame": "nArs4W_editorBlame",
+			"dropRight": "nArs4W_dropRight",
+			"gitPlaceholder": "nArs4W_gitPlaceholder",
+			"tabUnreadDot": "nArs4W_tabUnreadDot",
+			"uploadDropArtCut": "nArs4W_uploadDropArtCut",
+			"tabActive": "nArs4W_tabActive",
+			"editorTreeDock": "nArs4W_editorTreeDock",
+			"explorerRenameInput": "nArs4W_explorerRenameInput",
+			"sandboxStatus": "nArs4W_sandboxStatus",
+			"tocPanel": "nArs4W_tocPanel",
+			"editorError": "nArs4W_editorError",
+			"editorSearchInput": "nArs4W_editorSearchInput",
 			"dsh-row-in": "nArs4W_dsh-row-in",
-			"browserBlockedTitle": "nArs4W_browserBlockedTitle"
+			"explorerRow": "nArs4W_explorerRow",
+			"uploadDropChatCard": "nArs4W_uploadDropChatCard",
+			"editorTreeSearch": "nArs4W_editorTreeSearch",
+			"editorGitBarGutter": "nArs4W_editorGitBarGutter",
+			"browserInput": "nArs4W_browserInput",
+			"chipIcon": "nArs4W_chipIcon",
+			"pane": "nArs4W_pane",
+			"paneCard": "nArs4W_paneCard",
+			"editorSearchResultDir": "nArs4W_editorSearchResultDir",
+			"uploadDropChatHint": "nArs4W_uploadDropChatHint",
+			"explorerDirChanged": "nArs4W_explorerDirChanged",
+			"editorBinary": "nArs4W_editorBinary",
+			"editorBanner": "nArs4W_editorBanner",
+			"editorHtml": "nArs4W_editorHtml",
+			"browserBlocked": "nArs4W_browserBlocked",
+			"editorModeActive": "nArs4W_editorModeActive",
+			"mermaidCode": "nArs4W_mermaidCode",
+			"editorPdf": "nArs4W_editorPdf",
+			"explorerHiddenPane": "nArs4W_explorerHiddenPane",
+			"editorPdfDragShieldActive": "nArs4W_editorPdfDragShieldActive",
+			"tabBoundaryError": "nArs4W_tabBoundaryError",
+			"gitDiffTabTitle": "nArs4W_gitDiffTabTitle",
+			"splitChild": "nArs4W_splitChild",
+			"dividerRow": "nArs4W_dividerRow",
+			"editorMd": "nArs4W_editorMd",
+			"tabList": "nArs4W_tabList",
+			"dividerActive": "nArs4W_dividerActive",
+			"editorHeader": "nArs4W_editorHeader",
+			"tabBarRightActions": "nArs4W_tabBarRightActions",
+			"mermaidHeader": "nArs4W_mermaidHeader",
+			"mermaidMarkdown": "nArs4W_mermaidMarkdown",
+			"explorerBody": "nArs4W_explorerBody",
+			"explorerDir": "nArs4W_explorerDir",
+			"sandboxStatusOff": "nArs4W_sandboxStatusOff",
+			"editorPdfStage": "nArs4W_editorPdfStage",
+			"explorerActionError": "nArs4W_explorerActionError",
+			"dividerCol": "nArs4W_dividerCol",
+			"editorTitle": "nArs4W_editorTitle",
+			"sandboxAction": "nArs4W_sandboxAction",
+			"paneDrop": "nArs4W_paneDrop",
+			"paneTabHidden": "nArs4W_paneTabHidden",
+			"nativeTabHost": "nArs4W_nativeTabHost",
+			"uploadOverlayStatus": "nArs4W_uploadOverlayStatus",
+			"gitEmpty": "nArs4W_gitEmpty",
+			"tabBarPlus": "nArs4W_tabBarPlus",
+			"sandboxDot": "nArs4W_sandboxDot",
+			"openWithName": "nArs4W_openWithName",
+			"dirtyDot": "nArs4W_dirtyDot",
+			"tabBadge": "nArs4W_tabBadge",
+			"toggleButton": "nArs4W_toggleButton",
+			"bottomClose": "nArs4W_bottomClose",
+			"editorDocxZoomRange": "nArs4W_editorDocxZoomRange",
+			"uploadDropArtPrimary": "nArs4W_uploadDropArtPrimary",
+			"dropUp": "nArs4W_dropUp",
+			"boundaryError": "nArs4W_boundaryError",
+			"tocFlash": "nArs4W_tocFlash",
+			"tocBar": "nArs4W_tocBar",
+			"largeFileRecord": "nArs4W_largeFileRecord",
+			"browserBlockedActions": "nArs4W_browserBlockedActions",
+			"largeFileRecordExpanded": "nArs4W_largeFileRecordExpanded",
+			"largeFileLineNo": "nArs4W_largeFileLineNo",
+			"largeFilePageLabel": "nArs4W_largeFilePageLabel",
+			"tocItem": "nArs4W_tocItem",
+			"dropCenter": "nArs4W_dropCenter",
+			"browserStart": "nArs4W_browserStart",
+			"explorerActionErrorText": "nArs4W_explorerActionErrorText",
+			"uploadDropMask": "nArs4W_uploadDropMask",
+			"tab": "nArs4W_tab",
+			"mermaidWrap": "nArs4W_mermaidWrap",
+			"largeFileLineText": "nArs4W_largeFileLineText",
+			"panel": "nArs4W_panel",
+			"explorer": "nArs4W_explorer",
+			"uploadOverlay": "nArs4W_uploadOverlay",
+			"uploadOverlayCancel": "nArs4W_uploadOverlayCancel",
+			"explorerSelectionActions": "nArs4W_explorerSelectionActions",
+			"editorGitDel": "nArs4W_editorGitDel",
+			"editorModeToggle": "nArs4W_editorModeToggle",
+			"splitRow": "nArs4W_splitRow",
+			"editorTreeResize": "nArs4W_editorTreeResize",
+			"browserBar": "nArs4W_browserBar",
+			"mermaidError": "nArs4W_mermaidError",
+			"mermaidModalHint": "nArs4W_mermaidModalHint",
+			"gitError": "nArs4W_gitError",
+			"explorerRowSelected": "nArs4W_explorerRowSelected",
+			"uploadDropZoneText": "nArs4W_uploadDropZoneText",
+			"dropLeft": "nArs4W_dropLeft",
+			"browser": "nArs4W_browser",
+			"explorerHidden": "nArs4W_explorerHidden",
+			"browserBlockedTitle": "nArs4W_browserBlockedTitle",
+			"uploadDropHero": "nArs4W_uploadDropHero",
+			"explorerBroken": "nArs4W_explorerBroken",
+			"explorerSelectionText": "nArs4W_explorerSelectionText",
+			"editorBody": "nArs4W_editorBody",
+			"explorerEmpty": "nArs4W_explorerEmpty",
+			"editorGitBarMod": "nArs4W_editorGitBarMod",
+			"mermaidInfo": "nArs4W_mermaidInfo",
+			"mermaidCopy": "nArs4W_mermaidCopy",
+			"editor": "nArs4W_editor",
+			"editorPdfToolbar": "nArs4W_editorPdfToolbar",
+			"terminalRetry": "nArs4W_terminalRetry",
+			"tocItemText": "nArs4W_tocItemText",
+			"dsh-toc-flash": "nArs4W_dsh-toc-flash",
+			"mermaidModalToolbar": "nArs4W_mermaidModalToolbar",
+			"openWithPin": "nArs4W_openWithPin",
+			"tabClose": "nArs4W_tabClose",
+			"largeFilePager": "nArs4W_largeFilePager",
+			"bottomPanelHidden": "nArs4W_bottomPanelHidden",
+			"openWithPinActive": "nArs4W_openWithPinActive",
+			"editorPdfFrame": "nArs4W_editorPdfFrame",
+			"iconButton": "nArs4W_iconButton",
+			"editorPathInput": "nArs4W_editorPathInput",
+			"largeFileRecords": "nArs4W_largeFileRecords",
+			"editorPlaceholder": "nArs4W_editorPlaceholder",
+			"editorBinaryNotice": "nArs4W_editorBinaryNotice",
+			"uploadDropZonePill": "nArs4W_uploadDropZonePill",
+			"editorDownloadLink": "nArs4W_editorDownloadLink",
+			"explorerSelectionBar": "nArs4W_explorerSelectionBar",
+			"explorerRowRevealed": "nArs4W_explorerRowRevealed",
+			"splitCol": "nArs4W_splitCol",
+			"largeFileNotice": "nArs4W_largeFileNotice"
 		};
 		//#endregion
 		//#region src/client/binary-download.tsx
@@ -4642,7 +4776,7 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region src/client/editor-dirty.ts
 		const dirtyTabs = /* @__PURE__ */ new Map();
-		const listeners = /* @__PURE__ */ new Set();
+		const listeners$1 = /* @__PURE__ */ new Set();
 		/** Monotonic change counter: a stable `useSyncExternalStore` snapshot. */
 		let revision = 0;
 		/** The map key of one tab: ids only identify a tab inside their session. */
@@ -4650,9 +4784,9 @@ window.__ModuleLoader__.load({
 			return `${sessionId}::${tabId}`;
 		}
 		/** Notify every subscriber (the `beforeunload` guard). */
-		function notify$1() {
+		function notify$2() {
 			revision += 1;
-			for (const listener of [...listeners]) listener();
+			for (const listener of [...listeners$1]) listener();
 		}
 		/**
 		* Publish one tab's dirty state: `true` registers the draft (session + path
@@ -4661,7 +4795,7 @@ window.__ModuleLoader__.load({
 		function setEditorDirty(tabId, dirty, sessionId, path) {
 			const key = keyOf(sessionId, tabId);
 			if (!dirty) {
-				if (dirtyTabs.delete(key)) notify$1();
+				if (dirtyTabs.delete(key)) notify$2();
 				return;
 			}
 			const previous = dirtyTabs.get(key);
@@ -4670,7 +4804,7 @@ window.__ModuleLoader__.load({
 				tabId,
 				path
 			});
-			notify$1();
+			notify$2();
 		}
 		/**
 		* Drop a tab's entry (its editor host unmounted). Idempotent.
@@ -4680,7 +4814,7 @@ window.__ModuleLoader__.load({
 		*/
 		function clearEditorDirty(tabId, sessionId) {
 			if (sessionId !== void 0) {
-				if (dirtyTabs.delete(keyOf(sessionId, tabId))) notify$1();
+				if (dirtyTabs.delete(keyOf(sessionId, tabId))) notify$2();
 				return;
 			}
 			let removed = false;
@@ -4689,7 +4823,7 @@ window.__ModuleLoader__.load({
 				dirtyTabs.delete(key);
 				removed = true;
 			}
-			if (removed) notify$1();
+			if (removed) notify$2();
 		}
 		/**
 		* Whether one tab holds an unsaved draft.
@@ -4708,9 +4842,9 @@ window.__ModuleLoader__.load({
 		}
 		/** Subscribe to dirty-set changes; returns the disposer. */
 		function subscribeEditorDirty(listener) {
-			listeners.add(listener);
+			listeners$1.add(listener);
 			return () => {
-				listeners.delete(listener);
+				listeners$1.delete(listener);
 			};
 		}
 		/** The change counter (a stable `useSyncExternalStore` snapshot). */
@@ -5231,38 +5365,38 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:/home/runner/work/DSH-better-sidebar/DSH-better-sidebar/src/client/ui/kit.module.css.mjs
-		const css$9 = ".U62vHa_iconButton{box-sizing:border-box;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:3px;flex:none;justify-content:center;align-items:center;padding:0;display:inline-flex}.U62vHa_iconButtonMd{width:28px;height:28px}.U62vHa_iconButtonSm{border-radius:3px;width:24px;height:24px}.U62vHa_iconButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.U62vHa_iconButton:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.U62vHa_iconButton:disabled{opacity:.4;cursor:default}.U62vHa_iconButtonActive{color:var(--dsw-alias-state-business-primary)}.U62vHa_iconButtonDanger{color:var(--dsw-alias-state-error-primary)}.U62vHa_chip{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);height:22px;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-11);white-space:nowrap;cursor:pointer;background:0 0;border-radius:999px;align-items:center;gap:4px;padding:0 8px;display:inline-flex}.U62vHa_chip:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.U62vHa_chip:disabled{opacity:.4;cursor:default}.U62vHa_chipActive,.U62vHa_chipActive:hover{background:var(--dsw-alias-interactive-bg-hover-accent);border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}.U62vHa_chipLabel{text-overflow:ellipsis;min-width:0;overflow:hidden}.U62vHa_chipCount{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}.U62vHa_chipActive .U62vHa_chipCount{color:var(--dsw-alias-label-secondary)}.U62vHa_sectionHeader{box-sizing:border-box;border-bottom:1px solid var(--dsw-alias-border-l1);width:100%;height:28px;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-secondary);align-items:center;gap:6px;padding:0 12px;display:flex}.U62vHa_sectionLabel{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.U62vHa_sectionCount{font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);flex:none}.U62vHa_sectionAction{flex:none;align-items:center;margin-left:auto;display:inline-flex}.U62vHa_notice{box-sizing:border-box;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);white-space:pre-wrap}.U62vHa_noticeWell{padding:4px 12px 8px}.U62vHa_noticePage{text-align:center;padding:16px}.U62vHa_noticeInline{padding:0;font-size:10px;line-height:1.45}.U62vHa_noticeError{color:var(--dsw-alias-state-error-primary)}.U62vHa_noticeWarn{color:var(--dsw-alias-state-warn-primary)}.U62vHa_noticeHint{color:var(--dsw-alias-label-tertiary)}.U62vHa_confirmDesc{font:var(--dsw-font-s-14);color:var(--dsw-alias-label-primary);margin:0}.U62vHa_confirmDesc[data-danger=true]{color:var(--dsw-alias-label-primary)}.U62vHa_statusBadge{font:var(--dsw-font-xxxs-strong-11);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-secondary);border-radius:2px;flex:none;padding:0 4px}.U62vHa_statusBadge[data-tone=modified]{color:var(--dsw-alias-state-warn-primary)}.U62vHa_statusBadge[data-tone=added],.U62vHa_statusBadge[data-tone=untracked]{color:var(--dsw-alias-state-success-primary)}.U62vHa_statusBadge[data-tone=deleted]{color:var(--dsw-alias-state-error-primary)}.U62vHa_statusBadge[data-tone=renamed]{color:var(--dsw-alias-state-business-primary)}.U62vHa_statusBadge[data-tone=conflict]{color:var(--dsw-alias-state-error-primary)}.U62vHa_statusBadge[data-tone=read]{color:var(--dsw-alias-state-success-primary)}.U62vHa_statusBadge[data-tone=write]{color:var(--dsw-alias-state-business-primary)}.U62vHa_statusBadge[data-tone=edit]{color:var(--dsw-alias-state-warn-primary)}.U62vHa_statusBadge[data-tone=neutral]{color:var(--dsw-alias-label-tertiary)}";
-		const tagId$9 = "dsh-external/dsh-better-sidebar/kit.module.css";
-		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$9) + "]") === null) {
+		const css$11 = ".U62vHa_iconButton{box-sizing:border-box;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:3px;flex:none;justify-content:center;align-items:center;padding:0;display:inline-flex}.U62vHa_iconButtonMd{width:28px;height:28px}.U62vHa_iconButtonSm{border-radius:3px;width:24px;height:24px}.U62vHa_iconButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.U62vHa_iconButton:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.U62vHa_iconButton:disabled{opacity:.4;cursor:default}.U62vHa_iconButtonActive{color:var(--dsw-alias-state-business-primary)}.U62vHa_iconButtonDanger{color:var(--dsw-alias-state-error-primary)}.U62vHa_chip{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);height:22px;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-11);white-space:nowrap;cursor:pointer;background:0 0;border-radius:999px;align-items:center;gap:4px;padding:0 8px;display:inline-flex}.U62vHa_chip:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.U62vHa_chip:disabled{opacity:.4;cursor:default}.U62vHa_chipActive,.U62vHa_chipActive:hover{background:var(--dsw-alias-interactive-bg-hover-accent);border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}.U62vHa_chipLabel{text-overflow:ellipsis;min-width:0;overflow:hidden}.U62vHa_chipCount{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}.U62vHa_chipActive .U62vHa_chipCount{color:var(--dsw-alias-label-secondary)}.U62vHa_sectionHeader{box-sizing:border-box;border-bottom:1px solid var(--dsw-alias-border-l1);width:100%;height:28px;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-secondary);align-items:center;gap:6px;padding:0 12px;display:flex}.U62vHa_sectionLabel{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.U62vHa_sectionCount{font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);flex:none}.U62vHa_sectionAction{flex:none;align-items:center;margin-left:auto;display:inline-flex}.U62vHa_notice{box-sizing:border-box;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);white-space:pre-wrap}.U62vHa_noticeWell{padding:4px 12px 8px}.U62vHa_noticePage{text-align:center;padding:16px}.U62vHa_noticeInline{padding:0;font-size:10px;line-height:1.45}.U62vHa_noticeError{color:var(--dsw-alias-state-error-primary)}.U62vHa_noticeWarn{color:var(--dsw-alias-state-warn-primary)}.U62vHa_noticeHint{color:var(--dsw-alias-label-tertiary)}.U62vHa_confirmDesc{font:var(--dsw-font-s-14);color:var(--dsw-alias-label-primary);margin:0}.U62vHa_confirmDesc[data-danger=true]{color:var(--dsw-alias-label-primary)}.U62vHa_statusBadge{font:var(--dsw-font-xxxs-strong-11);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-secondary);border-radius:2px;flex:none;padding:0 4px}.U62vHa_statusBadge[data-tone=modified]{color:var(--dsw-alias-state-warn-primary)}.U62vHa_statusBadge[data-tone=added],.U62vHa_statusBadge[data-tone=untracked]{color:var(--dsw-alias-state-success-primary)}.U62vHa_statusBadge[data-tone=deleted]{color:var(--dsw-alias-state-error-primary)}.U62vHa_statusBadge[data-tone=renamed]{color:var(--dsw-alias-state-business-primary)}.U62vHa_statusBadge[data-tone=conflict]{color:var(--dsw-alias-state-error-primary)}.U62vHa_statusBadge[data-tone=read]{color:var(--dsw-alias-state-success-primary)}.U62vHa_statusBadge[data-tone=write]{color:var(--dsw-alias-state-business-primary)}.U62vHa_statusBadge[data-tone=edit]{color:var(--dsw-alias-state-warn-primary)}.U62vHa_statusBadge[data-tone=neutral]{color:var(--dsw-alias-label-tertiary)}";
+		const tagId$11 = "dsh-external/dsh-better-sidebar/kit.module.css";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$11) + "]") === null) {
 			const tag = document.createElement("style");
 			tag.dataset.plugin = "dsh-external/dsh-better-sidebar";
-			tag.dataset.pluginCss = tagId$9;
-			tag.textContent = css$9;
+			tag.dataset.pluginCss = tagId$11;
+			tag.textContent = css$11;
 			document.head.appendChild(tag);
 		}
 		var kit_module_css_default = {
-			"sectionLabel": "U62vHa_sectionLabel",
-			"iconButtonActive": "U62vHa_iconButtonActive",
-			"iconButtonDanger": "U62vHa_iconButtonDanger",
-			"sectionAction": "U62vHa_sectionAction",
-			"noticeWarn": "U62vHa_noticeWarn",
-			"noticeHint": "U62vHa_noticeHint",
-			"chip": "U62vHa_chip",
-			"noticePage": "U62vHa_noticePage",
-			"chipActive": "U62vHa_chipActive",
-			"sectionCount": "U62vHa_sectionCount",
-			"notice": "U62vHa_notice",
-			"iconButton": "U62vHa_iconButton",
-			"iconButtonMd": "U62vHa_iconButtonMd",
-			"chipLabel": "U62vHa_chipLabel",
-			"noticeError": "U62vHa_noticeError",
-			"confirmDesc": "U62vHa_confirmDesc",
 			"statusBadge": "U62vHa_statusBadge",
-			"iconButtonSm": "U62vHa_iconButtonSm",
-			"noticeInline": "U62vHa_noticeInline",
+			"chipActive": "U62vHa_chipActive",
+			"sectionAction": "U62vHa_sectionAction",
+			"chip": "U62vHa_chip",
+			"iconButtonActive": "U62vHa_iconButtonActive",
+			"chipCount": "U62vHa_chipCount",
 			"sectionHeader": "U62vHa_sectionHeader",
 			"noticeWell": "U62vHa_noticeWell",
-			"chipCount": "U62vHa_chipCount"
+			"noticePage": "U62vHa_noticePage",
+			"iconButtonSm": "U62vHa_iconButtonSm",
+			"noticeWarn": "U62vHa_noticeWarn",
+			"confirmDesc": "U62vHa_confirmDesc",
+			"sectionCount": "U62vHa_sectionCount",
+			"chipLabel": "U62vHa_chipLabel",
+			"iconButtonDanger": "U62vHa_iconButtonDanger",
+			"noticeInline": "U62vHa_noticeInline",
+			"iconButtonMd": "U62vHa_iconButtonMd",
+			"sectionLabel": "U62vHa_sectionLabel",
+			"iconButton": "U62vHa_iconButton",
+			"notice": "U62vHa_notice",
+			"noticeError": "U62vHa_noticeError",
+			"noticeHint": "U62vHa_noticeHint"
 		};
 		//#endregion
 		//#region src/client/ui/kit.tsx
@@ -5326,30 +5460,6 @@ window.__ModuleLoader__.load({
 					className: kit_module_css_default.chipCount,
 					children: props.count
 				})]
-			});
-		}
-		/**
-		* A 28px section band: a label (with an optional count) that may carry ONE
-		* trailing action. The hairline under it is the page's only section divider.
-		*/
-		function SectionHeader(props) {
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: clsx(kit_module_css_default.sectionHeader, props.className),
-				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: kit_module_css_default.sectionLabel,
-						children: props.label
-					}),
-					props.count !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: kit_module_css_default.sectionCount,
-						children: props.count
-					}),
-					props.children,
-					props.action !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: kit_module_css_default.sectionAction,
-						children: props.action
-					})
-				]
 			});
 		}
 		/**
@@ -5449,6 +5559,24 @@ window.__ModuleLoader__.load({
 		* Bumping the version on every tick re-rendered every consumer — the file
 		* tree's rows included — once per cadence for no reason, which is what the
 		* snapshot identity check above exists to prevent.
+		*
+		* Retention: remembering a key is not a lease on memory. The last consumer of
+		* a slot going away (unmount, a parked tab, a scope change) DROPS the slot —
+		* snapshot, index and listeners and all — so a long session that walks through
+		* files, worktrees and cwds cannot grow the map for the page's lifetime. Since
+		* v0.25 every visited native tab body stays mounted, so there is no host-side
+		* teardown that would have bounded this for us.
+		*
+		* Dropping is invisible to a consumer that still carries the slot object: its
+		* next render re-mints the key (`slotOf`) and `retain` re-registers that same
+		* object, so the next retain performs a FRESH fetch rather than serving a
+		* stale answer (and never mints a second slot for one key — two slots would
+		* mean two pollers). A slot with a fetch in flight is never dropped mid-flight
+		* (the answer has to land somewhere); it goes when that fetch settles. As a
+		* second bound the registry is capped at {@link SLOT_CAP} keys, because a
+		* consumer that mounts while invisible mints a slot it never retains and never
+		* releases — eviction only ever takes a slot with no retained consumer and no
+		* fetch in flight.
 		*/
 		/** The porcelain letter → tone rule (both sides share one vocabulary). */
 		function toneOfLetter(letter) {
@@ -5498,11 +5626,8 @@ window.__ModuleLoader__.load({
 			return `${root.replace(/[\\/]+$/, "")}/${rel.replace(/^[\\/]+/, "")}`;
 		}
 		/**
-		* Whether two entries carry the same line counts. A numstat-only change — an
-		* edit that adds lines without touching either porcelain letter, e.g. more
-		* lines appended to an already-modified file — must still publish a NEW
-		* snapshot: keeping the previous identity would freeze the row's numbers at
-		* their first reading for as long as the porcelain codes stay put.
+		* Whether two sides carry the same line counts (both absent counts as equal —
+		* the entry simply has no reading on that side).
 		*/
 		function sameCounts(left, right) {
 			if (left === right) return true;
@@ -5514,15 +5639,21 @@ window.__ModuleLoader__.load({
 		* Whether two status snapshots carry the same information. Compared field by
 		* field (never by serializing the whole object): the entries are the payload
 		* and their order is stable, so a length + pairwise compare is enough.
+		*
+		* Both sides' counts are compared, each on its own: a numstat-only change — an
+		* edit that adds lines without touching either porcelain letter, e.g. more
+		* lines appended to an already-modified file — must still publish a NEW
+		* snapshot, because keeping the previous identity would freeze the row's
+		* numbers at their first reading for as long as the porcelain codes stay put.
 		*/
 		function sameStatus(a, b) {
 			if (a === b) return true;
-			if (a.isRepo !== b.isRepo || a.branch !== b.branch || a.root !== b.root || a.truncated !== b.truncated || a.entries.length !== b.entries.length) return false;
+			if (a.isRepo !== b.isRepo || a.branch !== b.branch || a.root !== b.root || a.upstream !== b.upstream || a.ahead !== b.ahead || a.behind !== b.behind || a.detached !== b.detached || a.operation !== b.operation || a.truncated !== b.truncated || a.entries.length !== b.entries.length) return false;
 			if (a.repositories?.length !== b.repositories?.length) return false;
 			if (a.repositories !== void 0 && b.repositories !== void 0 && a.repositories.some((root, index) => root !== b.repositories[index])) return false;
 			return a.entries.every((entry, index) => {
 				const other = b.entries[index];
-				return entry.path === other.path && entry.xy === other.xy && sameCounts(entry.counts, other.counts);
+				return entry.path === other.path && entry.xy === other.xy && sameCounts(entry.staged, other.staged) && sameCounts(entry.unstaged, other.unstaged);
 			});
 		}
 		/** Build the lookup index for one snapshot (once per snapshot, O(rows × depth)). */
@@ -5576,17 +5707,46 @@ window.__ModuleLoader__.load({
 			6,
 			null
 		];
-		const slots = /* @__PURE__ */ new Map();
+		const slots$1 = /* @__PURE__ */ new Map();
+		/**
+		* The registry's hard ceiling. The primary rule is release-driven (see
+		* {@link release}); this cap is the backstop for keys nobody ever released —
+		* a consumer that mounts while invisible mints its slot without retaining it,
+		* and only the cap bounds that path. Eviction never touches a slot a consumer
+		* holds or one with a fetch in flight, so the cap is soft while many slots are
+		* genuinely live.
+		*/
+		const SLOT_CAP = 256;
+		/** Whether nothing depends on this slot: no consumer holds the answer and no
+		*  fetch is in flight. */
+		function evictable(slot) {
+			return slot.visible === 0 && !slot.running;
+		}
+		/** Drop one slot from the registry. Identity-checked, so a key that was
+		*  re-minted meanwhile keeps its live entry. */
+		function forget(slot) {
+			if (slots$1.get(slot.key) === slot) slots$1.delete(slot.key);
+		}
+		/** Make room for one key about to be minted: evict the oldest slots nobody
+		*  holds while the registry is at {@link SLOT_CAP}. Map order is mint order. */
+		function trimSlots() {
+			if (slots$1.size < SLOT_CAP) return;
+			for (const slot of slots$1.values()) {
+				if (slots$1.size < SLOT_CAP) break;
+				if (evictable(slot)) forget(slot);
+			}
+		}
 		/** The automatic cadence of one slot; `null` = no timer (tier 3). */
 		function intervalOf(slot) {
 			const factor = TIER_FACTORS[slot.tier] ?? null;
 			return factor === null ? null : slot.pollMs * factor;
 		}
-		function slotOf(scope, worktree) {
+		function slotOf$1(scope, worktree) {
 			const { sessionId, cwd, repoRoot } = scope;
 			const key = `${sessionId}\u0000${cwd ?? ""}\u0000${repoRoot ?? ""}\u0000${worktree ?? ""}`;
-			const existing = slots.get(key);
+			const existing = slots$1.get(key);
 			if (existing !== void 0) return existing;
+			trimSlots();
 			const slot = {
 				key,
 				sessionId,
@@ -5609,10 +5769,10 @@ window.__ModuleLoader__.load({
 				index: null,
 				indexSource: null
 			};
-			slots.set(key, slot);
+			slots$1.set(key, slot);
 			return slot;
 		}
-		function notify(slot) {
+		function notify$1(slot) {
 			slot.version += 1;
 			for (const listener of slot.listeners) listener();
 		}
@@ -5629,7 +5789,7 @@ window.__ModuleLoader__.load({
 			reschedule(slot);
 		}
 		/** Fetch one snapshot; a concurrent call just marks the slot dirty. */
-		function fetchSlot(slot) {
+		function fetchSlot$1(slot) {
 			if (slot.running) {
 				slot.pending = true;
 				return;
@@ -5638,7 +5798,7 @@ window.__ModuleLoader__.load({
 			const generation = ++slot.generation;
 			const wasLoading = slot.loading;
 			slot.loading = slot.snapshot === null;
-			if (slot.loading !== wasLoading) notify(slot);
+			if (slot.loading !== wasLoading) notify$1(slot);
 			let changed = false;
 			const startedAt = Date.now();
 			const scope = {
@@ -5669,23 +5829,24 @@ window.__ModuleLoader__.load({
 				slot.running = false;
 				const stillLoading = slot.loading;
 				slot.loading = false;
-				if (changed || stillLoading) notify(slot);
+				if (changed || stillLoading) notify$1(slot);
 				noteFetchDuration(slot, Date.now() - startedAt);
 				if (slot.pending) {
 					slot.pending = false;
-					fetchSlot(slot);
+					fetchSlot$1(slot);
 				}
+				if (evictable(slot)) forget(slot);
 			});
 		}
-		function startTimer(slot) {
+		function startTimer$2(slot) {
 			if (slot.timer !== void 0) return;
 			const interval = intervalOf(slot);
 			if (interval === null) return;
 			slot.timer = window.setInterval(() => {
-				fetchSlot(slot);
+				fetchSlot$1(slot);
 			}, interval);
 		}
-		function stopTimer(slot) {
+		function stopTimer$2(slot) {
 			if (slot.timer === void 0) return;
 			window.clearInterval(slot.timer);
 			slot.timer = void 0;
@@ -5697,28 +5858,30 @@ window.__ModuleLoader__.load({
 		*/
 		function reschedule(slot) {
 			if (slot.pollers === 0) return;
-			stopTimer(slot);
-			startTimer(slot);
+			stopTimer$2(slot);
+			startTimer$2(slot);
 		}
-		function retain(slot, poll) {
+		function retain$1(slot, poll) {
+			if (!slots$1.has(slot.key)) slots$1.set(slot.key, slot);
 			slot.visible += 1;
 			if (poll) slot.pollers += 1;
-			if (slot.visible === 1 && slot.snapshot === null) fetchSlot(slot);
-			if (poll && slot.pollers === 1) startTimer(slot);
+			if (slot.visible === 1 && slot.snapshot === null) fetchSlot$1(slot);
+			if (poll && slot.pollers === 1) startTimer$2(slot);
 		}
-		function release(slot, poll) {
+		function release$1(slot, poll) {
 			slot.visible = Math.max(0, slot.visible - 1);
 			if (poll) {
 				slot.pollers = Math.max(0, slot.pollers - 1);
-				if (slot.pollers === 0) stopTimer(slot);
+				if (slot.pollers === 0) stopTimer$2(slot);
 			}
 			if (slot.visible === 0) {
-				stopTimer(slot);
+				stopTimer$2(slot);
 				slot.pollers = 0;
 				slot.snapshot = null;
 				slot.index = null;
 				slot.indexSource = null;
-				notify(slot);
+				notify$1(slot);
+				if (!slot.running) forget(slot);
 			}
 		}
 		/** The index for the current snapshot, rebuilt only when the snapshot changed. */
@@ -5739,7 +5902,7 @@ window.__ModuleLoader__.load({
 		* page never disagree.
 		*/
 		function invalidateGitStatus(sessionId) {
-			for (const slot of slots.values()) if (slot.sessionId === sessionId) fetchSlot(slot);
+			for (const slot of slots$1.values()) if (slot.sessionId === sessionId) fetchSlot$1(slot);
 		}
 		/**
 		* Subscribe to the shared git status of one session (optionally of one linked
@@ -5751,7 +5914,7 @@ window.__ModuleLoader__.load({
 		*/
 		function useGitStatus(scope, options = {}) {
 			const { worktree, visible = true, pollMs = POLL_BASE_MS, poll = true } = options;
-			const slot = slotOf(scope, worktree);
+			const slot = slotOf$1(scope, worktree);
 			const subscribe = (0, react.useCallback)((listener) => {
 				slot.listeners.add(listener);
 				return () => {
@@ -5762,9 +5925,9 @@ window.__ModuleLoader__.load({
 			(0, react.useEffect)(() => {
 				if (poll) slot.pollMs = pollMs;
 				if (!visible) return void 0;
-				retain(slot, poll);
+				retain$1(slot, poll);
 				return () => {
-					release(slot, poll);
+					release$1(slot, poll);
 				};
 			}, [
 				slot,
@@ -5773,7 +5936,7 @@ window.__ModuleLoader__.load({
 				poll
 			]);
 			const refresh = (0, react.useCallback)(() => {
-				fetchSlot(slot);
+				fetchSlot$1(slot);
 			}, [slot]);
 			const statusOf = (0, react.useCallback)((absolutePath) => indexOf(slot).files.get(normPath(absolutePath)), [slot]);
 			const dirHasChanges = (0, react.useCallback)((absoluteDir) => indexOf(slot).dirs.has(normPath(absoluteDir)), [slot]);
@@ -5935,21 +6098,31 @@ window.__ModuleLoader__.load({
 		* tree per-directory watching; this plugin owns its tree (it took the `files`
 		* kind over), so it carries its own.
 		*
-		* One socket per session, open for as long as the tree is mounted. The client
-		* announces the folders it has expanded and the host watches exactly those;
-		* every notice names a directory whose listing is stale, and the tree drops
-		* that one cached level and re-lists it. Folders the reader collapsed are
-		* un-watched, so a long session does not accumulate handles.
+		* One socket per session, open for as long as the tree is mounted AND visible.
+		* The client announces the folders it has expanded and the host watches
+		* exactly those; every notice names a directory whose listing is stale, and
+		* the tree drops that one cached level and re-lists it. Folders the reader
+		* collapsed are un-watched, so a long session does not accumulate handles.
+		*
+		* The host keeps every visited tab body mounted, so an un-gated watcher would
+		* keep one socket (and its own set of up to 64 `fs.watch` handles on the host)
+		* open per tree the reader ever opened, re-listing parked trees for nobody.
+		* A parked tree (`visible: false`) therefore closes its socket outright — the
+		* host releases that connection's handles when it goes — rather than sending
+		* `unwatch` per path, and a tree with nothing to watch (no session, no root)
+		* never opens one. Coming back reconnects and force-refreshes every watched
+		* directory once, because whatever changed while it was parked was noticed by
+		* nobody.
 		*/
 		/** How long to wait before re-opening a dropped socket; failures back off to the cap. */
 		const RETRY_BASE_MS$1 = 1e3;
 		const RETRY_MAX_MS$1 = 15e3;
 		/**
 		* Keep the file tree's expanded folders watched for the component's lifetime.
-		* @param options - session, root, expanded directories, and the staleness callback.
+		* @param options - session, root, expanded directories, visibility, and the staleness callback.
 		*/
 		function useDirectoryWatch(options) {
-			const { sessionId, root, dirs, onStale } = options;
+			const { sessionId, root, dirs, visible = true, onStale } = options;
 			const dirsKey = dirs.join("\0");
 			const wanted = (0, react.useMemo)(() => {
 				const listed = dirsKey === "" ? [] : dirsKey.split("\0");
@@ -5962,8 +6135,14 @@ window.__ModuleLoader__.load({
 			/** Set by the socket effect; reconciles the host's watch set with the tree's. */
 			const reconcileRef = (0, react.useRef)(() => {});
 			const wantedKey = (0, react.useMemo)(() => wanted.join("\0"), [wanted]);
+			/**
+			* Whether a socket should exist at all: a parked tree and a tree with an
+			* empty watch set (no session, or no root and nothing expanded) hold none.
+			*/
+			const armed = visible && sessionId !== void 0 && wanted.length > 0;
 			(0, react.useEffect)(() => {
-				if (sessionId === void 0) return;
+				if (!armed || sessionId === void 0) return;
+				const session = sessionId;
 				let socket = null;
 				let retry;
 				let closed = false;
@@ -5994,7 +6173,7 @@ window.__ModuleLoader__.load({
 				const connect = () => {
 					if (closed) return;
 					const url = hostWebSocketUrl("sidebar/ws/fs-watch");
-					url.search = new URLSearchParams({ sessionId }).toString();
+					url.search = new URLSearchParams({ sessionId: session }).toString();
 					socket = new WebSocket(url.toString());
 					socket.onopen = () => {
 						failures = 0;
@@ -6002,6 +6181,7 @@ window.__ModuleLoader__.load({
 						reconcile();
 					};
 					socket.onmessage = (event) => {
+						if (closed) return;
 						if (typeof event.data !== "string") return;
 						let frame;
 						try {
@@ -6029,10 +6209,23 @@ window.__ModuleLoader__.load({
 					if (retry !== void 0) window.clearTimeout(retry);
 					socket?.close();
 				};
-			}, [sessionId]);
+			}, [sessionId, armed]);
 			(0, react.useEffect)(() => {
 				reconcileRef.current();
 			}, [wantedKey]);
+			/**
+			* Re-armed after being parked: the socket is brand new (the old one's
+			* notices are gone with it), so nothing the host saw while the tree was
+			* hidden was delivered. Re-list every watched directory once instead of
+			* showing a listing that may be minutes old.
+			*/
+			const wasArmedRef = (0, react.useRef)(armed);
+			(0, react.useEffect)(() => {
+				const previous = wasArmedRef.current;
+				wasArmedRef.current = armed;
+				if (!armed || previous) return;
+				for (const dir of wantedRef.current) staleRef.current(dir);
+			}, [armed]);
 		}
 		//#endregion
 		//#region src/client/use-polling.ts
@@ -6181,6 +6374,13 @@ window.__ModuleLoader__.load({
 		}
 		/** How long the row's "copied" label stays after a successful write. */
 		const COPIED_MS = 1200;
+		/**
+		* How many per-path open-with listings one tree keeps. The host answers from
+		* the machine's own application registry, so a handful covers any realistic
+		* menu session; the cap is what keeps the map from growing for the life of the
+		* page (the host keeps every visited tab body mounted).
+		*/
+		const APPS_CACHE_MAX = 32;
 		/** One changed row's tooltip word (the badge's status vocabulary). */
 		function gitToneLabel(tone) {
 			switch (tone) {
@@ -6885,6 +7085,7 @@ window.__ModuleLoader__.load({
 				sessionId,
 				root: cwd,
 				dirs: expanded,
+				visible: visible !== false,
 				onStale: retryDir
 			});
 			(0, react.useEffect)(() => {
@@ -7260,7 +7461,9 @@ window.__ModuleLoader__.load({
 			* the machine + the path, so reopening the same row's menu is instant: no
 			* request, no disabled "Loading…" frame. A newly installed application shows
 			* up on the next tree mount — the alternative (re-probing per open) is the
-			* churn the menu was reported for.
+			* churn the menu was reported for. The cache is bounded (LRU): the host
+			* keeps every visited tab body mounted, so an unbounded per-tree map of
+			* paths would live for the life of the page.
 			*/
 			const appsCacheRef = (0, react.useRef)(/* @__PURE__ */ new Map());
 			(0, react.useEffect)(() => {
@@ -7269,6 +7472,8 @@ window.__ModuleLoader__.load({
 				const key = `${isDir ? "d" : "f"}\u0000${path}`;
 				const cached = appsCacheRef.current.get(key);
 				if (cached !== void 0) {
+					appsCacheRef.current.delete(key);
+					appsCacheRef.current.set(key, cached);
 					setApps({
 						path,
 						entries: cached
@@ -7278,7 +7483,13 @@ window.__ModuleLoader__.load({
 				let cancelled = false;
 				(isDir ? openInApp.directoryApps() : openInApp.fileApps(path)).then((entries) => {
 					if (cancelled) return;
-					if (entries !== null) appsCacheRef.current.set(key, entries);
+					if (entries !== null) {
+						appsCacheRef.current.set(key, entries);
+						if (appsCacheRef.current.size > APPS_CACHE_MAX) for (const oldest of appsCacheRef.current.keys()) {
+							appsCacheRef.current.delete(oldest);
+							break;
+						}
+					}
 					setApps({
 						path,
 						entries
@@ -8419,6 +8630,11 @@ window.__ModuleLoader__.load({
 				return {};
 			}
 		}
+		/** PTC sub-call arguments arrive already parsed (an object, never a string). */
+		function ptcArgs(value) {
+			if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
+			return value;
+		}
 		/** Extract the path field common to every file tool's arguments. */
 		function pathOf(args) {
 			for (const key of [
@@ -8476,88 +8692,82 @@ window.__ModuleLoader__.load({
 		* Fold a session event log into the file operations it contains, newest
 		* first. A `tool/call` seeds a running op (payload from the model's
 		* arguments); its `tool/result` settles it (read content, error text).
-		* Calls dispatched through a host tool such as run_code appear as their own
-		* `tool/call` rows in the log, so nested file calls fold in naturally.
+		*
+		* A `<code>` block's file tools never surface as `tool/call`: they arrive as
+		* a PTC pair — `tool/ptc-dispatch-start` (arguments as a parsed OBJECT, keyed
+		* by `subCallId`) and `tool/ptc-dispatch` (the same payload plus the result).
+		* The dispatch row is self-contained, so a missing start still yields a row,
+		* and the pair inherits the start's time to order as ONE operation.
 		* @param events - the session's append-only event log (oldest → newest).
+		* @param cwd - the session working directory used to resolve relative paths.
 		* @returns the ordered operation list.
 		*/
-		function extractFileOps(events) {
+		function extractFileOps(events, cwd) {
 			const byCall = /* @__PURE__ */ new Map();
-			for (const event of events) if (event.type === "tool/call") {
-				const data = event.data;
-				if (typeof data.name !== "string" || typeof data.callId !== "string") continue;
-				const kind = kindOf(data.name);
-				if (kind === void 0) continue;
-				const args = parseArgs(typeof data.arguments === "string" ? data.arguments : "");
-				const path = pathOf(args);
-				if (path === void 0) continue;
-				const base = {
-					callId: data.callId,
-					kind,
-					path,
-					time: event.time,
-					running: true,
-					isError: false
-				};
-				if (kind === "edit") {
-					const oldString = args.old_string;
-					const newString = args.new_string;
-					byCall.set(data.callId, typeof oldString === "string" && typeof newString === "string" ? {
-						...base,
-						edit: {
-							oldString,
-							newString
-						}
-					} : base);
-					continue;
+			for (const event of events) {
+				if (event.type === "tool/call" || event.type === "tool/ptc-dispatch-start" || event.type === "tool/ptc-dispatch") {
+					const data = event.data;
+					const isPtc = event.type !== "tool/call";
+					const callId = isPtc ? data.subCallId : data.callId;
+					if (typeof data.name !== "string" || typeof callId !== "string") continue;
+					const kind = kindOf(data.name);
+					if (kind === void 0) continue;
+					const args = isPtc ? ptcArgs(data.arguments) : parseArgs(typeof data.arguments === "string" ? data.arguments : "");
+					const rawPath = pathOf(args);
+					if (rawPath === void 0) continue;
+					const base = {
+						callId,
+						kind,
+						path: resolveSidebarPath(cwd, rawPath),
+						time: event.type === "tool/ptc-dispatch" ? byCall.get(callId)?.time ?? event.time : event.time,
+						running: true,
+						isError: false
+					};
+					let op = base;
+					if (kind === "edit") {
+						const oldString = args.old_string;
+						const newString = args.new_string;
+						op = typeof oldString === "string" && typeof newString === "string" ? {
+							...base,
+							edit: {
+								oldString,
+								newString
+							}
+						} : base;
+					} else if (kind === "write") {
+						const content = args.content;
+						op = typeof content === "string" && content.length > 0 ? {
+							...base,
+							content
+						} : base;
+					}
+					byCall.set(callId, op);
 				}
-				if (kind === "write") {
-					const content = args.content;
-					byCall.set(data.callId, typeof content === "string" && content.length > 0 ? {
-						...base,
-						content
-					} : base);
-					continue;
+				if (event.type === "tool/result" || event.type === "tool/ptc-dispatch") {
+					const message = event.type === "tool/result" ? event.data.message : event.data;
+					if (message === void 0) continue;
+					const callId = event.type === "tool/result" ? message.source?.callId : event.data.subCallId;
+					if (typeof callId !== "string") continue;
+					const op = byCall.get(callId);
+					if (op === void 0) continue;
+					const text = resultText(message);
+					const isError = event.type === "tool/ptc-dispatch" ? event.data.isError === true : resultIsError(message);
+					const patch = {
+						running: false,
+						isError
+					};
+					if (text !== void 0 && text.length > 0) {
+						if (isError) patch.errorText = text;
+						else if (op.kind === "read") patch.read = text;
+						else if (op.kind === "write" && op.content === void 0) patch.content = text;
+					}
+					byCall.set(callId, {
+						...op,
+						...patch
+					});
 				}
-				byCall.set(data.callId, base);
-			} else if (event.type === "tool/result") {
-				const message = event.data.message;
-				if (message === void 0) continue;
-				const callId = message.source?.callId;
-				if (typeof callId !== "string") continue;
-				const op = byCall.get(callId);
-				if (op === void 0) continue;
-				const text = resultText(message);
-				const isError = resultIsError(message);
-				const patch = {
-					running: false,
-					isError
-				};
-				if (text !== void 0 && text.length > 0) {
-					if (isError) patch.errorText = text;
-					else if (op.kind === "read") patch.read = text;
-					else if (op.kind === "write" && op.content === void 0) patch.content = text;
-				}
-				byCall.set(callId, {
-					...op,
-					...patch
-				});
 			}
 			return [...byCall.values()].sort((a, b) => b.time - a.time);
-		}
-		/**
-		* Group operations by path, newest op first per file, files ordered by their
-		* most recent operation.
-		*/
-		function groupByFile(ops) {
-			const groups = /* @__PURE__ */ new Map();
-			for (const op of ops) {
-				const list = groups.get(op.path) ?? [];
-				list.push(op);
-				groups.set(op.path, list);
-			}
-			const ordered = [...groups.entries()].sort((a, b) => b[1][0].time - a[1][0].time);
-			return new Map(ordered);
 		}
 		/**
 		* The last content known for a path before the given operation, synthesized
@@ -8626,11 +8836,13 @@ window.__ModuleLoader__.load({
 		* The session's live FILE-OPERATION stream — the signal the editor's
 		* auto-refresh rides (#855).
 		*
-		* The model's file tools leave their calls in the session event log, and the
-		* plugin's own `changes.ops` route ships that log's `tool/call` +
-		* `tool/result` rows as a `seq > afterSeq` delta (see `src/index.ts`). This
-		* module folds those deltas into "which file did the model just write or
-		* edit", which is the whole question an open preview has to answer.
+		* The model's file tools leave their calls in the session event log — as a
+		* plain `tool/call` + `tool/result` pair, or as a PTC pair
+		* (`tool/ptc-dispatch-start` / `tool/ptc-dispatch`) when the call ran inside
+		* `<code>` — and the plugin's own `changes.ops` route ships those rows as a
+		* `seq > afterSeq` delta (see `src/index.ts`). This module folds those deltas
+		* into "which file did the model just write or edit", which is the whole
+		* question an open preview has to answer.
 		*
 		* Design constraints it exists to honour:
 		*
@@ -8645,9 +8857,11 @@ window.__ModuleLoader__.load({
 		*   a per-tab poll would multiply the same request by the number of mounted
 		*   editors. Requests ride `use-polling.ts` (the sidebar's one polling loop)
 		*   on the changes tab's own 2.5s cadence, and stop entirely while no editor
-		*   of the session is on screen. The plugin's OWN saves go through
-		*   `/sidebar/file` and leave no session event, so a reload can never
-		*   re-trigger itself.
+		*   of the session is on screen. A primed stream asks the host to WAIT for the
+		*   next tool event (25s ceiling) instead of re-reading an unchanged window,
+		*   so an idle session costs one parked request rather than a full replay. The
+		*   plugin's OWN saves go through `/sidebar/file` and leave no session event,
+		*   so a reload can never re-trigger itself.
 		* - **Settled successes only.** A `write`/`edit` call fires once its result
 		*   landed without an error, so a half-written file never reaches a preview
 		*   and a failed call never triggers a pointless reload.
@@ -8661,7 +8875,12 @@ window.__ModuleLoader__.load({
 		* The stream record outlives its members (only the poller stops): a tab that
 		* becomes visible again re-joins, the leader resumes from the persisted `seq`
 		* cursor, and the missed delta is folded then — so a file the model rewrote
-		* while the tab was parked is still seen as touched.
+		* while the tab was parked is still seen as touched. What it does NOT do is
+		* live for the page: the record map is bounded and least-recently-joined
+		* first (see {@link STREAM_CAP}). A session evicted after that many newer ones
+		* re-joins as a FRESH stream, which re-baselines exactly like a page reload
+		* (see {@link pullStream}) — the only state a returner can lose, and only
+		* after the bound was actually reached.
 		*/
 		/** The delta cadence: the changes tab's session-lens poll of the same route. */
 		const FILE_OPS_INTERVAL_MS = 2500;
@@ -8681,6 +8900,16 @@ window.__ModuleLoader__.load({
 		const IDLE_EVENT_WINDOW = 32;
 		/** Touched paths remembered per session (oldest insertion evicted past this). */
 		const TOUCH_WINDOW = 256;
+		/**
+		* How many session records the store holds. The record already shrinks to what
+		* a re-join needs once its last member goes ({@link IDLE_EVENT_WINDOW} events
+		* plus the published touches), but the MAP itself was "alive for the page":
+		* every session an editor tab had ever watched kept its cursor, baseline and
+		* touch table forever. A session still inside this window resumes from its
+		* cursor and folds the delta it missed; the oldest record that nobody is
+		* watching is what a new mint evicts.
+		*/
+		const STREAM_CAP = 32;
 		/** The state every session starts from (a stable identity: the store contract). */
 		const EMPTY_STATE = {
 			revision: 0,
@@ -8711,29 +8940,39 @@ window.__ModuleLoader__.load({
 			const key = `${unified.startsWith("/") ? "/" : ""}${segments.join("/")}`;
 			return windows ? key.toLowerCase() : key;
 		}
-		/** Every session's stream, alive for the page (only its poller stops). */
+		/** Every session's stream, bounded by {@link STREAM_CAP} (see `streamOf`). */
 		const streams = /* @__PURE__ */ new Map();
 		/** The stream record of one session, created on first use. */
 		function streamOf(sessionId) {
-			let stream = streams.get(sessionId);
-			if (stream === void 0) {
-				stream = {
-					state: EMPTY_STATE,
-					listeners: /* @__PURE__ */ new Set(),
-					members: /* @__PURE__ */ new Set(),
-					leader: void 0,
-					seq: 0,
-					primed: false,
-					events: [],
-					published: /* @__PURE__ */ new Set(),
-					cwd: void 0
-				};
-				streams.set(sessionId, stream);
+			const existing = streams.get(sessionId);
+			if (existing !== void 0) return existing;
+			if (streams.size >= STREAM_CAP) for (const [key, candidate] of streams) {
+				if (candidate.members.size > 0) continue;
+				streams.delete(key);
+				if (streams.size < STREAM_CAP) break;
 			}
+			const stream = {
+				state: EMPTY_STATE,
+				listeners: /* @__PURE__ */ new Set(),
+				members: /* @__PURE__ */ new Set(),
+				leader: void 0,
+				seq: -1,
+				primed: false,
+				events: [],
+				published: /* @__PURE__ */ new Set(),
+				cwd: void 0
+			};
+			streams.set(sessionId, stream);
 			return stream;
 		}
+		/** Move one session's record to the back of the eviction order (LRU). */
+		function touchStream(sessionId, stream) {
+			if (streams.get(sessionId) !== stream) return;
+			streams.delete(sessionId);
+			streams.set(sessionId, stream);
+		}
 		/** Publish one delta's settled write/edit ops to every member of the stream. */
-		function publish(stream, ops) {
+		function publish$1(stream, ops) {
 			const revision = stream.state.revision + 1;
 			const touched = new Map(stream.state.touched);
 			for (const op of [...ops].reverse()) {
@@ -8767,14 +9006,14 @@ window.__ModuleLoader__.load({
 			if (baseline) for (const op of ops) stream.published.add(op.callId);
 			else {
 				const settled = ops.filter((op) => (op.kind === "write" || op.kind === "edit") && !op.running && !op.isError && !stream.published.has(op.callId));
-				if (settled.length > 0) publish(stream, settled);
+				if (settled.length > 0) publish$1(stream, settled);
 			}
 			const present = new Set(ops.map((op) => op.callId));
 			for (const callId of stream.published) if (!present.has(callId)) stream.published.delete(callId);
 		}
 		/** One leader's delta pull: advance the cursor, then fold (or baseline) it. */
 		async function pullStream(stream, scope, signal) {
-			const { events, lastSeq } = await api.changesOps(scope, stream.seq, signal);
+			const { events, lastSeq } = await api.changesOps(scope, stream.primed ? stream.seq : void 0, signal, stream.primed);
 			if (signal.aborted === true) return;
 			if (scope.cwd !== void 0 && scope.cwd !== "") stream.cwd = scope.cwd;
 			if (lastSeq > stream.seq) stream.seq = lastSeq;
@@ -8801,6 +9040,7 @@ window.__ModuleLoader__.load({
 					return;
 				}
 				const stream = streamOf(sessionId);
+				touchStream(sessionId, stream);
 				const member = { lead: (value) => {
 					setLeading(value);
 				} };
@@ -10283,90 +10523,90 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:/home/runner/work/DSH-better-sidebar/DSH-better-sidebar/src/client/SideCardSection.module.css.mjs
-		const css$8 = "._2vuxea_section{flex-direction:column;gap:16px;width:100%;max-width:760px;display:flex}._2vuxea_intro{color:var(--dsw-alias-label-tertiary);margin:0;padding:0 2px;font-size:13px;line-height:20px}._2vuxea_group{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:16px;flex-direction:column;flex:none;gap:8px;padding:20px;display:flex}._2vuxea_groupHeading{color:var(--dsw-alias-label-primary);align-items:baseline;gap:7px;padding:0 2px 6px;font-size:13px;font-weight:600;line-height:20px;display:flex}._2vuxea_count{background:var(--dsw-alias-accent-soft,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:16px}._2vuxea_grid{grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;display:grid}._2vuxea_card{border:1px solid var(--dsw-alias-border-l2);min-height:106px;font:inherit;color:inherit;cursor:pointer;background:0 0;border-radius:12px;flex-direction:column;transition:background .12s,border-color .12s;display:flex;position:relative;overflow:hidden}._2vuxea_card:not(._2vuxea_cardOn):hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-label-dimmed)}._2vuxea_cardOn{border-color:color-mix(in srgb, var(--dsw-alias-button-primary-fill) 45%, transparent);background:var(--dsw-alias-interactive-bg-active)}._2vuxea_cardMain{border-radius:inherit;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;flex-direction:column;flex:1;gap:6px;padding:12px;display:flex}._2vuxea_cardMain:focus-visible,._2vuxea_cardSettings:focus-visible{outline:2px solid var(--dsw-alias-border-l4);outline-offset:2px}._2vuxea_cardTop{align-items:center;gap:8px;min-width:0;min-height:28px;display:flex}._2vuxea_cardIconChip{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);width:28px;height:28px;color:var(--dsw-alias-label-tertiary);border-radius:8px;flex:none;justify-content:center;align-items:center;display:inline-flex}._2vuxea_cardOn ._2vuxea_cardIconChip{border-color:color-mix(in srgb, var(--dsw-alias-button-primary-fill) 35%, transparent);background:color-mix(in srgb, var(--dsw-alias-button-primary-fill) 12%, transparent);color:var(--dsw-alias-button-primary-fill)}._2vuxea_cardTitle{min-width:0;color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;flex:1;font-size:13px;font-weight:600;line-height:20px;overflow:hidden}._2vuxea_cardOn ._2vuxea_cardTitle{color:var(--dsw-alias-label-primary)}._2vuxea_cardSwitch{flex:none;align-items:center;display:inline-flex}._2vuxea_cardSwitchTrack{box-sizing:border-box;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;align-items:center;width:30px;height:16px;padding:2px;transition:background .15s,border-color .15s;display:inline-flex}._2vuxea_cardSwitchThumb{background:var(--dsw-alias-label-tertiary);border-radius:50%;width:10px;height:10px;transition:transform .15s,background .15s;display:block}._2vuxea_cardOn ._2vuxea_cardSwitchTrack{border-color:var(--dsw-alias-button-primary-fill);background:var(--dsw-alias-button-primary-fill)}._2vuxea_cardOn ._2vuxea_cardSwitchThumb{background:var(--dsw-alias-bg-layer-3);transform:translate(14px)}._2vuxea_cardDesc{color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;font-size:11px;line-height:16px;overflow:hidden}._2vuxea_addCard{border-style:dashed;border-color:var(--dsw-alias-border-l2);text-align:left;align-items:flex-start;padding:12px}._2vuxea_addCard:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-interactive-bg-hover-accent);color:var(--dsw-alias-label-primary)}._2vuxea_addCard:hover ._2vuxea_cardTitle{color:var(--dsw-alias-label-primary)}._2vuxea_addCard:hover ._2vuxea_cardIconChip{border-color:color-mix(in srgb, var(--dsw-alias-button-primary-fill) 35%, transparent);color:var(--dsw-alias-button-primary-fill)}._2vuxea_addCard:focus-visible{outline:2px solid var(--dsw-alias-border-l4);outline-offset:2px}._2vuxea_cardOn ._2vuxea_cardDesc{color:var(--dsw-alias-label-secondary)}._2vuxea_cardSettings{border:0;border-top:1px solid var(--dsw-alias-border-l1);width:100%;color:var(--dsw-alias-label-secondary);font:inherit;text-align:left;cursor:pointer;background:0 0;align-items:center;gap:6px;padding:6px 12px;font-size:11px;font-weight:500;line-height:16px;transition:background .12s,color .12s;display:flex}._2vuxea_cardOn ._2vuxea_cardSettings{border-top-color:color-mix(in srgb, var(--dsw-alias-button-primary-fill) 18%, transparent)}._2vuxea_cardSettings:hover{background:var(--dsw-alias-interactive-bg-hover-accent);color:var(--dsw-alias-brand-primary)}._2vuxea_row{border-bottom:1px solid var(--dsw-alias-border-l2);justify-content:space-between;align-items:center;gap:16px;padding:12px 2px;display:flex}._2vuxea_row:last-child{border-bottom:none}._2vuxea_rowText{flex-direction:column;gap:4px;min-width:0;display:flex}._2vuxea_title{color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px}._2vuxea_desc{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}._2vuxea_switch{cursor:pointer;flex:none;display:inline-flex;position:relative}._2vuxea_switchInput{opacity:0;width:1px;height:1px;margin:0;position:absolute}._2vuxea_switchTrack{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);border-radius:10px;align-items:center;width:36px;height:20px;padding:2px;transition:background .15s,border-color .15s;display:inline-flex}._2vuxea_switchThumb{background:var(--dsw-alias-label-tertiary);border-radius:50%;width:14px;height:14px;transition:transform .15s,background .15s;display:block}._2vuxea_switch:hover ._2vuxea_switchTrack{border-color:var(--dsw-alias-label-dimmed)}._2vuxea_switchInput:checked+._2vuxea_switchTrack{border-color:var(--dsw-alias-button-primary-fill);background:var(--dsw-alias-button-primary-fill)}._2vuxea_switchInput:checked+._2vuxea_switchTrack ._2vuxea_switchThumb{background:var(--dsw-alias-bg-layer-3);transform:translate(16px)}._2vuxea_switchInput:focus-visible+._2vuxea_switchTrack{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}._2vuxea_control{flex:none;align-items:center;gap:6px;display:flex}._2vuxea_percentInput{width:76px}._2vuxea_typedInput{width:200px}._2vuxea_typedInputNumber{width:76px}._2vuxea_selectAnchor{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);max-width:220px;color:var(--dsw-alias-label-primary);cursor:pointer;border-radius:8px;align-items:center;gap:6px;padding:4px 8px;font-size:13px;line-height:20px;display:flex}._2vuxea_selectAnchor:hover{border-color:var(--dsw-alias-label-dimmed)}._2vuxea_selectAnchorIcon{flex:none;display:inline-flex}._2vuxea_selectAnchorText{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}._2vuxea_selectOption{align-items:center;gap:10px;min-width:200px;display:flex}._2vuxea_selectOptionIcon{color:var(--dsw-alias-label-secondary);flex:none;display:inline-flex}._2vuxea_selectOptionText{flex-direction:column;min-width:0;display:flex}._2vuxea_suffix{color:var(--dsw-alias-label-secondary);font-size:14px;line-height:22px}._2vuxea_cssTextArea{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);width:100%;min-height:120px;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code,monospace);resize:vertical;border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.6}._2vuxea_cssTextArea:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}._2vuxea_popupDialog._2vuxea_popupDialog{width:min(460px,100%)}._2vuxea_popupRows{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-scrollbar-bg-l2,transparent) transparent;flex-direction:column;gap:8px;width:100%;max-height:min(52vh,440px);padding-right:4px;display:flex;overflow:hidden auto}._2vuxea_popupRows::-webkit-scrollbar{width:6px}._2vuxea_popupRows::-webkit-scrollbar-thumb{background:var(--dsw-alias-scrollbar-bg-l2,var(--dsw-alias-border-l2));border-radius:3px}._2vuxea_popupRows::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-scrollbar-hover-l2,var(--dsw-alias-label-dimmed))}._2vuxea_popupRow{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;flex:none;justify-content:space-between;align-items:center;gap:16px;min-width:0;padding:12px 14px;transition:border-color .16s,background .16s;display:flex}._2vuxea_popupRow:hover{border-color:var(--dsw-alias-label-dimmed)}._2vuxea_done{appearance:none;font:inherit;cursor:pointer;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3);border:1px solid #0000;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}._2vuxea_done:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}._2vuxea_patternsRow{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;flex-direction:column;gap:10px;min-width:0;padding:14px 16px;display:flex}._2vuxea_patternsChips{flex-wrap:wrap;gap:6px;display:flex}._2vuxea_patternsChip{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border-radius:999px;align-items:center;gap:2px;padding:2px 4px 2px 9px;font-size:12px;line-height:18px;display:inline-flex}._2vuxea_patternsChipRemove{width:16px;height:16px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:999px;justify-content:center;align-items:center;font-size:13px;line-height:1;display:inline-flex}._2vuxea_patternsChipRemove:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}._2vuxea_patternsAdd{align-items:center;gap:8px;display:flex}._2vuxea_patternsInput{flex:auto;min-width:0}._2vuxea_error{color:var(--dsw-alias-state-error-primary);padding:10px 0 2px;font-size:12px;line-height:17px}._2vuxea_pluginModal._2vuxea_pluginModal{width:min(560px,100%)}._2vuxea_pluginList{flex-direction:column;gap:12px;width:100%;display:flex}._2vuxea_pluginTopicBtn{appearance:none;border:1px solid var(--dsw-alias-border-l2);width:100%;font:inherit;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);cursor:pointer;border-radius:8px;padding:6px 12px;font-size:12px;line-height:18px}._2vuxea_pluginTopicBtn:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-interactive-bg-hover-accent);color:var(--dsw-alias-label-primary)}._2vuxea_pluginTopicBtn:focus-visible{outline:2px solid var(--dsw-alias-border-l4);outline-offset:1px}._2vuxea_pluginEmpty{color:var(--dsw-alias-label-tertiary);padding:20px 2px;font-size:12px;line-height:18px}._2vuxea_pluginEntry{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);border-radius:12px;flex-direction:column;gap:4px;padding:12px;display:flex}._2vuxea_pluginEntryHead{justify-content:space-between;align-items:center;gap:12px;display:flex}._2vuxea_pluginEntryActions{flex:none;align-items:center;gap:6px;display:inline-flex}._2vuxea_pluginJumpBtn{appearance:none;border:1px solid var(--dsw-alias-border-l2);font:inherit;cursor:pointer;color:var(--dsw-alias-label-secondary);background:0 0;border-radius:8px;flex:none;padding:3px 12px;font-size:12px;line-height:1.5}._2vuxea_pluginJumpBtn:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-interactive-bg-hover-accent);color:var(--dsw-alias-label-primary)}._2vuxea_pluginJumpBtn:focus-visible{outline:2px solid var(--dsw-alias-border-l4);outline-offset:1px}._2vuxea_pluginName{appearance:none;min-width:0;font:inherit;color:var(--dsw-alias-label-primary);text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:0 0;border:0;padding:0;font-size:13px;font-weight:600;line-height:20px;text-decoration:none;overflow:hidden}._2vuxea_pluginName:hover{color:var(--dsw-alias-button-primary-fill);text-decoration:underline}._2vuxea_pluginDesc{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}._2vuxea_pluginInstall{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);white-space:nowrap;border-radius:8px;padding:6px 10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:16px;display:block;overflow-x:auto}._2vuxea_pluginCopyBtn{appearance:none;font:inherit;cursor:pointer;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3);border:1px solid #0000;border-radius:8px;flex:none;padding:3px 12px;font-size:12px;line-height:1.5}._2vuxea_pluginCopyBtn:hover{background:var(--dsw-alias-button-primary-hover)}._2vuxea_pluginCopyBtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}@media (prefers-reduced-motion:reduce){._2vuxea_card,._2vuxea_cardSettings,._2vuxea_cardSwitchTrack,._2vuxea_cardSwitchThumb,._2vuxea_popupRow,._2vuxea_switchTrack,._2vuxea_switchThumb{transition:none}}._2vuxea_versionBadge{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);border-radius:999px;align-self:flex-start;align-items:center;gap:8px;padding:4px 12px 4px 14px;font-size:12px;line-height:18px;display:inline-flex}._2vuxea_versionBadgeName{color:var(--dsw-alias-label-primary);font-weight:600}._2vuxea_versionBadgeTag{background:var(--dsw-alias-accent-soft,var(--dsw-alias-border-l2));color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;border-radius:999px;padding:1px 8px}._2vuxea_pluginSearch{box-sizing:border-box;appearance:none;border:1px solid var(--dsw-alias-border-l2);width:100%;font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);border-radius:8px;padding:6px 10px;font-size:12px;line-height:18px}._2vuxea_pluginSearch::placeholder{color:var(--dsw-alias-label-tertiary)}._2vuxea_pluginSearch:focus-visible{outline:2px solid var(--dsw-alias-border-l4);outline-offset:1px}._2vuxea_pluginEntries{flex-direction:column;gap:10px;max-height:46vh;padding-right:2px;display:flex;overflow:hidden auto}._2vuxea_pluginGroup{flex-direction:column;gap:8px;display:flex}._2vuxea_pluginGroupHeading{color:var(--dsw-alias-label-secondary);padding:2px 2px 0;font-size:12px;font-weight:600;line-height:18px}._2vuxea_openWithEditorRow{grid-template-columns:1fr 1.5fr auto auto;align-items:center;gap:8px;min-width:0;display:grid}._2vuxea_openWithEditorInput,._2vuxea_openWithEditorTemplate{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);width:100%;min-width:0;color:var(--dsw-alias-label-primary);font:inherit;border-radius:8px;padding:5px 8px;font-size:13px;line-height:20px}._2vuxea_openWithEditorInput:focus-visible,._2vuxea_openWithEditorTemplate:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}._2vuxea_openWithFamily{color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;align-items:center;gap:5px;font-size:12px;display:inline-flex}._2vuxea_openWithRemove{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:8px;justify-content:center;align-items:center;padding:4px;display:inline-flex}._2vuxea_openWithRemove:hover{color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-bg-layer-2)}._2vuxea_openWithHint{color:var(--dsw-alias-state-error-primary);padding:0 2px;font-size:12px;line-height:17px}";
-		const tagId$8 = "dsh-external/dsh-better-sidebar/SideCardSection.module.css";
-		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$8) + "]") === null) {
+		const css$10 = "._2vuxea_section{flex-direction:column;gap:16px;width:100%;max-width:760px;display:flex}._2vuxea_intro{color:var(--dsw-alias-label-tertiary);margin:0;padding:0 2px;font-size:13px;line-height:20px}._2vuxea_group{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:16px;flex-direction:column;flex:none;gap:8px;padding:20px;display:flex}._2vuxea_groupHeading{color:var(--dsw-alias-label-primary);align-items:baseline;gap:7px;padding:0 2px 6px;font-size:13px;font-weight:600;line-height:20px;display:flex}._2vuxea_count{background:var(--dsw-alias-accent-soft,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:16px}._2vuxea_grid{grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;display:grid}._2vuxea_card{border:1px solid var(--dsw-alias-border-l2);min-height:106px;font:inherit;color:inherit;cursor:pointer;background:0 0;border-radius:12px;flex-direction:column;transition:background .12s,border-color .12s;display:flex;position:relative;overflow:hidden}._2vuxea_card:not(._2vuxea_cardOn):hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-label-dimmed)}._2vuxea_cardOn{border-color:color-mix(in srgb, var(--dsw-alias-button-primary-fill) 45%, transparent);background:var(--dsw-alias-interactive-bg-active)}._2vuxea_cardMain{border-radius:inherit;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;flex-direction:column;flex:1;gap:6px;padding:12px;display:flex}._2vuxea_cardMain:focus-visible,._2vuxea_cardSettings:focus-visible{outline:2px solid var(--dsw-alias-border-l4);outline-offset:2px}._2vuxea_cardTop{align-items:center;gap:8px;min-width:0;min-height:28px;display:flex}._2vuxea_cardIconChip{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);width:28px;height:28px;color:var(--dsw-alias-label-tertiary);border-radius:8px;flex:none;justify-content:center;align-items:center;display:inline-flex}._2vuxea_cardOn ._2vuxea_cardIconChip{border-color:color-mix(in srgb, var(--dsw-alias-button-primary-fill) 35%, transparent);background:color-mix(in srgb, var(--dsw-alias-button-primary-fill) 12%, transparent);color:var(--dsw-alias-button-primary-fill)}._2vuxea_cardTitle{min-width:0;color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;flex:1;font-size:13px;font-weight:600;line-height:20px;overflow:hidden}._2vuxea_cardOn ._2vuxea_cardTitle{color:var(--dsw-alias-label-primary)}._2vuxea_cardSwitch{flex:none;align-items:center;display:inline-flex}._2vuxea_cardSwitchTrack{box-sizing:border-box;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;align-items:center;width:30px;height:16px;padding:2px;transition:background .15s,border-color .15s;display:inline-flex}._2vuxea_cardSwitchThumb{background:var(--dsw-alias-label-tertiary);border-radius:50%;width:10px;height:10px;transition:transform .15s,background .15s;display:block}._2vuxea_cardOn ._2vuxea_cardSwitchTrack{border-color:var(--dsw-alias-button-primary-fill);background:var(--dsw-alias-button-primary-fill)}._2vuxea_cardOn ._2vuxea_cardSwitchThumb{background:var(--dsw-alias-bg-layer-3);transform:translate(14px)}._2vuxea_cardDesc{color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;font-size:11px;line-height:16px;overflow:hidden}._2vuxea_addCard{border-style:dashed;border-color:var(--dsw-alias-border-l2);text-align:left;align-items:flex-start;padding:12px}._2vuxea_addCard:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-interactive-bg-hover-accent);color:var(--dsw-alias-label-primary)}._2vuxea_addCard:hover ._2vuxea_cardTitle{color:var(--dsw-alias-label-primary)}._2vuxea_addCard:hover ._2vuxea_cardIconChip{border-color:color-mix(in srgb, var(--dsw-alias-button-primary-fill) 35%, transparent);color:var(--dsw-alias-button-primary-fill)}._2vuxea_addCard:focus-visible{outline:2px solid var(--dsw-alias-border-l4);outline-offset:2px}._2vuxea_cardOn ._2vuxea_cardDesc{color:var(--dsw-alias-label-secondary)}._2vuxea_cardSettings{border:0;border-top:1px solid var(--dsw-alias-border-l1);width:100%;color:var(--dsw-alias-label-secondary);font:inherit;text-align:left;cursor:pointer;background:0 0;align-items:center;gap:6px;padding:6px 12px;font-size:11px;font-weight:500;line-height:16px;transition:background .12s,color .12s;display:flex}._2vuxea_cardOn ._2vuxea_cardSettings{border-top-color:color-mix(in srgb, var(--dsw-alias-button-primary-fill) 18%, transparent)}._2vuxea_cardSettings:hover{background:var(--dsw-alias-interactive-bg-hover-accent);color:var(--dsw-alias-brand-primary)}._2vuxea_row{border-bottom:1px solid var(--dsw-alias-border-l2);justify-content:space-between;align-items:center;gap:16px;padding:12px 2px;display:flex}._2vuxea_row:last-child{border-bottom:none}._2vuxea_rowText{flex-direction:column;gap:4px;min-width:0;display:flex}._2vuxea_title{color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px}._2vuxea_desc{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}._2vuxea_switch{cursor:pointer;flex:none;display:inline-flex;position:relative}._2vuxea_switchInput{opacity:0;width:1px;height:1px;margin:0;position:absolute}._2vuxea_switchTrack{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);border-radius:10px;align-items:center;width:36px;height:20px;padding:2px;transition:background .15s,border-color .15s;display:inline-flex}._2vuxea_switchThumb{background:var(--dsw-alias-label-tertiary);border-radius:50%;width:14px;height:14px;transition:transform .15s,background .15s;display:block}._2vuxea_switch:hover ._2vuxea_switchTrack{border-color:var(--dsw-alias-label-dimmed)}._2vuxea_switchInput:checked+._2vuxea_switchTrack{border-color:var(--dsw-alias-button-primary-fill);background:var(--dsw-alias-button-primary-fill)}._2vuxea_switchInput:checked+._2vuxea_switchTrack ._2vuxea_switchThumb{background:var(--dsw-alias-bg-layer-3);transform:translate(16px)}._2vuxea_switchInput:focus-visible+._2vuxea_switchTrack{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}._2vuxea_control{flex:none;align-items:center;gap:6px;display:flex}._2vuxea_percentInput{width:76px}._2vuxea_typedInput{width:200px}._2vuxea_typedInputNumber{width:76px}._2vuxea_selectAnchor{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);max-width:220px;color:var(--dsw-alias-label-primary);cursor:pointer;border-radius:8px;align-items:center;gap:6px;padding:4px 8px;font-size:13px;line-height:20px;display:flex}._2vuxea_selectAnchor:hover{border-color:var(--dsw-alias-label-dimmed)}._2vuxea_selectAnchorIcon{flex:none;display:inline-flex}._2vuxea_selectAnchorText{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}._2vuxea_selectOption{align-items:center;gap:10px;min-width:200px;display:flex}._2vuxea_selectOptionIcon{color:var(--dsw-alias-label-secondary);flex:none;display:inline-flex}._2vuxea_selectOptionText{flex-direction:column;min-width:0;display:flex}._2vuxea_suffix{color:var(--dsw-alias-label-secondary);font-size:14px;line-height:22px}._2vuxea_cssTextArea{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);width:100%;min-height:120px;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code,monospace);resize:vertical;border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.6}._2vuxea_cssTextArea:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}._2vuxea_popupDialog._2vuxea_popupDialog{width:min(460px,100%)}._2vuxea_popupRows{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-scrollbar-bg-l2,transparent) transparent;flex-direction:column;gap:8px;width:100%;max-height:min(52vh,440px);padding-right:4px;display:flex;overflow:hidden auto}._2vuxea_popupRows::-webkit-scrollbar{width:6px}._2vuxea_popupRows::-webkit-scrollbar-thumb{background:var(--dsw-alias-scrollbar-bg-l2,var(--dsw-alias-border-l2));border-radius:3px}._2vuxea_popupRows::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-scrollbar-hover-l2,var(--dsw-alias-label-dimmed))}._2vuxea_popupRow{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;flex:none;justify-content:space-between;align-items:center;gap:16px;min-width:0;padding:12px 14px;transition:border-color .16s,background .16s;display:flex}._2vuxea_popupRow:hover{border-color:var(--dsw-alias-label-dimmed)}._2vuxea_done{appearance:none;font:inherit;cursor:pointer;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3);border:1px solid #0000;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}._2vuxea_done:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}._2vuxea_patternsRow{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;flex-direction:column;gap:10px;min-width:0;padding:14px 16px;display:flex}._2vuxea_patternsChips{flex-wrap:wrap;gap:6px;display:flex}._2vuxea_patternsChip{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border-radius:999px;align-items:center;gap:2px;padding:2px 4px 2px 9px;font-size:12px;line-height:18px;display:inline-flex}._2vuxea_patternsChipRemove{width:16px;height:16px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:999px;justify-content:center;align-items:center;font-size:13px;line-height:1;display:inline-flex}._2vuxea_patternsChipRemove:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}._2vuxea_patternsAdd{align-items:center;gap:8px;display:flex}._2vuxea_patternsInput{flex:auto;min-width:0}._2vuxea_error{color:var(--dsw-alias-state-error-primary);padding:10px 0 2px;font-size:12px;line-height:17px}._2vuxea_pluginModal._2vuxea_pluginModal{width:min(560px,100%)}._2vuxea_pluginList{flex-direction:column;gap:12px;width:100%;display:flex}._2vuxea_pluginTopicBtn{appearance:none;border:1px solid var(--dsw-alias-border-l2);width:100%;font:inherit;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);cursor:pointer;border-radius:8px;padding:6px 12px;font-size:12px;line-height:18px}._2vuxea_pluginTopicBtn:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-interactive-bg-hover-accent);color:var(--dsw-alias-label-primary)}._2vuxea_pluginTopicBtn:focus-visible{outline:2px solid var(--dsw-alias-border-l4);outline-offset:1px}._2vuxea_pluginEmpty{color:var(--dsw-alias-label-tertiary);padding:20px 2px;font-size:12px;line-height:18px}._2vuxea_pluginEntry{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);border-radius:12px;flex-direction:column;gap:4px;padding:12px;display:flex}._2vuxea_pluginEntryHead{justify-content:space-between;align-items:center;gap:12px;display:flex}._2vuxea_pluginEntryActions{flex:none;align-items:center;gap:6px;display:inline-flex}._2vuxea_pluginJumpBtn{appearance:none;border:1px solid var(--dsw-alias-border-l2);font:inherit;cursor:pointer;color:var(--dsw-alias-label-secondary);background:0 0;border-radius:8px;flex:none;padding:3px 12px;font-size:12px;line-height:1.5}._2vuxea_pluginJumpBtn:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-interactive-bg-hover-accent);color:var(--dsw-alias-label-primary)}._2vuxea_pluginJumpBtn:focus-visible{outline:2px solid var(--dsw-alias-border-l4);outline-offset:1px}._2vuxea_pluginName{appearance:none;min-width:0;font:inherit;color:var(--dsw-alias-label-primary);text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:0 0;border:0;padding:0;font-size:13px;font-weight:600;line-height:20px;text-decoration:none;overflow:hidden}._2vuxea_pluginName:hover{color:var(--dsw-alias-button-primary-fill);text-decoration:underline}._2vuxea_pluginDesc{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}._2vuxea_pluginInstall{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);white-space:nowrap;border-radius:8px;padding:6px 10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:16px;display:block;overflow-x:auto}._2vuxea_pluginCopyBtn{appearance:none;font:inherit;cursor:pointer;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3);border:1px solid #0000;border-radius:8px;flex:none;padding:3px 12px;font-size:12px;line-height:1.5}._2vuxea_pluginCopyBtn:hover{background:var(--dsw-alias-button-primary-hover)}._2vuxea_pluginCopyBtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}@media (prefers-reduced-motion:reduce){._2vuxea_card,._2vuxea_cardSettings,._2vuxea_cardSwitchTrack,._2vuxea_cardSwitchThumb,._2vuxea_popupRow,._2vuxea_switchTrack,._2vuxea_switchThumb{transition:none}}._2vuxea_versionBadge{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);border-radius:999px;align-self:flex-start;align-items:center;gap:8px;padding:4px 12px 4px 14px;font-size:12px;line-height:18px;display:inline-flex}._2vuxea_versionBadgeName{color:var(--dsw-alias-label-primary);font-weight:600}._2vuxea_versionBadgeTag{background:var(--dsw-alias-accent-soft,var(--dsw-alias-border-l2));color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;border-radius:999px;padding:1px 8px}._2vuxea_pluginSearch{box-sizing:border-box;appearance:none;border:1px solid var(--dsw-alias-border-l2);width:100%;font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);border-radius:8px;padding:6px 10px;font-size:12px;line-height:18px}._2vuxea_pluginSearch::placeholder{color:var(--dsw-alias-label-tertiary)}._2vuxea_pluginSearch:focus-visible{outline:2px solid var(--dsw-alias-border-l4);outline-offset:1px}._2vuxea_pluginEntries{flex-direction:column;gap:10px;max-height:46vh;padding-right:2px;display:flex;overflow:hidden auto}._2vuxea_pluginGroup{flex-direction:column;gap:8px;display:flex}._2vuxea_pluginGroupHeading{color:var(--dsw-alias-label-secondary);padding:2px 2px 0;font-size:12px;font-weight:600;line-height:18px}._2vuxea_openWithEditorRow{grid-template-columns:1fr 1.5fr auto auto;align-items:center;gap:8px;min-width:0;display:grid}._2vuxea_openWithEditorInput,._2vuxea_openWithEditorTemplate{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);width:100%;min-width:0;color:var(--dsw-alias-label-primary);font:inherit;border-radius:8px;padding:5px 8px;font-size:13px;line-height:20px}._2vuxea_openWithEditorInput:focus-visible,._2vuxea_openWithEditorTemplate:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}._2vuxea_openWithFamily{color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;align-items:center;gap:5px;font-size:12px;display:inline-flex}._2vuxea_openWithRemove{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:8px;justify-content:center;align-items:center;padding:4px;display:inline-flex}._2vuxea_openWithRemove:hover{color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-bg-layer-2)}._2vuxea_openWithHint{color:var(--dsw-alias-state-error-primary);padding:0 2px;font-size:12px;line-height:17px}";
+		const tagId$10 = "dsh-external/dsh-better-sidebar/SideCardSection.module.css";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$10) + "]") === null) {
 			const tag = document.createElement("style");
 			tag.dataset.plugin = "dsh-external/dsh-better-sidebar";
-			tag.dataset.pluginCss = tagId$8;
-			tag.textContent = css$8;
+			tag.dataset.pluginCss = tagId$10;
+			tag.textContent = css$10;
 			document.head.appendChild(tag);
 		}
 		var SideCardSection_module_css_default = {
-			"pluginName": "_2vuxea_pluginName",
-			"grid": "_2vuxea_grid",
-			"pluginList": "_2vuxea_pluginList",
-			"selectOptionIcon": "_2vuxea_selectOptionIcon",
-			"pluginInstall": "_2vuxea_pluginInstall",
-			"intro": "_2vuxea_intro",
-			"popupRows": "_2vuxea_popupRows",
-			"patternsChips": "_2vuxea_patternsChips",
-			"pluginSearch": "_2vuxea_pluginSearch",
-			"openWithEditorTemplate": "_2vuxea_openWithEditorTemplate",
-			"desc": "_2vuxea_desc",
-			"cssTextArea": "_2vuxea_cssTextArea",
-			"popupDialog": "_2vuxea_popupDialog",
-			"pluginDesc": "_2vuxea_pluginDesc",
-			"count": "_2vuxea_count",
-			"rowText": "_2vuxea_rowText",
-			"patternsChipRemove": "_2vuxea_patternsChipRemove",
-			"title": "_2vuxea_title",
-			"card": "_2vuxea_card",
-			"control": "_2vuxea_control",
-			"pluginCopyBtn": "_2vuxea_pluginCopyBtn",
-			"cardSwitch": "_2vuxea_cardSwitch",
-			"pluginEntryHead": "_2vuxea_pluginEntryHead",
-			"switch": "_2vuxea_switch",
-			"versionBadge": "_2vuxea_versionBadge",
-			"openWithHint": "_2vuxea_openWithHint",
-			"error": "_2vuxea_error",
-			"switchThumb": "_2vuxea_switchThumb",
-			"group": "_2vuxea_group",
-			"percentInput": "_2vuxea_percentInput",
-			"typedInputNumber": "_2vuxea_typedInputNumber",
-			"openWithFamily": "_2vuxea_openWithFamily",
-			"openWithEditorRow": "_2vuxea_openWithEditorRow",
-			"cardSwitchThumb": "_2vuxea_cardSwitchThumb",
-			"pluginModal": "_2vuxea_pluginModal",
-			"selectAnchorIcon": "_2vuxea_selectAnchorIcon",
-			"cardTop": "_2vuxea_cardTop",
-			"openWithEditorInput": "_2vuxea_openWithEditorInput",
-			"addCard": "_2vuxea_addCard",
-			"suffix": "_2vuxea_suffix",
-			"selectOptionText": "_2vuxea_selectOptionText",
-			"patternsAdd": "_2vuxea_patternsAdd",
-			"switchInput": "_2vuxea_switchInput",
-			"cardIconChip": "_2vuxea_cardIconChip",
-			"popupRow": "_2vuxea_popupRow",
-			"pluginTopicBtn": "_2vuxea_pluginTopicBtn",
-			"versionBadgeTag": "_2vuxea_versionBadgeTag",
-			"pluginGroupHeading": "_2vuxea_pluginGroupHeading",
-			"cardSwitchTrack": "_2vuxea_cardSwitchTrack",
-			"done": "_2vuxea_done",
-			"openWithRemove": "_2vuxea_openWithRemove",
-			"cardSettings": "_2vuxea_cardSettings",
-			"cardMain": "_2vuxea_cardMain",
-			"row": "_2vuxea_row",
-			"patternsChip": "_2vuxea_patternsChip",
-			"selectOption": "_2vuxea_selectOption",
-			"pluginEntry": "_2vuxea_pluginEntry",
-			"pluginEntries": "_2vuxea_pluginEntries",
-			"section": "_2vuxea_section",
-			"selectAnchor": "_2vuxea_selectAnchor",
-			"cardTitle": "_2vuxea_cardTitle",
-			"cardDesc": "_2vuxea_cardDesc",
 			"groupHeading": "_2vuxea_groupHeading",
-			"cardOn": "_2vuxea_cardOn",
-			"pluginEmpty": "_2vuxea_pluginEmpty",
-			"versionBadgeName": "_2vuxea_versionBadgeName",
-			"pluginGroup": "_2vuxea_pluginGroup",
+			"popupRow": "_2vuxea_popupRow",
+			"patternsChip": "_2vuxea_patternsChip",
 			"pluginEntryActions": "_2vuxea_pluginEntryActions",
+			"pluginEmpty": "_2vuxea_pluginEmpty",
+			"patternsChipRemove": "_2vuxea_patternsChipRemove",
+			"pluginList": "_2vuxea_pluginList",
+			"cardSwitchThumb": "_2vuxea_cardSwitchThumb",
+			"pluginCopyBtn": "_2vuxea_pluginCopyBtn",
+			"count": "_2vuxea_count",
+			"addCard": "_2vuxea_addCard",
+			"intro": "_2vuxea_intro",
+			"versionBadgeName": "_2vuxea_versionBadgeName",
+			"versionBadgeTag": "_2vuxea_versionBadgeTag",
+			"selectOptionIcon": "_2vuxea_selectOptionIcon",
+			"pluginGroupHeading": "_2vuxea_pluginGroupHeading",
+			"pluginDesc": "_2vuxea_pluginDesc",
+			"openWithEditorInput": "_2vuxea_openWithEditorInput",
+			"switchThumb": "_2vuxea_switchThumb",
+			"switchInput": "_2vuxea_switchInput",
+			"typedInputNumber": "_2vuxea_typedInputNumber",
+			"pluginGroup": "_2vuxea_pluginGroup",
+			"cardSwitchTrack": "_2vuxea_cardSwitchTrack",
+			"openWithHint": "_2vuxea_openWithHint",
+			"cardIconChip": "_2vuxea_cardIconChip",
+			"selectOption": "_2vuxea_selectOption",
+			"switch": "_2vuxea_switch",
+			"popupRows": "_2vuxea_popupRows",
+			"cardSwitch": "_2vuxea_cardSwitch",
+			"grid": "_2vuxea_grid",
+			"error": "_2vuxea_error",
+			"openWithEditorTemplate": "_2vuxea_openWithEditorTemplate",
+			"selectOptionText": "_2vuxea_selectOptionText",
 			"selectAnchorText": "_2vuxea_selectAnchorText",
-			"patternsRow": "_2vuxea_patternsRow",
-			"patternsInput": "_2vuxea_patternsInput",
-			"pluginJumpBtn": "_2vuxea_pluginJumpBtn",
+			"control": "_2vuxea_control",
 			"switchTrack": "_2vuxea_switchTrack",
-			"typedInput": "_2vuxea_typedInput"
+			"cardSettings": "_2vuxea_cardSettings",
+			"openWithFamily": "_2vuxea_openWithFamily",
+			"percentInput": "_2vuxea_percentInput",
+			"done": "_2vuxea_done",
+			"selectAnchorIcon": "_2vuxea_selectAnchorIcon",
+			"cardOn": "_2vuxea_cardOn",
+			"patternsRow": "_2vuxea_patternsRow",
+			"title": "_2vuxea_title",
+			"pluginEntry": "_2vuxea_pluginEntry",
+			"pluginEntryHead": "_2vuxea_pluginEntryHead",
+			"versionBadge": "_2vuxea_versionBadge",
+			"typedInput": "_2vuxea_typedInput",
+			"popupDialog": "_2vuxea_popupDialog",
+			"pluginModal": "_2vuxea_pluginModal",
+			"group": "_2vuxea_group",
+			"pluginInstall": "_2vuxea_pluginInstall",
+			"desc": "_2vuxea_desc",
+			"cardMain": "_2vuxea_cardMain",
+			"cardTop": "_2vuxea_cardTop",
+			"selectAnchor": "_2vuxea_selectAnchor",
+			"cssTextArea": "_2vuxea_cssTextArea",
+			"pluginJumpBtn": "_2vuxea_pluginJumpBtn",
+			"patternsAdd": "_2vuxea_patternsAdd",
+			"rowText": "_2vuxea_rowText",
+			"section": "_2vuxea_section",
+			"openWithEditorRow": "_2vuxea_openWithEditorRow",
+			"pluginName": "_2vuxea_pluginName",
+			"cardDesc": "_2vuxea_cardDesc",
+			"suffix": "_2vuxea_suffix",
+			"patternsChips": "_2vuxea_patternsChips",
+			"row": "_2vuxea_row",
+			"patternsInput": "_2vuxea_patternsInput",
+			"cardTitle": "_2vuxea_cardTitle",
+			"openWithRemove": "_2vuxea_openWithRemove",
+			"pluginTopicBtn": "_2vuxea_pluginTopicBtn",
+			"card": "_2vuxea_card",
+			"pluginSearch": "_2vuxea_pluginSearch",
+			"pluginEntries": "_2vuxea_pluginEntries"
 		};
 		//#endregion
 		//#region src/client/open-with-settings.tsx
@@ -10519,94 +10759,104 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:/home/runner/work/DSH-better-sidebar/DSH-better-sidebar/src/client/changes/changes.module.css.mjs
-		const css$7 = ".bdiHEa_root{background:var(--dsw-alias-bg-base);height:100%;min-height:0;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);flex-direction:column;display:flex}.bdiHEa_head{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:8px;height:36px;padding:0 8px 0 12px;display:flex}.bdiHEa_headAction{margin-left:auto}.bdiHEa_git{flex-direction:column;flex:1;min-width:0;min-height:0;display:flex}.bdiHEa_gitScroll{flex:1;min-width:0;min-height:0;overflow:hidden auto}.bdiHEa_selectors{flex:none;align-items:center;gap:6px;padding:6px 12px 0;display:flex}.bdiHEa_select{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);min-width:0;height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);border-radius:3px;flex:1;padding:0 6px}.bdiHEa_branchLabel{text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-11);overflow:hidden}.bdiHEa_group{flex-direction:column;padding-bottom:2px;display:flex}.bdiHEa_group .bdiHEa_groupHeader{z-index:2;background:var(--dsw-alias-bg-base);position:sticky;top:0}.bdiHEa_countPill{background:var(--dsw-alias-interactive-bg-hover);min-width:16px;height:16px;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-strong-11);text-align:center;font-variant-numeric:tabular-nums;border-radius:999px;flex:none;padding:0 5px;line-height:16px}.bdiHEa_group .bdiHEa_headerAction{opacity:0;transition:opacity .12s var(--ds-ease-in-out)}.bdiHEa_group .bdiHEa_groupHeader:hover .bdiHEa_headerAction,.bdiHEa_group .bdiHEa_groupHeader:focus-within .bdiHEa_headerAction{opacity:1}@media (hover:none){.bdiHEa_group .bdiHEa_headerAction{opacity:1}}.bdiHEa_tree{flex-direction:column;padding:0 6px;display:flex}.bdiHEa_treeChildren{border-left:1px solid var(--dsw-alias-border-l1);flex-direction:column;margin-left:11px;display:flex}.bdiHEa_dirRow{min-width:0;color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;text-align:left;background:0 0;border:none;flex:1;align-items:center;gap:6px;padding:0;display:flex}.bdiHEa_dirRow:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.bdiHEa_chevron{color:var(--dsw-alias-label-tertiary);transition:transform .14s var(--ds-ease-in-out);flex:none;display:inline-flex}.bdiHEa_chevron[data-open=true]{transform:rotate(90deg)}.bdiHEa_dirName{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:var(--dsw-font-xxs-12);flex:1;overflow:hidden}.bdiHEa_row{min-height:28px;animation:bdiHEa_dsh-row-in .15s var(--ds-ease-in-out);border-radius:4px;align-items:center;gap:6px;padding:0 2px;display:flex;position:relative}.bdiHEa_row:hover{background:var(--dsw-alias-interactive-bg-hover)}.bdiHEa_row[data-selected=true],.bdiHEa_opRow[data-selected=true],.bdiHEa_logRow[data-selected=true]{background:var(--dsw-alias-interactive-bg-active)}.bdiHEa_row[data-selected=true]:before,.bdiHEa_opRow[data-selected=true]:before,.bdiHEa_logRow[data-selected=true]:before{content:\"\";background:var(--dsw-alias-state-business-primary);border-radius:1px;width:2px;position:absolute;top:4px;bottom:4px;left:0}.bdiHEa_rowMain{cursor:pointer;text-align:left;background:0 0;border:none;flex:1;align-items:center;gap:6px;min-width:0;padding:0;display:flex}.bdiHEa_rowMain:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.bdiHEa_rowIcon{flex:none;align-items:center;display:inline-flex}.bdiHEa_rowName{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);flex:1;overflow:hidden}.bdiHEa_lineCounts{font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);font-variant-numeric:tabular-nums;flex:none;gap:5px;display:inline-flex}.bdiHEa_lineNote{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);white-space:nowrap;flex:none}.bdiHEa_row:not(:hover):not(:focus-within) .bdiHEa_rowAction{opacity:0}@media (hover:none){.bdiHEa_row:not(:hover):not(:focus-within) .bdiHEa_rowAction{opacity:1}}.bdiHEa_commitBar{border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);flex-direction:column;flex:none;gap:4px;padding:8px 12px;display:flex}.bdiHEa_commitRow{align-items:center;gap:6px;display:flex}.bdiHEa_commitInputWrap{flex:1;min-width:0;display:flex;position:relative}.bdiHEa_commitInput{box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-1);min-width:0;min-height:30px;max-height:120px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-s-13);resize:none;border-radius:8px;flex:1;padding:6px 8px;line-height:18px;overflow-y:hidden}.bdiHEa_commitInput:focus{border-color:var(--dsw-alias-brand-primary);outline:none}.bdiHEa_commitInput::placeholder{color:var(--dsw-alias-label-dimmed)}.bdiHEa_commitInput:disabled{opacity:.5}.bdiHEa_commitBusyText{pointer-events:none;font:var(--dsw-font-xxs-12);background-image:linear-gradient(90deg, var(--dsw-alias-label-tertiary) 0%, var(--dsw-alias-label-primary) 50%, var(--dsw-alias-label-tertiary) 100%);color:#0000;background-size:200% 100%;-webkit-background-clip:text;background-clip:text;align-items:center;padding:6px 8px;animation:2.6s linear infinite bdiHEa_commitSweep;display:flex;position:absolute;inset:0}@keyframes bdiHEa_commitSweep{0%{background-position:200% 0}to{background-position:-200% 0}}@media (prefers-reduced-motion:reduce){.bdiHEa_commitBusyText{animation:none}}.bdiHEa_suggestButton{border:1px solid var(--dsw-alias-border-l1);width:26px;height:26px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border-radius:6px;flex:none;justify-content:center;align-items:center;padding:0;display:inline-flex}.bdiHEa_suggestButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.bdiHEa_suggestButton:disabled{opacity:.45;cursor:default}.bdiHEa_suggestBusy{color:var(--dsw-alias-interactive-bg-hover-accent);animation:1.2s ease-in-out infinite bdiHEa_commitSuggestPulse}@keyframes bdiHEa_commitSuggestPulse{50%{opacity:.45}}@media (prefers-reduced-motion:reduce){.bdiHEa_suggestBusy{animation:none}}.bdiHEa_commitModel{flex-direction:column;gap:4px;padding:8px 12px;display:flex}.bdiHEa_commitModelTitle{font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary)}.bdiHEa_commitModelDesc{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary)}.bdiHEa_commitModelRow{justify-content:space-between;align-items:center;gap:8px;display:flex}.bdiHEa_commitModelSwitch{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);cursor:pointer;align-items:center;gap:6px;display:inline-flex}.bdiHEa_commitModelSwitch input{accent-color:var(--dsw-alias-interactive-bg-hover-accent)}.bdiHEa_commitModelMenuRoot{width:100%;display:block}.bdiHEa_commitModelBox{display:block}.bdiHEa_commitModelCurrent{font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);overflow-wrap:anywhere;margin-bottom:4px}.bdiHEa_commitModelInput{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);width:100%;height:26px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);border-radius:6px;padding:0 6px}.bdiHEa_commitModelInput:disabled{opacity:.45;cursor:default}.bdiHEa_commitModelOption{box-sizing:border-box;width:100%;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);text-align:left;cursor:pointer;background:0 0;border:none;border-radius:4px;align-items:center;gap:8px;padding:4px 6px;display:flex}.bdiHEa_commitModelOption:hover{background:var(--dsw-alias-interactive-bg-hover)}.bdiHEa_commitModelOptionText{text-overflow:ellipsis;white-space:nowrap;flex:auto;min-width:0;overflow:hidden}.bdiHEa_commitModelOptionNote{white-space:nowrap;min-width:max-content;color:var(--dsw-alias-label-tertiary);flex:none}.bdiHEa_commitModelHint{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary)}.bdiHEa_logRow{cursor:pointer;border-radius:4px;flex-direction:column;gap:3px;margin:0 6px;padding:6px 10px;display:flex;position:relative}.bdiHEa_logRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.bdiHEa_logLine1{align-items:baseline;gap:8px;min-width:0;display:flex}.bdiHEa_logHash{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);font:var(--dsw-font-markdown-code-block-small);border-radius:2px;flex:none;padding:1px 4px}.bdiHEa_logLine2{flex-wrap:wrap;align-items:center;gap:6px;min-width:0;display:flex}.bdiHEa_logRef{border:1px solid var(--dsw-alias-border-l2);font:var(--dsw-font-xxxs-strong-11);color:var(--dsw-alias-brand-primary);white-space:nowrap;border-radius:999px;flex:none;padding:0 6px}.bdiHEa_logSubject{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);flex:1;overflow:hidden}.bdiHEa_logMeta{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);white-space:nowrap;margin-left:auto}.bdiHEa_logMore{border:1px solid var(--dsw-alias-border-l2);width:calc(100% - 24px);height:28px;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border-radius:3px;margin:4px 12px 8px;display:block}.bdiHEa_logMore:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.bdiHEa_logMore:disabled{opacity:.5;cursor:default}.bdiHEa_session{flex-direction:column;flex:1;min-height:0;display:flex}.bdiHEa_filterRow{flex-wrap:wrap;flex:none;gap:4px;padding:6px 12px;display:flex}.bdiHEa_sessionList{flex:1;min-height:0;padding:0 6px 10px;overflow-y:auto}.bdiHEa_fileGroup{margin-bottom:6px}.bdiHEa_filePath{color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code,monospace);word-break:break-all;padding:6px 4px 2px;font-size:11px;display:block}.bdiHEa_fileGroup:first-child .bdiHEa_filePath{padding-top:2px}.bdiHEa_opRow{width:100%;min-height:24px;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;text-align:left;background:0 0;border:0;border-radius:4px;align-items:center;gap:6px;padding:0 5px;font-size:11px;display:flex;position:relative}.bdiHEa_opRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.bdiHEa_opRow[data-op-error=true]{box-shadow:inset 2px 0 0 var(--dsw-alias-state-error-primary)}.bdiHEa_opMeta{flex:none;align-items:baseline;gap:8px;min-width:0;margin-left:auto;display:inline-flex}.bdiHEa_opTime{color:var(--dsw-alias-label-tertiary);flex:none;font-size:10px}.bdiHEa_opFlag{color:var(--dsw-alias-state-business-primary);flex:none;font-size:10px}.bdiHEa_opFlagError{color:var(--dsw-alias-state-error-primary);flex:none;font-size:10px}.bdiHEa_opSize{color:var(--dsw-alias-label-tertiary);font-size:10px;font-family:var(--ds-font-family-code,monospace);flex:none}.bdiHEa_redactBanner{font:var(--dsw-font-xxxs-strong-11);color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-interactive-bg-hover);white-space:nowrap;border-radius:2px;flex:none;padding:2px 8px}.bdiHEa_mdBody{font:var(--dsw-font-xs-regular-13);min-height:0;padding:12px 16px 20px;line-height:1.6;overflow-y:auto}.bdiHEa_htmlPane{flex:1;min-height:0;display:flex}.bdiHEa_htmlFrame{background:var(--dsw-alias-bg-base);border:none;flex:1;width:100%}.bdiHEa_diffPane{border-top:1px solid var(--dsw-alias-border-l1);flex-direction:column;flex:none;min-height:0;display:flex}.bdiHEa_dragHandle{cursor:ns-resize;background:var(--dsw-alias-bg-base);flex:none;height:8px;position:relative}.bdiHEa_dragHandle:after{content:\"\";background:var(--dsw-alias-border-l2);border-radius:1px;width:36px;height:2px;position:absolute;top:3px;left:calc(50% - 18px)}.bdiHEa_dragHandle:hover:after,.bdiHEa_dragHandle:focus-visible:after{background:var(--dsw-alias-state-business-primary)}.bdiHEa_diffHead{border-bottom:1px solid var(--dsw-alias-border-l1);align-items:center;gap:6px;padding:3px 8px 3px 10px;display:flex}.bdiHEa_diffPath{font-family:var(--ds-font-family-code,monospace);white-space:nowrap;text-overflow:ellipsis;color:var(--dsw-alias-label-primary);direction:rtl;flex:1;min-width:0;font-size:11px;overflow:hidden}.bdiHEa_diffStats{font-size:10px;font-family:var(--ds-font-family-code,monospace);flex:none;gap:5px;display:inline-flex}.bdiHEa_paneBody{flex:1;min-height:0;overflow-y:auto}.bdiHEa_readError{border-left:3px solid var(--dsw-alias-state-error-primary);word-break:break-word;margin:6px 8px;padding:6px 10px}.bdiHEa_paneGone{border-top:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:8px;padding:8px 12px;display:flex}@keyframes bdiHEa_dsh-row-in{0%{opacity:0}}.bdiHEa_logRow:focus-visible,.bdiHEa_logMore:focus-visible,.bdiHEa_select:focus-visible,.bdiHEa_dragHandle:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}@media (prefers-reduced-motion:reduce){.bdiHEa_row{animation:none}}";
-		const tagId$7 = "dsh-external/dsh-better-sidebar/changes.module.css";
-		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$7) + "]") === null) {
+		const css$9 = ".bdiHEa_root{background:var(--dsw-alias-bg-base);height:100%;min-height:0;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);flex-direction:column;display:flex}.bdiHEa_head{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;align-items:stretch;gap:8px;height:36px;padding:0 8px 0 12px;display:flex}.bdiHEa_headAction{align-self:center;margin-left:auto}.bdiHEa_head .wSkVaW_tabs{gap:24px}.bdiHEa_lensBody{flex-direction:column;flex:1;min-height:0;display:flex}.bdiHEa_lensBody[hidden]{display:none}.bdiHEa_head .wSkVaW_tab:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-2px}.bdiHEa_git{flex-direction:column;flex:1;min-width:0;min-height:0;padding-top:6px;display:flex}.bdiHEa_gitScroll{flex-direction:column;flex:1;min-width:0;min-height:0;display:flex;overflow:hidden auto}.bdiHEa_changesSection{flex:none}.bdiHEa_graphSection{flex-direction:column;flex:1;min-height:248px;display:flex}.bdiHEa_graphArea{flex-direction:column;flex:1;min-height:0;display:flex}.bdiHEa_scmHeader{align-items:center;min-height:28px;padding:0 6px;display:flex}.bdiHEa_scmDisclosure{min-width:0;min-height:28px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-strong-12);text-align:left;cursor:pointer;background:0 0;border:none;flex:1;align-items:center;gap:6px;padding:0;display:flex}.bdiHEa_scmActions{opacity:0;align-items:center;gap:2px;display:flex}.bdiHEa_scmHeader:hover .bdiHEa_scmActions,.bdiHEa_scmHeader:focus-within .bdiHEa_scmActions{opacity:1}@media (hover:none){.bdiHEa_scmActions{opacity:1}}.bdiHEa_gitFooter{z-index:1;border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);flex:none;min-width:0;position:sticky;bottom:0}.bdiHEa_footerRow{align-items:center;min-width:0;min-height:28px;display:flex}.bdiHEa_actionError{white-space:normal;align-items:flex-start;gap:6px;display:flex}.bdiHEa_actionErrorText{white-space:pre-wrap;overflow-wrap:anywhere;flex:1;min-width:0}.bdiHEa_branchMenu{flex:1;min-width:0;display:flex}.bdiHEa_branchButton,.bdiHEa_syncButton{min-width:0;min-height:28px;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-11);cursor:pointer;background:0 0;border:none;align-items:center;gap:5px;padding:3px 8px;display:flex}.bdiHEa_branchButton{text-align:left;flex:1}.bdiHEa_syncButton{max-width:55%}.bdiHEa_branchButton svg,.bdiHEa_syncButton svg{flex:none}.bdiHEa_branchButton span,.bdiHEa_syncButton span{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.bdiHEa_branchButton:hover:not(:disabled),.bdiHEa_syncButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.bdiHEa_branchButton:disabled,.bdiHEa_syncButton:disabled{opacity:.45;cursor:default}.bdiHEa_group{flex-direction:column;padding-bottom:2px;display:flex}.bdiHEa_group .bdiHEa_groupHeader{z-index:2;background:var(--dsw-alias-bg-base);gap:4px;position:sticky;top:0}.bdiHEa_countPill{border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-interactive-bg-hover);width:20px;height:20px;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-strong-11);text-align:center;font-variant-numeric:tabular-nums;flex:none;font-size:10px;line-height:20px}.bdiHEa_group .bdiHEa_headerAction{opacity:0;transition:opacity .12s var(--ds-ease-in-out)}.bdiHEa_group .bdiHEa_groupHeader:hover .bdiHEa_headerAction,.bdiHEa_group .bdiHEa_groupHeader:focus-within .bdiHEa_headerAction{opacity:1}@media (hover:none){.bdiHEa_group .bdiHEa_headerAction{opacity:1}}.bdiHEa_tree{flex-direction:column;display:flex}.bdiHEa_dirRow{min-width:0;color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;text-align:left;background:0 0;border:none;flex:1;align-items:center;gap:6px;padding:0;display:flex}.bdiHEa_dirRow:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.bdiHEa_chevron{color:var(--dsw-alias-label-tertiary);transition:transform .14s var(--ds-ease-in-out);flex:none;display:inline-flex}.bdiHEa_chevron[data-open=true]{transform:rotate(90deg)}.bdiHEa_dirName{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:var(--dsw-font-xxs-12);flex:1;overflow:hidden}.bdiHEa_row{min-height:28px;animation:bdiHEa_dsh-row-in .15s var(--ds-ease-in-out);align-items:center;gap:6px;padding:0 6px;display:flex;position:relative}.bdiHEa_row:hover{background:var(--dsw-alias-interactive-bg-hover)}.bdiHEa_row[data-selected=true],.bdiHEa_opRow[data-selected=true]{background:var(--dsw-alias-interactive-bg-active)}.bdiHEa_row[data-selected=true]:before,.bdiHEa_opRow[data-selected=true]:before{content:\"\";background:var(--dsw-alias-state-business-primary);border-radius:1px;width:2px;position:absolute;top:4px;bottom:4px;left:0}.bdiHEa_guide{border-left:1px solid var(--dsw-alias-border-l1);width:0;position:absolute;top:0;bottom:0}.bdiHEa_rowMain{cursor:pointer;text-align:left;background:0 0;border:none;flex:1;align-items:center;gap:6px;min-width:0;padding:0;display:flex}.bdiHEa_rowMain:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.bdiHEa_rowIcon{flex:none;align-items:center;display:inline-flex}.bdiHEa_rowName{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);overflow:hidden}.bdiHEa_rowPath{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);flex:1;overflow:hidden}.bdiHEa_lineCounts{font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);font-variant-numeric:tabular-nums;flex:none;gap:5px;display:inline-flex}.bdiHEa_lineNote{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);white-space:nowrap;flex:none}.bdiHEa_row .bdiHEa_rowAction,.bdiHEa_group .bdiHEa_headerAction{width:20px;height:20px}.bdiHEa_row:not(:hover):not(:focus-within) .bdiHEa_rowAction{opacity:0}@media (hover:none){.bdiHEa_row:not(:hover):not(:focus-within) .bdiHEa_rowAction{opacity:1}}.bdiHEa_messageBox{padding:4px 8px 8px;display:flex}.bdiHEa_commitInputWrap{box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);flex:1;align-items:center;gap:6px;min-width:0;min-height:32px;padding:0 4px 0 8px;display:flex;position:relative}.bdiHEa_commitInputWrap:focus-within{border-color:var(--dsw-alias-state-business-primary)}.bdiHEa_commitInput{min-width:0;height:22px;min-height:22px;max-height:132px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-s-14);resize:none;background:0 0;border:none;outline:none;flex:1;margin:4px 0;padding:0;line-height:22px;overflow-y:hidden}.bdiHEa_commitInput::placeholder{color:var(--dsw-alias-label-dimmed)}.bdiHEa_commitInput:disabled{opacity:.5}.bdiHEa_commitInput[data-message-busy=true]{color:#0000;caret-color:#0000}.bdiHEa_commitBusyText{pointer-events:none;font:var(--dsw-font-s-14);background-image:linear-gradient(90deg, var(--dsw-alias-label-tertiary) 0%, var(--dsw-alias-label-primary) 50%, var(--dsw-alias-label-tertiary) 100%);color:#0000;background-size:200% 100%;-webkit-background-clip:text;background-clip:text;align-items:center;padding:0 8px;line-height:22px;animation:2.6s linear infinite bdiHEa_commitSweep;display:flex;position:absolute;inset:0 38px 0 0}@keyframes bdiHEa_commitSweep{0%{background-position:200% 0}to{background-position:-200% 0}}@media (prefers-reduced-motion:reduce){.bdiHEa_commitBusyText{animation:none}}.bdiHEa_suggestButton{width:24px;height:24px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:8px;flex:none;justify-content:center;align-self:flex-start;align-items:center;margin-top:3px;padding:0;display:inline-flex}.bdiHEa_suggestButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.bdiHEa_suggestButton:disabled{opacity:.45;cursor:default}.bdiHEa_suggestBusy{color:var(--dsw-alias-interactive-bg-hover-accent);animation:1.2s ease-in-out infinite bdiHEa_commitSuggestPulse}@keyframes bdiHEa_commitSuggestPulse{50%{opacity:.45}}@media (prefers-reduced-motion:reduce){.bdiHEa_suggestBusy{animation:none}}.bdiHEa_commitModel{flex-direction:column;gap:4px;padding:8px 12px;display:flex}.bdiHEa_commitModelTitle{font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary)}.bdiHEa_commitModelDesc{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary)}.bdiHEa_commitModelRow{justify-content:space-between;align-items:center;gap:8px;display:flex}.bdiHEa_commitModelSwitch{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);cursor:pointer;align-items:center;gap:6px;display:inline-flex}.bdiHEa_commitModelSwitch input{accent-color:var(--dsw-alias-interactive-bg-hover-accent)}.bdiHEa_commitModelMenuRoot{width:100%;display:block}.bdiHEa_commitModelBox{display:block}.bdiHEa_commitModelCurrent{font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);overflow-wrap:anywhere;margin-bottom:4px}.bdiHEa_commitModelInput{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);width:100%;height:26px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);border-radius:6px;padding:0 6px}.bdiHEa_commitModelInput:disabled{opacity:.45;cursor:default}.bdiHEa_commitModelOption{box-sizing:border-box;width:100%;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xxs-12);text-align:left;cursor:pointer;background:0 0;border:none;border-radius:4px;align-items:center;gap:8px;padding:4px 6px;display:flex}.bdiHEa_commitModelOption:hover{background:var(--dsw-alias-interactive-bg-hover)}.bdiHEa_commitModelOptionText{text-overflow:ellipsis;white-space:nowrap;flex:auto;min-width:0;overflow:hidden}.bdiHEa_commitModelOptionNote{white-space:nowrap;min-width:max-content;color:var(--dsw-alias-label-tertiary);flex:none}.bdiHEa_commitModelHint{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary)}.bdiHEa_graphSvg{flex:none;max-width:40%;height:22px;overflow:hidden}.bdiHEa_graphContent{flex:1;align-items:center;gap:6px;min-width:0;padding-right:4px;display:flex}.bdiHEa_logRefs{flex-shrink:1;gap:3px;min-width:0;max-width:45%;display:inline-flex;overflow:hidden}.bdiHEa_logRef{border:1px solid var(--dsw-alias-border-l2);font:var(--dsw-font-xxxs-strong-11);color:var(--dsw-alias-brand-primary);white-space:nowrap;border-radius:3px;flex:none;padding:0 4px}.bdiHEa_session{flex-direction:column;flex:1;min-height:0;display:flex}.bdiHEa_filterRow{flex-wrap:wrap;flex:none;gap:4px;padding:6px 12px;display:flex}.bdiHEa_sessionList{flex-direction:column;flex:1;gap:4px;min-height:0;margin-top:4px;padding:0 6px 10px;display:flex;overflow-y:auto}.bdiHEa_filePath{text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code,monospace);flex:1;font-size:11px;overflow:hidden}.bdiHEa_opRow{width:100%;min-height:24px;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;text-align:left;background:0 0;border:0;border-radius:4px;align-items:center;gap:6px;padding:0 5px;font-size:11px;display:flex;position:relative}.bdiHEa_opRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.bdiHEa_opRow[data-op-error=true]{box-shadow:inset 2px 0 0 var(--dsw-alias-state-error-primary)}.bdiHEa_opMeta{white-space:nowrap;flex:none;align-items:baseline;gap:8px;min-width:0;margin-left:auto;display:inline-flex}.bdiHEa_opTime{color:var(--dsw-alias-label-tertiary);flex:none;font-size:10px}.bdiHEa_opFlag{color:var(--dsw-alias-state-business-primary);flex:none;font-size:10px}.bdiHEa_opFlagError{color:var(--dsw-alias-state-error-primary);flex:none;font-size:10px}.bdiHEa_opSize{color:var(--dsw-alias-label-tertiary);font-size:10px;font-family:var(--ds-font-family-code,monospace);flex:none}.bdiHEa_redactBanner{font:var(--dsw-font-xxxs-strong-11);color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-interactive-bg-hover);white-space:nowrap;border-radius:2px;flex:none;padding:2px 8px}.bdiHEa_mdBody{font:var(--dsw-font-xs-regular-13);min-height:0;padding:12px 16px 20px;line-height:1.6;overflow-y:auto}.bdiHEa_htmlPane{flex:1;min-height:0;display:flex}.bdiHEa_htmlFrame{background:var(--dsw-alias-bg-base);border:none;flex:1;width:100%}.bdiHEa_diffPane{border-top:1px solid var(--dsw-alias-border-l1);flex-direction:column;flex:none;min-height:0;display:flex}.bdiHEa_dragHandle{cursor:ns-resize;background:var(--dsw-alias-bg-base);flex:none;height:8px;position:relative}.bdiHEa_dragHandle:after{content:\"\";background:var(--dsw-alias-border-l2);border-radius:1px;width:36px;height:2px;position:absolute;top:3px;left:calc(50% - 18px)}.bdiHEa_dragHandle:hover:after,.bdiHEa_dragHandle:focus-visible:after{background:var(--dsw-alias-state-business-primary)}.bdiHEa_paneTabs{border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:2px;height:28px;padding:0 8px;display:flex}.bdiHEa_paneTab{color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-strong-11);cursor:pointer;background:0 0;border:none;border-bottom:2px solid #0000;align-self:stretch;align-items:center;padding:0 8px;display:inline-flex}.bdiHEa_paneTab:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.bdiHEa_paneTab[data-active=true]{color:var(--dsw-alias-label-primary);border-bottom-color:var(--dsw-alias-brand-primary)}.bdiHEa_paneTab:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-2px}.bdiHEa_altBody{flex-direction:column;flex:1;min-height:0;display:flex}.bdiHEa_diffHead{border-bottom:1px solid var(--dsw-alias-border-l1);align-items:center;gap:6px;padding:3px 8px 3px 10px;display:flex}.bdiHEa_diffPath{font-family:var(--ds-font-family-code,monospace);white-space:nowrap;text-overflow:ellipsis;color:var(--dsw-alias-label-primary);direction:rtl;flex:1;min-width:0;font-size:11px;overflow:hidden}.bdiHEa_diffStats{font-size:10px;font-family:var(--ds-font-family-code,monospace);flex:none;gap:5px;display:inline-flex}.bdiHEa_paneBody{flex:1;min-height:0;overflow-y:auto}.bdiHEa_readError{border-left:3px solid var(--dsw-alias-state-error-primary);word-break:break-word;margin:6px 8px;padding:6px 10px}.bdiHEa_paneGone{border-top:1px solid var(--dsw-alias-border-l1);flex:none;align-items:center;gap:8px;padding:8px 12px;display:flex}@keyframes bdiHEa_dsh-row-in{0%{opacity:0}}.bdiHEa_opRow:focus-visible,.bdiHEa_scmDisclosure:focus-visible,.bdiHEa_branchButton:focus-visible,.bdiHEa_syncButton:focus-visible,.bdiHEa_suggestButton:focus-visible,.bdiHEa_select:focus-visible,.bdiHEa_dragHandle:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}@media (prefers-reduced-motion:reduce){.bdiHEa_row{animation:none}}";
+		const tagId$9 = "dsh-external/dsh-better-sidebar/changes.module.css";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$9) + "]") === null) {
 			const tag = document.createElement("style");
 			tag.dataset.plugin = "dsh-external/dsh-better-sidebar";
-			tag.dataset.pluginCss = tagId$7;
-			tag.textContent = css$7;
+			tag.dataset.pluginCss = tagId$9;
+			tag.textContent = css$9;
 			document.head.appendChild(tag);
 		}
 		var changes_module_css_default = {
-			"commitBusyText": "bdiHEa_commitBusyText",
-			"head": "bdiHEa_head",
-			"treeChildren": "bdiHEa_treeChildren",
-			"commitInputWrap": "bdiHEa_commitInputWrap",
-			"commitModelDesc": "bdiHEa_commitModelDesc",
-			"suggestBusy": "bdiHEa_suggestBusy",
-			"lineCounts": "bdiHEa_lineCounts",
-			"rowAction": "bdiHEa_rowAction",
-			"sessionList": "bdiHEa_sessionList",
-			"filterRow": "bdiHEa_filterRow",
-			"commitModelInput": "bdiHEa_commitModelInput",
-			"branchLabel": "bdiHEa_branchLabel",
-			"gitScroll": "bdiHEa_gitScroll",
-			"opMeta": "bdiHEa_opMeta",
-			"rowIcon": "bdiHEa_rowIcon",
-			"commitModelOption": "bdiHEa_commitModelOption",
-			"logHash": "bdiHEa_logHash",
-			"htmlFrame": "bdiHEa_htmlFrame",
-			"paneBody": "bdiHEa_paneBody",
-			"row": "bdiHEa_row",
-			"countPill": "bdiHEa_countPill",
-			"dsh-row-in": "bdiHEa_dsh-row-in",
-			"headAction": "bdiHEa_headAction",
-			"session": "bdiHEa_session",
-			"fileGroup": "bdiHEa_fileGroup",
-			"select": "bdiHEa_select",
-			"filePath": "bdiHEa_filePath",
-			"logMore": "bdiHEa_logMore",
-			"logRow": "bdiHEa_logRow",
-			"chevron": "bdiHEa_chevron",
-			"commitModelOptionNote": "bdiHEa_commitModelOptionNote",
-			"diffStats": "bdiHEa_diffStats",
-			"root": "bdiHEa_root",
 			"readError": "bdiHEa_readError",
-			"group": "bdiHEa_group",
 			"dirName": "bdiHEa_dirName",
 			"commitModelMenuRoot": "bdiHEa_commitModelMenuRoot",
-			"commitModelRow": "bdiHEa_commitModelRow",
-			"opFlagError": "bdiHEa_opFlagError",
-			"rowName": "bdiHEa_rowName",
-			"suggestButton": "bdiHEa_suggestButton",
-			"diffHead": "bdiHEa_diffHead",
-			"commitModelCurrent": "bdiHEa_commitModelCurrent",
-			"lineNote": "bdiHEa_lineNote",
-			"groupHeader": "bdiHEa_groupHeader",
-			"diffPath": "bdiHEa_diffPath",
-			"commitModelSwitch": "bdiHEa_commitModelSwitch",
+			"commitInputWrap": "bdiHEa_commitInputWrap",
 			"mdBody": "bdiHEa_mdBody",
-			"git": "bdiHEa_git",
-			"commitSweep": "bdiHEa_commitSweep",
-			"rowMain": "bdiHEa_rowMain",
-			"commitInput": "bdiHEa_commitInput",
-			"dragHandle": "bdiHEa_dragHandle",
-			"commitModelTitle": "bdiHEa_commitModelTitle",
-			"logLine2": "bdiHEa_logLine2",
-			"opTime": "bdiHEa_opTime",
-			"selectors": "bdiHEa_selectors",
-			"opRow": "bdiHEa_opRow",
-			"commitSuggestPulse": "bdiHEa_commitSuggestPulse",
-			"dirRow": "bdiHEa_dirRow",
-			"redactBanner": "bdiHEa_redactBanner",
-			"paneGone": "bdiHEa_paneGone",
-			"logSubject": "bdiHEa_logSubject",
-			"commitModelHint": "bdiHEa_commitModelHint",
-			"tree": "bdiHEa_tree",
-			"headerAction": "bdiHEa_headerAction",
-			"commitBar": "bdiHEa_commitBar",
-			"logMeta": "bdiHEa_logMeta",
-			"commitModelOptionText": "bdiHEa_commitModelOptionText",
-			"commitModelBox": "bdiHEa_commitModelBox",
+			"graphContent": "bdiHEa_graphContent",
+			"headAction": "bdiHEa_headAction",
 			"opFlag": "bdiHEa_opFlag",
-			"opSize": "bdiHEa_opSize",
-			"diffPane": "bdiHEa_diffPane",
-			"commitModel": "bdiHEa_commitModel",
+			"altBody": "bdiHEa_altBody",
+			"groupHeader": "bdiHEa_groupHeader",
 			"htmlPane": "bdiHEa_htmlPane",
+			"paneTabs": "bdiHEa_paneTabs",
 			"logRef": "bdiHEa_logRef",
-			"logLine1": "bdiHEa_logLine1",
-			"commitRow": "bdiHEa_commitRow"
+			"htmlFrame": "bdiHEa_htmlFrame",
+			"paneGone": "bdiHEa_paneGone",
+			"scmHeader": "bdiHEa_scmHeader",
+			"lensBody": "bdiHEa_lensBody",
+			"suggestBusy": "bdiHEa_suggestBusy",
+			"messageBox": "bdiHEa_messageBox",
+			"dragHandle": "bdiHEa_dragHandle",
+			"graphSection": "bdiHEa_graphSection",
+			"paneTab": "bdiHEa_paneTab",
+			"gitFooter": "bdiHEa_gitFooter",
+			"diffStats": "bdiHEa_diffStats",
+			"actionErrorText": "bdiHEa_actionErrorText",
+			"root": "bdiHEa_root",
+			"commitSweep": "bdiHEa_commitSweep",
+			"tree": "bdiHEa_tree",
+			"commitModelTitle": "bdiHEa_commitModelTitle",
+			"chevron": "bdiHEa_chevron",
+			"opSize": "bdiHEa_opSize",
+			"rowMain": "bdiHEa_rowMain",
+			"commitSuggestPulse": "bdiHEa_commitSuggestPulse",
+			"opRow": "bdiHEa_opRow",
+			"commitModelSwitch": "bdiHEa_commitModelSwitch",
+			"lineCounts": "bdiHEa_lineCounts",
+			"commitModel": "bdiHEa_commitModel",
+			"commitBusyText": "bdiHEa_commitBusyText",
+			"commitModelBox": "bdiHEa_commitModelBox",
+			"rowIcon": "bdiHEa_rowIcon",
+			"graphArea": "bdiHEa_graphArea",
+			"changesSection": "bdiHEa_changesSection",
+			"commitModelOptionNote": "bdiHEa_commitModelOptionNote",
+			"commitModelRow": "bdiHEa_commitModelRow",
+			"branchMenu": "bdiHEa_branchMenu",
+			"group": "bdiHEa_group",
+			"dsh-row-in": "bdiHEa_dsh-row-in",
+			"guide": "bdiHEa_guide",
+			"branchButton": "bdiHEa_branchButton",
+			"dirRow": "bdiHEa_dirRow",
+			"commitModelHint": "bdiHEa_commitModelHint",
+			"filePath": "bdiHEa_filePath",
+			"opTime": "bdiHEa_opTime",
+			"opFlagError": "bdiHEa_opFlagError",
+			"opMeta": "bdiHEa_opMeta",
+			"rowPath": "bdiHEa_rowPath",
+			"diffPane": "bdiHEa_diffPane",
+			"diffHead": "bdiHEa_diffHead",
+			"commitInput": "bdiHEa_commitInput",
+			"row": "bdiHEa_row",
+			"redactBanner": "bdiHEa_redactBanner",
+			"scmDisclosure": "bdiHEa_scmDisclosure",
+			"rowName": "bdiHEa_rowName",
+			"commitModelDesc": "bdiHEa_commitModelDesc",
+			"diffPath": "bdiHEa_diffPath",
+			"select": "bdiHEa_select",
+			"paneBody": "bdiHEa_paneBody",
+			"head": "bdiHEa_head",
+			"graphSvg": "bdiHEa_graphSvg",
+			"session": "bdiHEa_session",
+			"rowAction": "bdiHEa_rowAction",
+			"suggestButton": "bdiHEa_suggestButton",
+			"filterRow": "bdiHEa_filterRow",
+			"syncButton": "bdiHEa_syncButton",
+			"gitScroll": "bdiHEa_gitScroll",
+			"countPill": "bdiHEa_countPill",
+			"commitModelInput": "bdiHEa_commitModelInput",
+			"commitModelOption": "bdiHEa_commitModelOption",
+			"commitModelCurrent": "bdiHEa_commitModelCurrent",
+			"git": "bdiHEa_git",
+			"footerRow": "bdiHEa_footerRow",
+			"headerAction": "bdiHEa_headerAction",
+			"actionError": "bdiHEa_actionError",
+			"scmActions": "bdiHEa_scmActions",
+			"commitModelOptionText": "bdiHEa_commitModelOptionText",
+			"lineNote": "bdiHEa_lineNote",
+			"logRefs": "bdiHEa_logRefs",
+			"sessionList": "bdiHEa_sessionList"
 		};
 		//#endregion
 		//#region src/client/changes/CommitModelSettings.tsx
@@ -10843,6 +11093,785 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
+		//#region src/client/AnchoredPopover.tsx
+		/**
+		* The anchored floating popover of the Tasks page (node details, job output,
+		* workflow run detail): a viewport-anchored card portaled to `document.body`,
+		* positioned below its anchor and flipped above when the viewport bottom
+		* would clip it. Dismissal follows the proven selection-popup contract
+		* (fixes upstream issue #425): outside mousedown, Escape, document hidden,
+		* window blur, and the ANCHOR leaving the viewport (tab switches flip the
+		* pane to display:none, which has no DOM event — the IntersectionObserver
+		* geometry signal is the only reliable one).
+		*
+		* DRAGGABLE mode: the job-output popover must be movable (a long log needs to
+		* sit wherever the reader puts it). While `draggable`, dragging the card (or
+		* its `data-popover-handle` area) moves it; the offset is clamped to the
+		* viewport and a double click re-anchors it. The card stays portaled and
+		* viewport-positioned — DSH 0.1.5 has no host free-window API, so the drag
+		* is implemented here rather than reaching for a platform window.
+		*/
+		/** The popover's default visual width (viewport-clamped). */
+		const POP_WIDTH = 264;
+		/** Free space kept at the viewport edges. */
+		const VIEWPORT_MARGIN$1 = 8;
+		/**
+		* Render a viewport-anchored popover. The caller owns WHAT is shown inside;
+		* this component owns geometry, dragging and dismissal. Changing the anchor
+		* re-measures and resets any drag offset.
+		*/
+		function AnchoredPopover(props) {
+			const { anchor, onClose, draggable = false, width = POP_WIDTH, children } = props;
+			const cardRef = (0, react.useRef)(null);
+			const onCloseRef = (0, react.useRef)(onClose);
+			onCloseRef.current = onClose;
+			const [pos, setPos] = (0, react.useState)(null);
+			/** Reader-applied drag offset (added to the anchored position). */
+			const [offset, setOffset] = (0, react.useState)({
+				x: 0,
+				y: 0
+			});
+			const offsetRef = (0, react.useRef)(offset);
+			offsetRef.current = offset;
+			/** The anchored baseline: a drag always starts from the measured position. */
+			const baseRef = (0, react.useRef)({
+				left: 0,
+				top: 0
+			});
+			const cardWidth = Math.min(width, window.innerWidth - 16);
+			(0, react.useLayoutEffect)(() => {
+				if (anchor === null) {
+					setPos(null);
+					return;
+				}
+				const card = cardRef.current;
+				if (card === null) return;
+				const rect = anchor.getBoundingClientRect();
+				const height = card.offsetHeight;
+				let top = rect.bottom + 6;
+				if (top + height > window.innerHeight - VIEWPORT_MARGIN$1) top = Math.max(VIEWPORT_MARGIN$1, rect.top - height - 6);
+				const left = Math.min(Math.max(VIEWPORT_MARGIN$1, rect.left), Math.max(VIEWPORT_MARGIN$1, window.innerWidth - cardWidth - VIEWPORT_MARGIN$1));
+				baseRef.current = {
+					left,
+					top
+				};
+				setPos({
+					left: left + offsetRef.current.x,
+					top: top + offsetRef.current.y
+				});
+			}, [
+				anchor,
+				children,
+				cardWidth
+			]);
+			(0, react.useEffect)(() => {
+				setOffset({
+					x: 0,
+					y: 0
+				});
+			}, [anchor]);
+			/** Drag the card (buttons inside it keep working). */
+			const onPointerDown = (0, react.useCallback)((event) => {
+				if (!draggable || event.button !== 0) return;
+				if (event.target.closest("button, input, textarea, select, a, [data-popover-no-drag]") !== null) return;
+				event.preventDefault();
+				const startX = event.clientX;
+				const startY = event.clientY;
+				const start = offsetRef.current;
+				const base = baseRef.current;
+				const onMove = (move) => {
+					const nextX = Math.min(Math.max(start.x + (move.clientX - startX), VIEWPORT_MARGIN$1 - base.left), Math.max(VIEWPORT_MARGIN$1 - base.left, window.innerWidth - cardWidth - VIEWPORT_MARGIN$1 - base.left));
+					const nextY = Math.min(Math.max(start.y + (move.clientY - startY), VIEWPORT_MARGIN$1 - base.top), Math.max(VIEWPORT_MARGIN$1 - base.top, window.innerHeight - 48 - base.top));
+					setOffset({
+						x: nextX,
+						y: nextY
+					});
+					setPos({
+						left: base.left + nextX,
+						top: base.top + nextY
+					});
+				};
+				const onUp = () => {
+					window.removeEventListener("pointermove", onMove);
+					window.removeEventListener("pointerup", onUp);
+					window.removeEventListener("pointercancel", onUp);
+				};
+				window.addEventListener("pointermove", onMove);
+				window.addEventListener("pointerup", onUp);
+				window.addEventListener("pointercancel", onUp);
+			}, [draggable, cardWidth]);
+			(0, react.useEffect)(() => {
+				if (anchor === null) return;
+				const onMouseDown = (event) => {
+					const card = cardRef.current;
+					if (card !== null && (card === event.target || card.contains(event.target))) return;
+					if (anchor === event.target || anchor.contains(event.target)) return;
+					onCloseRef.current();
+				};
+				const onKeyDown = (event) => {
+					if (event.key === "Escape") onCloseRef.current();
+				};
+				const onHidden = () => {
+					if (document.hidden) onCloseRef.current();
+				};
+				const onBlur = () => {
+					onCloseRef.current();
+				};
+				document.addEventListener("mousedown", onMouseDown, true);
+				document.addEventListener("keydown", onKeyDown, true);
+				document.addEventListener("visibilitychange", onHidden);
+				window.addEventListener("blur", onBlur);
+				let observer;
+				if (typeof IntersectionObserver !== "undefined") {
+					observer = new IntersectionObserver((entries) => {
+						for (const entry of entries) if (!entry.isIntersecting) onCloseRef.current();
+					}, { threshold: 0 });
+					observer.observe(anchor);
+				}
+				return () => {
+					document.removeEventListener("mousedown", onMouseDown, true);
+					document.removeEventListener("keydown", onKeyDown, true);
+					document.removeEventListener("visibilitychange", onHidden);
+					window.removeEventListener("blur", onBlur);
+					observer?.disconnect();
+				};
+			}, [anchor]);
+			if (anchor === null) return null;
+			return (0, react_dom.createPortal)(/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				ref: cardRef,
+				role: "dialog",
+				style: {
+					position: "fixed",
+					left: pos?.left ?? -9999,
+					top: pos?.top ?? -9999,
+					width: cardWidth,
+					zIndex: 90,
+					visibility: pos === null ? "hidden" : "visible"
+				},
+				onPointerDown,
+				onDoubleClick: draggable ? () => {
+					setOffset({
+						x: 0,
+						y: 0
+					});
+				} : void 0,
+				children
+			}), document.body);
+		}
+		//#endregion
+		//#region src/client/changes/graph-layout.ts
+		/** Corner radius of a lane-change bend, clamped per edge by its real estate. */
+		const CORNER_RADIUS = 4;
+		/**
+		* Half of the rail stroke (`graph.module.css` paints `stroke-width: 1.5`).
+		*
+		* A join edge's crossing runs along the row's BOTTOM EDGE, and everything the
+		* SVG paints outside its box is covered by the NEXT row's background (siblings
+		* paint in order — `overflow: visible` alone cannot win that fight). Centring
+		* the crossing half a stroke above the boundary keeps the whole line inside the
+		* row while its lower edge still lands exactly ON the boundary, where the next
+		* row's vertical picks it up — measured at 8× zoom, the crossing renders the
+		* full 1.5px instead of the 0.75px half a stroke that spilled.
+		*/
+		const STROKE_INSET = .75;
+		/**
+		* The SVG path of one segment — a "rectangular" edge with ONE rounded elbow,
+		* never a bare diagonal.
+		*
+		* WHERE the elbow sits is what keeps every line one colour. An edge that
+		* OPENS a line (a merge's second parent) leaves the node horizontally and
+		* rounds down into its own new lane. An edge that JOINS a line (a branch
+		* ending at its fork) must instead run down its OWN lane and then turn into
+		* the surviving lane along the row boundary: rounding into the target lane
+		* and dropping there would paint a piece of the leaving branch's colour
+		* straight onto the surviving line — the exact "there is still a green
+		* stretch on the red main line" defect.
+		*
+		* A full-row crossing (neither end at a node; the current layout never emits
+		* one) bends twice at mid-height. Coordinates stay in the row-fraction space
+		* of {@link GraphSegment}; callers scale by the row height.
+		*/
+		function edgePath(segment, laneX, rowHeight) {
+			const x1 = laneX(segment.fromLane);
+			const x2 = laneX(segment.toLane);
+			const y1 = segment.fromY * rowHeight;
+			const y2 = segment.toY * rowHeight;
+			if (x1 === x2 || y1 === y2) return `M ${x1} ${y1} L ${x2} ${y2}`;
+			const dx = Math.sign(x2 - x1);
+			const dy = Math.sign(y2 - y1);
+			const r = Math.min(CORNER_RADIUS, Math.abs(x2 - x1) / 2, Math.abs(y2 - y1) / 2);
+			if (segment.join || segment.toY === .5) {
+				const yb = y2 - STROKE_INSET;
+				const rj = Math.min(r, Math.abs(yb - y1) / 2);
+				return `M ${x1} ${y1} L ${x1} ${yb - dy * rj} Q ${x1} ${yb} ${x1 + dx * rj} ${yb} L ${x2} ${yb}`;
+			}
+			if (segment.fromY === .5) return `M ${x1} ${y1} L ${x2 - dx * r} ${y1} Q ${x2} ${y1} ${x2} ${y1 + dy * r} L ${x2} ${y2}`;
+			const ym = (y1 + y2) / 2;
+			return `M ${x1} ${y1} L ${x1} ${ym - dy * r} Q ${x1} ${ym} ${x1 + dx * r} ${ym} L ${x2 - dx * r} ${ym} Q ${x2} ${ym} ${x2} ${ym + dy * r} L ${x2} ${y2}`;
+		}
+		/**
+		* Lay out a unique, child-before-parent commit prefix, without looking ahead.
+		* Render segments before the node, whose center is (lane, 0.5). Scale x by the
+		* lane spacing (plus padding), y by row height. A crossing is not a junction;
+		* only an endpoint at a commit center represents a connection to that commit.
+		*
+		* Recompute on the entire concatenated prefix when fetching another page: every
+		* previously returned row, including its width and dangling edges, is unchanged.
+		* Missing parents deliberately remain reserved through the bottom edge. Do not
+		* truncate them based on whether a parent is currently loaded.
+		*
+		* First-parent continuations inherit their lane/color when possible. Other new
+		* branches and disconnected tips get monotonically allocated color indices;
+		* callers may reduce these modulo a theme palette. Vacant lanes are reused but
+		* live lanes never shift, avoiding accidental connections and pagination jitter.
+		*
+		* Cost is O(sum of frontier widths + edges), with O(frontier width) working
+		* space, excluding output. Width includes vacant slots between live lanes.
+		*/
+		function layoutGraph(nodes) {
+			const lanes = [];
+			const targets = /* @__PURE__ */ new Map();
+			const rows = [];
+			let nextColor = 0;
+			for (const node of nodes) {
+				let freeCursor = 0;
+				/** The next free lane, never the lane this row's node sits on: the node's
+				*  consumed lane LOOKS free, but the row still draws strokes there (the
+				*  node's own outgoing edges and its dot), so handing it to a new line
+				*  would paint that line's colour over the node's line — the reported
+				*  "there is still a green stretch on the red main line". `-1` means no
+				*  exclusion (the node has not picked its lane yet). */
+				const freeLane = (exclude) => {
+					while (lanes[freeCursor] !== void 0 || freeCursor === exclude) freeCursor++;
+					return freeCursor++;
+				};
+				const incoming = targets.get(node.hashFull);
+				const lane = incoming?.lane ?? freeLane(-1);
+				const colorIndex = incoming?.colorIndex ?? nextColor++;
+				const segments = [];
+				let laneCount = Math.max(lanes.length, lane + 1);
+				for (const reservation of lanes) {
+					if (!reservation) continue;
+					segments.push({
+						fromLane: reservation.lane,
+						toLane: reservation.lane,
+						fromY: 0,
+						toY: reservation === incoming ? .5 : 1,
+						colorIndex: reservation.colorIndex,
+						join: false,
+						targetHash: reservation.hash
+					});
+				}
+				if (incoming) {
+					targets.delete(node.hashFull);
+					lanes[lane] = void 0;
+				}
+				const parents = new Set(node.parents);
+				let firstParent = true;
+				for (const hash of parents) {
+					let reservation = targets.get(hash);
+					const opening = reservation === void 0;
+					if (!reservation) {
+						const parentLane = firstParent ? lane : freeLane(lane);
+						reservation = {
+							hash,
+							lane: parentLane,
+							colorIndex: firstParent ? colorIndex : nextColor++
+						};
+						lanes[parentLane] = reservation;
+						targets.set(hash, reservation);
+					}
+					segments.push({
+						fromLane: lane,
+						toLane: reservation.lane,
+						fromY: .5,
+						toY: 1,
+						colorIndex: opening ? reservation.colorIndex : colorIndex,
+						join: !opening,
+						targetHash: hash
+					});
+					laneCount = Math.max(laneCount, reservation.lane + 1);
+					firstParent = false;
+				}
+				rows.push({
+					hashFull: node.hashFull,
+					lane,
+					colorIndex,
+					laneCount,
+					segments
+				});
+				while (lanes.length && lanes[lanes.length - 1] === void 0) lanes.pop();
+			}
+			return rows;
+		}
+		//#endregion
+		//#region \0dsh-css:/home/runner/work/DSH-better-sidebar/DSH-better-sidebar/src/client/changes/graph.module.css.mjs
+		const css$8 = ".EKL9oq_root{min-width:0;min-height:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);flex-direction:column;flex:1;display:flex}.EKL9oq_toolbar{flex-wrap:wrap;align-items:center;gap:6px;padding:6px 12px;display:flex}.EKL9oq_select{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);min-width:0;max-width:100%;height:28px;color:var(--dsw-alias-label-primary);font:inherit;border-radius:3px;flex:1}.EKL9oq_hint{color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-11)}.EKL9oq_scroll{flex:1;min-height:0;overflow:auto}.EKL9oq_row{text-align:start;background:var(--dsw-alias-bg-base);width:100%;min-width:0;height:28px;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;border:0;align-items:center;padding:0 8px 0 4px;display:flex;position:relative}.EKL9oq_row[aria-pressed=true]{background:var(--dsw-alias-interactive-bg-active)}.EKL9oq_row[aria-pressed=true]:before{content:\"\";background:var(--dsw-alias-state-business-primary);border-radius:1px;width:2px;position:absolute;top:3px;bottom:3px;left:0}.EKL9oq_row:hover{background:var(--dsw-alias-interactive-bg-hover)}.EKL9oq_row:focus-visible{outline:1px solid var(--dsw-alias-border-l2);outline-offset:-1px}.EKL9oq_graph{flex-shrink:0;max-width:45%;overflow:visible}.EKL9oq_graph path{fill:none;stroke:currentColor;stroke-width:1.5px}.EKL9oq_graph circle{fill:currentColor}.EKL9oq_refs{flex:none;align-items:center;gap:4px;min-width:0;max-width:55%;padding-left:6px;display:flex;overflow:hidden}.EKL9oq_ref{min-width:0;max-width:140px;height:16px;font:var(--dsw-font-xxxs-strong-11);color:var(--dsw-alias-label-primary);white-space:nowrap;border:1px solid;border-radius:3px;flex:none;align-items:center;gap:3px;padding:0 5px;display:inline-flex}.EKL9oq_ref svg{flex:none}.EKL9oq_refName{text-overflow:ellipsis;min-width:0;overflow:hidden}.EKL9oq_ref[data-tone=head]{background:var(--dsw-alias-interactive-bg-active)}.EKL9oq_subject{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);flex:1;padding-left:6px;overflow:hidden}.EKL9oq_notice{padding:8px 12px}.EKL9oq_card{box-sizing:border-box;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);box-shadow:var(--dsw-shadow-lv3);font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);border-radius:4px;flex-direction:column;gap:6px;padding:8px 10px;display:flex}.EKL9oq_hoverSubject{font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}.EKL9oq_hoverMeta{min-width:0;color:var(--dsw-alias-label-tertiary);font:var(--dsw-font-xxxs-11);overflow-wrap:anywhere;align-items:center;gap:4px;display:flex}.EKL9oq_dash{color:var(--dsw-alias-label-tertiary);font:var(--dsw-font-xxxs-11)}.EKL9oq_graph [data-color=\"0\"],.EKL9oq_ref[data-color=\"0\"]{color:var(--dsw-alias-state-business-primary,var(--dsw-alias-label-primary))}.EKL9oq_graph [data-color=\"1\"],.EKL9oq_ref[data-color=\"1\"]{color:var(--dsw-alias-state-success-primary,var(--dsw-alias-label-primary))}.EKL9oq_graph [data-color=\"2\"],.EKL9oq_ref[data-color=\"2\"]{color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-label-primary))}.EKL9oq_graph [data-color=\"3\"],.EKL9oq_ref[data-color=\"3\"]{color:var(--dsw-alias-state-error-primary,var(--dsw-alias-label-primary))}.EKL9oq_graph [data-color=\"4\"],.EKL9oq_ref[data-color=\"4\"]{color:var(--dsw-alias-label-secondary)}.EKL9oq_details{overflow-wrap:anywhere;flex-direction:column;flex:1;gap:6px;min-height:0;padding:8px 12px 10px;display:flex;overflow-y:auto}.EKL9oq_detailSubject{font:var(--dsw-font-xs-strong-13);color:var(--dsw-alias-label-primary)}.EKL9oq_metaRow{align-items:center;gap:6px;min-width:0;display:flex}.EKL9oq_metaGlyph{color:var(--dsw-alias-label-tertiary);flex:none;display:inline-flex}.EKL9oq_metaLabel{color:var(--dsw-alias-label-tertiary);font:var(--dsw-font-xxxs-strong-11);flex:none}.EKL9oq_metaValue{min-width:0;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-11)}.EKL9oq_hashChip{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);font:var(--dsw-font-markdown-code-block-small);overflow-wrap:anywhere;border-radius:2px;padding:1px 4px}.EKL9oq_parents{flex-wrap:wrap;gap:4px;min-width:0;display:flex}.EKL9oq_parentChip{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);font:var(--dsw-font-markdown-code-block-small);border-radius:2px;padding:1px 4px}.EKL9oq_detailRefs{flex-wrap:wrap;gap:4px;min-width:0;display:flex}.EKL9oq_messageBody{border-top:1px solid var(--dsw-alias-border-l1);min-width:0;color:var(--dsw-alias-label-primary);font:var(--dsw-font-xs-regular-13);margin-top:2px;padding-top:8px;line-height:1.6}";
+		const tagId$8 = "dsh-external/dsh-better-sidebar/graph.module.css";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$8) + "]") === null) {
+			const tag = document.createElement("style");
+			tag.dataset.plugin = "dsh-external/dsh-better-sidebar";
+			tag.dataset.pluginCss = tagId$8;
+			tag.textContent = css$8;
+			document.head.appendChild(tag);
+		}
+		var graph_module_css_default = {
+			"metaGlyph": "EKL9oq_metaGlyph",
+			"refName": "EKL9oq_refName",
+			"dash": "EKL9oq_dash",
+			"subject": "EKL9oq_subject",
+			"notice": "EKL9oq_notice",
+			"hoverSubject": "EKL9oq_hoverSubject",
+			"select": "EKL9oq_select",
+			"scroll": "EKL9oq_scroll",
+			"hoverMeta": "EKL9oq_hoverMeta",
+			"refs": "EKL9oq_refs",
+			"row": "EKL9oq_row",
+			"graph": "EKL9oq_graph",
+			"card": "EKL9oq_card",
+			"toolbar": "EKL9oq_toolbar",
+			"hint": "EKL9oq_hint",
+			"ref": "EKL9oq_ref",
+			"metaValue": "EKL9oq_metaValue",
+			"parentChip": "EKL9oq_parentChip",
+			"messageBody": "EKL9oq_messageBody",
+			"detailRefs": "EKL9oq_detailRefs",
+			"metaLabel": "EKL9oq_metaLabel",
+			"details": "EKL9oq_details",
+			"parents": "EKL9oq_parents",
+			"root": "EKL9oq_root",
+			"metaRow": "EKL9oq_metaRow",
+			"detailSubject": "EKL9oq_detailSubject",
+			"hashChip": "EKL9oq_hashChip"
+		};
+		//#endregion
+		//#region src/client/changes/GitGraphSection.tsx
+		/**
+		* The Git lens's commit-graph area: read-only history, lazily paged, never
+		* checking anything out. No status subscription and no timer — the section
+		* unfolds, becomes visible, changes branch or takes a refresh tick, and those
+		* are the only request triggers.
+		*
+		* Mounted by {@link GitLens} on the repo/worktree target the lens has already
+		* selected; it owns its own bounded page (`git.graph`) and reports the
+		* selected commit upward for the tab's bottom pane (`details` tab). */
+		/** One-line rows: the GitLens-style picture is rail + ref pills + subject on
+		*  a single 28px line; author, date and hash live in the details card (and
+		*  the row's tooltip). */
+		const ROW_HEIGHT = 28;
+		/** The lane palette is five theme slots. Every painter — lane paths, the node
+		*  dot and the ref pills — resolves through this ONE mapping; the colors
+		*  themselves live in `graph.module.css` (`[data-color]`). */
+		const PALETTE_SIZE = 5;
+		const colorSlot = (colorIndex) => colorIndex % PALETTE_SIZE;
+		const laneX = (lane) => 10 + lane * 12;
+		/** The `origin/main`-style refs of the loaded page, told apart from local
+		*  branches by the inventory's own full refs (a local branch may contain `/`). */
+		function remoteRefNames(branches) {
+			return new Set(branches.filter((item) => item.ref.startsWith("refs/remotes/")).map((item) => item.name));
+		}
+		/** HEAD is the local-current marker; remote refs read muted, local ones brand.
+		*  Exported for {@link CommitDetails}, which renders the same pills. */
+		function refTone(ref, remotes) {
+			if (ref === "HEAD") return "head";
+			return remotes.has(ref) ? "remote" : "local";
+		}
+		/** The pills one entry's refs render as, in the refs' own order. A literal
+		*  `HEAD` never becomes a pill of its own — it folds into the current local
+		*  branch's pill as a leading check, the convention every graph tool shares
+		*  (GitLens, GitKraken, …); only a DETACHED head renders it standalone. The
+		*  current branch's pill takes the emphasised `head` tone. */
+		function refPills(refs, remotes) {
+			const atHead = refs.includes("HEAD");
+			const named = refs.filter((ref) => ref !== "HEAD");
+			const current = atHead ? named.find((ref) => !remotes.has(ref)) : void 0;
+			const pills = named.map((name) => ({
+				name,
+				tone: name === current ? "head" : refTone(name, remotes),
+				current: name === current
+			}));
+			if (atHead && current === void 0) pills.unshift({
+				name: "HEAD",
+				tone: "head",
+				current: true
+			});
+			return pills;
+		}
+		/** One pill: the ref-kind icon (branch / remote globe) plus the name, with a
+		*  leading check when this is the branch the worktree stands on. `slot` paints
+		*  the pill in the commit's LANE colour (the same palette mapping the edges
+		*  and the node dot resolve through), so a branch head is recognisable by
+		*  colour alone. Shared by the graph rows, the hover card and the details
+		*  card so a ref reads the same everywhere. */
+		function RefPill({ pill, slot }) {
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+				className: graph_module_css_default.ref,
+				"data-tone": pill.tone,
+				"data-color": slot,
+				"data-current": pill.current || void 0,
+				children: [
+					pill.current && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCheckOutlineRegular, { size: 11 }),
+					pill.tone === "remote" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconGlobeOutlineRegular, { size: 11 }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconBranchOutlineRegular, { size: 11 }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: graph_module_css_default.refName,
+						children: pill.name
+					})
+				]
+			});
+		}
+		function GitGraphSection({ scope, worktree, visible, refreshTick = 0, onPreview, selectedRef, onClearPreview, onDetailsChange, onContextMenu }) {
+			const [branch, setBranch] = (0, react.useState)("");
+			const [page, setPage] = (0, react.useState)(null);
+			const [branches, setBranches] = (0, react.useState)([]);
+			const selectionRef = (0, react.useRef)(selectedRef);
+			selectionRef.current = selectedRef;
+			const clearPreviewRef = (0, react.useRef)(onClearPreview);
+			clearPreviewRef.current = onClearPreview;
+			const [loading, setLoading] = (0, react.useState)(false);
+			const [error, setError] = (0, react.useState)(null);
+			const [stale, setStale] = (0, react.useState)(false);
+			const [retry, setRetry] = (0, react.useState)(0);
+			const generation = (0, react.useRef)(0);
+			const active = (0, react.useRef)(null);
+			const pageRef = (0, react.useRef)(null);
+			const failedAppend = (0, react.useRef)(false);
+			/** One append in flight at a time: the end sentinel can re-intersect while a
+			*  page is still arriving, and two appends over one cursor would ask for the
+			*  same rows twice. */
+			const appending = (0, react.useRef)(false);
+			const scrollRef = (0, react.useRef)(null);
+			const sentinelRef = (0, react.useRef)(null);
+			/** Row hover preview: the middle information rung between the one-line row
+			*  (pills + subject) and the details card (everything). It opens only after
+			*  a short dwell so scrolling past rows never flashes cards; the pointer
+			*  leaving the row closes it (Escape / off-screen are AnchoredPopover's). */
+			const hoverTimer = (0, react.useRef)(null);
+			const [hover, setHover] = (0, react.useState)(null);
+			const cancelHover = () => {
+				if (hoverTimer.current !== null) {
+					clearTimeout(hoverTimer.current);
+					hoverTimer.current = null;
+				}
+				setHover(null);
+			};
+			(0, react.useEffect)(() => cancelHover, []);
+			const request = async (append) => {
+				if (!visible) return;
+				if (append && appending.current) return;
+				if (append) appending.current = true;
+				active.current?.abort();
+				const controller = new AbortController();
+				active.current = controller;
+				const gen = ++generation.current;
+				const previous = pageRef.current;
+				setLoading(true);
+				setError(null);
+				setStale(false);
+				try {
+					const result = await api.gitGraph(scope, {
+						branch: branch || void 0,
+						count: 50,
+						cursor: append ? previous?.nextCursor : void 0
+					}, worktree, controller.signal);
+					if (controller.signal.aborted || gen !== generation.current) return;
+					const next = append && previous ? {
+						...result,
+						entries: [...previous.entries, ...result.entries.filter((entry) => !previous.entries.some((old) => old.hashFull === entry.hashFull))]
+					} : result;
+					pageRef.current = next;
+					setPage(next);
+					setBranches(next.branches);
+					const selection = selectionRef.current;
+					if (!append && selection?.kind === "commit" && selection.worktree === worktree && (selection.repoRoot ?? "") === (scope.repoRoot ?? next.root ?? "") && !next.entries.some((entry) => entry.hashFull === selection.hashFull)) clearPreviewRef.current?.();
+				} catch (reason) {
+					if (controller.signal.aborted || gen !== generation.current) return;
+					failedAppend.current = append;
+					setStale(reason instanceof SidebarApiError && reason.code === "graph-stale");
+					setError(reason instanceof Error ? reason.message : String(reason));
+				} finally {
+					if (!controller.signal.aborted && gen === generation.current) {
+						setLoading(false);
+						appending.current = false;
+					}
+				}
+			};
+			(0, react.useEffect)(() => {
+				pageRef.current = null;
+				setPage(null);
+				setBranch("");
+				setBranches([]);
+			}, [
+				scope.sessionId,
+				scope.cwd,
+				scope.repoRoot,
+				worktree
+			]);
+			(0, react.useEffect)(() => {
+				if (visible) request(false);
+				return () => {
+					generation.current += 1;
+					active.current?.abort();
+				};
+			}, [
+				visible,
+				scope.sessionId,
+				scope.cwd,
+				scope.repoRoot,
+				worktree,
+				branch,
+				refreshTick,
+				retry
+			]);
+			/** Infinite scroll: the next page is requested as soon as the end sentinel
+			*  scrolls into view. The button below the rows stays as the fallback path
+			*  (and the only path where IntersectionObserver is unavailable). */
+			const requestRef = (0, react.useRef)(request);
+			requestRef.current = request;
+			(0, react.useEffect)(() => {
+				const node = sentinelRef.current;
+				if (node === null || !visible || !(page?.hasMore ?? false) || stale) return;
+				if (typeof IntersectionObserver !== "function") return;
+				const observer = new IntersectionObserver((entries) => {
+					if (entries.some((entry) => entry.isIntersecting)) requestRef.current(true);
+				}, {
+					root: scrollRef.current ?? void 0,
+					rootMargin: "200px"
+				});
+				observer.observe(node);
+				return () => {
+					observer.disconnect();
+				};
+			}, [
+				visible,
+				page?.hasMore,
+				page?.entries.length,
+				page?.nextCursor,
+				stale
+			]);
+			const rows = (0, react.useMemo)(() => layoutGraph(page?.entries ?? []), [page?.entries]);
+			const width = Math.max(28, ...rows.map((row) => laneX(row.laneCount) + 2));
+			const remotes = (0, react.useMemo)(() => remoteRefNames(branches), [branches]);
+			const selectedIndex = selectedRef?.kind === "commit" && selectedRef.worktree === worktree && (selectedRef.repoRoot ?? "") === (scope.repoRoot ?? page?.root ?? "") ? page?.entries.findIndex((entry) => entry.hashFull === selectedRef.hashFull) ?? -1 : -1;
+			const selected = selectedIndex >= 0 ? page?.entries[selectedIndex] : void 0;
+			/** The selected row's palette slot: the details card's pills wear the same
+			*  lane colour as the graph row the commit sits on. */
+			const selectedSlot = selectedIndex >= 0 ? colorSlot(rows[selectedIndex].colorIndex) : 0;
+			/** Report the selection upward for the changes tab's bottom pane. The
+			*  callback rides a ref so a fresh parent closure cannot re-fire the effect;
+			*  its deps are the selection itself. A HIDDEN lens keeps its report — the
+			*  pane below is shared by all lenses and stays put when the view above
+			*  switches; unmounting (tab close, scope change) is what clears it. */
+			const detailsRef = (0, react.useRef)(onDetailsChange);
+			detailsRef.current = onDetailsChange;
+			(0, react.useEffect)(() => {
+				if (!visible) return;
+				detailsRef.current?.(selected === void 0 ? null : {
+					entry: selected,
+					remotes,
+					slot: selectedSlot
+				});
+			}, [
+				visible,
+				selected,
+				remotes,
+				selectedSlot
+			]);
+			(0, react.useEffect)(() => () => {
+				detailsRef.current?.(null);
+			}, []);
+			const select = (entry) => onPreview({
+				kind: "commit",
+				hash: entry.hash,
+				hashFull: entry.hashFull,
+				subject: entry.subject,
+				worktree,
+				repoRoot: scope.repoRoot ?? page?.root
+			});
+			const chooseBranch = (value) => {
+				onClearPreview?.();
+				active.current?.abort();
+				generation.current += 1;
+				cancelHover();
+				setBranch(value);
+				pageRef.current = null;
+				setPage(null);
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
+				className: graph_module_css_default.root,
+				"aria-label": t("gitGraph"),
+				"data-git-graph": true,
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: graph_module_css_default.toolbar,
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+							className: graph_module_css_default.select,
+							"aria-label": t("graphBranchFilter"),
+							value: branch,
+							onChange: (event) => {
+								chooseBranch(event.target.value);
+							},
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: "",
+									children: t("graphAllBranches")
+								}),
+								branches.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: item.ref,
+									children: item.name
+								}, item.ref)),
+								branch && !branches.some((item) => item.ref === branch) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: branch,
+									children: branch
+								})
+							]
+						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: graph_module_css_default.scroll,
+						"aria-busy": loading,
+						ref: scrollRef,
+						children: [
+							error !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: graph_module_css_default.notice,
+								role: "alert",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Notice, {
+									kind: "warn",
+									children: [stale ? t("graphStale") : t("graphLoadError"), !stale && `: ${error}`]
+								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+									onClick: () => {
+										if (stale || !failedAppend.current) setRetry((value) => value + 1);
+										else request(true);
+									},
+									children: t("retry")
+								})]
+							}),
+							loading && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: graph_module_css_default.notice,
+								role: "status",
+								children: t("loading")
+							}),
+							!loading && !error && page !== null && page.entries.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: graph_module_css_default.notice,
+								children: t(page.isRepo ? "graphEmpty" : "notRepo")
+							}),
+							page?.entries.map((entry, index) => {
+								const row = rows[index];
+								const slot = colorSlot(row.colorIndex);
+								return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+									type: "button",
+									className: graph_module_css_default.row,
+									"data-graph-commit": entry.hashFull,
+									"aria-pressed": selected?.hashFull === entry.hashFull,
+									onMouseEnter: (event) => {
+										const anchor = event.currentTarget;
+										if (hoverTimer.current !== null) clearTimeout(hoverTimer.current);
+										hoverTimer.current = setTimeout(() => {
+											hoverTimer.current = null;
+											setHover({
+												entry,
+												anchor,
+												slot
+											});
+										}, 350);
+									},
+									onMouseLeave: cancelHover,
+									onClick: () => {
+										cancelHover();
+										select(entry);
+									},
+									onContextMenu: onContextMenu === void 0 ? void 0 : (event) => {
+										onContextMenu(event, entry);
+									},
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("svg", {
+											width,
+											height: ROW_HEIGHT,
+											viewBox: `0 0 ${width} ${ROW_HEIGHT}`,
+											preserveAspectRatio: "none",
+											className: graph_module_css_default.graph,
+											"aria-hidden": "true",
+											children: [row.segments.map((edge, i) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", {
+												"data-color": colorSlot(edge.colorIndex),
+												d: edgePath(edge, laneX, ROW_HEIGHT)
+											}, i)), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("circle", {
+												cx: laneX(row.lane),
+												cy: ROW_HEIGHT / 2,
+												r: 3,
+												"data-color": slot
+											})]
+										}),
+										entry.refs.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: graph_module_css_default.refs,
+											children: refPills(entry.refs, remotes).map((pill) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(RefPill, {
+												pill,
+												slot
+											}, pill.name))
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: graph_module_css_default.subject,
+											children: entry.subject
+										})
+									]
+								}, entry.hashFull);
+							}),
+							page?.hasMore && !stale && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: graph_module_css_default.notice,
+								ref: sentinelRef,
+								"data-graph-sentinel": true,
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+									disabled: loading,
+									onClick: () => {
+										request(true);
+									},
+									children: t("graphLoadMore")
+								})
+							})
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(AnchoredPopover, {
+						anchor: hover?.anchor ?? null,
+						onClose: cancelHover,
+						width: 280,
+						children: hover !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: graph_module_css_default.card,
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+									className: graph_module_css_default.hoverSubject,
+									children: hover.entry.subject
+								}),
+								hover.entry.refs.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+									className: graph_module_css_default.detailRefs,
+									children: refPills(hover.entry.refs, remotes).map((pill) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(RefPill, {
+										pill,
+										slot: hover.slot
+									}, pill.name))
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: graph_module_css_default.hoverMeta,
+									children: [
+										hover.entry.author,
+										" · ",
+										relativeTime(hover.entry.date)
+									]
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: graph_module_css_default.hoverMeta,
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", {
+											className: graph_module_css_default.hashChip,
+											children: hover.entry.hash
+										}),
+										" ",
+										hover.entry.date
+									]
+								})
+							]
+						})
+					})
+				]
+			});
+		}
+		//#endregion
 		//#region src/client/changes/change-tree.ts
 		/**
 		* Directories before files, then by name — case-insensitively.
@@ -10901,9 +11930,14 @@ window.__ModuleLoader__.load({
 		* Rows without a porcelain status (clean, ignored) are skipped, a repeated
 		* path counts once, and an empty input yields an empty list.
 		* @param entries - the group's `git status` entries.
+		* @param side - which band's reading to put on the leaves. The entries carry
+		*   both sides (a path can be in both groups), so the tree must be told which
+		*   one its rows stand for. `undefined` leaves the leaves count-less, which is
+		*   what the MERGE band wants: a conflict is not a line-count story, and
+		*   neither side's number may be presented as "the" number for it.
 		* @returns the tree's roots, ready to render in order.
 		*/
-		function buildChangeTree(entries) {
+		function buildChangeTree(entries, side) {
 			const root = {
 				name: "",
 				path: "",
@@ -10934,12 +11968,13 @@ window.__ModuleLoader__.load({
 					}
 					at = next;
 				}
+				const counts = side === void 0 ? void 0 : entry[side];
 				at.files.push({
 					kind: "file",
 					name: segments[segments.length - 1],
 					path: entry.path,
 					status,
-					...entry.counts !== void 0 ? { counts: entry.counts } : {}
+					...counts !== void 0 ? { counts } : {}
 				});
 			}
 			return finishChildren(root);
@@ -10976,74 +12011,55 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:/home/runner/work/DSH-better-sidebar/DSH-better-sidebar/src/client/diff/diff.module.css.mjs
-		const css$6 = ".sstWLa_rows{font-family:var(--ds-font-family-code,monospace);padding:4px 0 8px;font-size:11px}.sstWLa_row{cursor:default;align-items:flex-start;gap:5px;padding:0 10px;line-height:18px;display:flex}.sstWLa_row[data-folded=true]{cursor:pointer}.sstWLa_lineNo{width:2.5em;color:var(--dsw-alias-label-tertiary);text-align:right;user-select:none;flex:none;font-size:10px}.sstWLa_sign{text-align:center;user-select:none;flex:none;width:1em;font-weight:700}.sstWLa_row[data-kind=del] .sstWLa_sign,.sstWLa_row[data-kind=del] .sstWLa_text{color:var(--dsw-alias-state-error-primary)}.sstWLa_row[data-kind=add] .sstWLa_sign,.sstWLa_row[data-kind=add] .sstWLa_text{color:var(--dsw-alias-state-success-primary)}.sstWLa_row[data-kind=mod] .sstWLa_sign,.sstWLa_row[data-kind=mod] .sstWLa_text{color:var(--dsw-alias-state-business-primary)}.sstWLa_row[data-kind=context] .sstWLa_sign,.sstWLa_row[data-kind=context] .sstWLa_text{color:var(--dsw-alias-label-secondary)}.sstWLa_row[data-kind=read] .sstWLa_text{color:var(--dsw-alias-label-primary)}.sstWLa_row[data-kind=del]{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent)}.sstWLa_row[data-kind=add]{background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 8%, transparent)}.sstWLa_row[data-kind=mod]{background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 8%, transparent)}.sstWLa_row .sstWLa_text{white-space:pre-wrap;word-break:break-word;flex:1;min-width:0}.sstWLa_row[data-folded=true] .sstWLa_text{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.sstWLa_row[data-kind=meta] .sstWLa_metaText{color:var(--dsw-alias-label-tertiary);font-style:italic}.sstWLa_inlineChange{background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 26%, transparent);border-radius:3px;padding:0 1px}.sstWLa_tokComment{color:var(--dsw-alias-label-tertiary);font-style:italic}.sstWLa_tokKeyword{color:color-mix(in oklab, var(--dsw-alias-state-business-primary) 55%, var(--dsw-alias-state-error-primary))}.sstWLa_tokString{color:color-mix(in oklab, var(--dsw-alias-state-success-primary) 45%, var(--dsw-alias-state-business-primary))}.sstWLa_tokType{color:color-mix(in oklab, var(--dsw-alias-brand-primary) 60%, var(--dsw-alias-state-success-primary))}.sstWLa_tokNumber{color:var(--dsw-alias-state-warn-primary)}.sstWLa_tokFunction{color:color-mix(in oklab, var(--dsw-alias-state-warn-primary) 55%, var(--dsw-alias-state-error-primary))}.sstWLa_tokMacro{color:color-mix(in oklab, var(--dsw-alias-state-error-primary) 45%, var(--dsw-alias-state-business-primary))}.sstWLa_foldRow{padding:0 10px}.sstWLa_foldRow[data-expandable=true]{cursor:pointer}.sstWLa_foldRow[data-expandable=true]:hover{background:var(--dsw-alias-interactive-bg-hover)}.sstWLa_foldRow[data-expanded=true]{cursor:default;padding:0}.sstWLa_foldRow[data-expanded=true] .sstWLa_foldMarker{display:none}.sstWLa_foldMarker{color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-interactive-bg-hover);border-radius:4px;align-items:center;gap:5px;margin:2px 0;padding:2px 7px;display:inline-flex}.sstWLa_foldRow[data-expandable=true] .sstWLa_foldMarker{color:var(--dsw-alias-label-secondary)}.sstWLa_foldRow[data-expandable=true] .sstWLa_foldMarker:before{content:\"›\";color:var(--dsw-alias-label-tertiary);transition:transform var(--ds-transition-duration-slow) var(--ds-ease-in-out)}.sstWLa_expand{border:1px solid var(--dsw-alias-border-l1);width:calc(100% - 20px);color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;background:0 0;border-radius:6px;margin:4px 10px;padding:4px;font-size:11px;display:block}.sstWLa_expand:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.sstWLa_files,.sstWLa_fileBlock{flex-direction:column;display:flex}.sstWLa_file{width:100%;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;align-items:center;gap:6px;padding:6px 10px;font-size:11px;display:flex}.sstWLa_file:disabled{cursor:default}.sstWLa_file:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.sstWLa_fileChevron{width:12px;color:var(--dsw-alias-label-tertiary);transition:transform var(--ds-transition-duration-slow) var(--ds-ease-in-out);flex:none}.sstWLa_fileChevronExpanded{transform:rotate(90deg)}.sstWLa_filePath{font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-primary);word-break:break-all;min-width:0}.sstWLa_fileOld{text-overflow:ellipsis;white-space:nowrap;max-width:40%;color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code,monospace);flex:none;overflow:hidden}.sstWLa_fileTag{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);border-radius:4px;flex:none;padding:0 5px;font-size:10px;line-height:16px}.sstWLa_fileStats{font-size:10px;font-family:var(--ds-font-family-code,monospace);flex:none;gap:5px;margin-left:auto;display:inline-flex}.sstWLa_statAdd{color:var(--dsw-alias-state-success-primary)}.sstWLa_statDel{color:var(--dsw-alias-state-error-primary)}.sstWLa_row:focus-visible,.sstWLa_foldRow:focus-visible,.sstWLa_file:focus-visible,.sstWLa_expand:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}@media (prefers-reduced-motion:reduce){.sstWLa_fileChevron{transition:none}}";
-		const tagId$6 = "dsh-external/dsh-better-sidebar/diff.module.css";
-		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$6) + "]") === null) {
+		const css$7 = ".sstWLa_rows{font-family:var(--ds-font-family-code,monospace);padding:4px 0 8px;font-size:11px}.sstWLa_row{cursor:default;align-items:flex-start;gap:5px;padding:0 10px;line-height:18px;display:flex}.sstWLa_row[data-folded=true]{cursor:pointer}.sstWLa_lineNo{width:2.5em;color:var(--dsw-alias-label-tertiary);text-align:right;user-select:none;flex:none;font-size:10px}.sstWLa_sign{text-align:center;user-select:none;flex:none;width:1em;font-weight:700}.sstWLa_row[data-kind=del] .sstWLa_sign,.sstWLa_row[data-kind=del] .sstWLa_text{color:var(--dsw-alias-state-error-primary)}.sstWLa_row[data-kind=add] .sstWLa_sign,.sstWLa_row[data-kind=add] .sstWLa_text{color:var(--dsw-alias-state-success-primary)}.sstWLa_row[data-kind=mod] .sstWLa_sign,.sstWLa_row[data-kind=mod] .sstWLa_text{color:var(--dsw-alias-state-business-primary)}.sstWLa_row[data-kind=context] .sstWLa_sign,.sstWLa_row[data-kind=context] .sstWLa_text{color:var(--dsw-alias-label-secondary)}.sstWLa_row[data-kind=read] .sstWLa_text{color:var(--dsw-alias-label-primary)}.sstWLa_row[data-kind=del]{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent)}.sstWLa_row[data-kind=add]{background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 8%, transparent)}.sstWLa_row[data-kind=mod]{background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 8%, transparent)}.sstWLa_row .sstWLa_text{white-space:pre-wrap;word-break:break-word;flex:1;min-width:0}.sstWLa_row[data-folded=true] .sstWLa_text{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.sstWLa_row[data-kind=meta] .sstWLa_metaText{color:var(--dsw-alias-label-tertiary);font-style:italic}.sstWLa_inlineChange{background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 26%, transparent);border-radius:3px;padding:0 1px}.sstWLa_tokComment{color:var(--dsw-alias-label-tertiary);font-style:italic}.sstWLa_tokKeyword{color:color-mix(in oklab, var(--dsw-alias-state-business-primary) 55%, var(--dsw-alias-state-error-primary))}.sstWLa_tokString{color:color-mix(in oklab, var(--dsw-alias-state-success-primary) 45%, var(--dsw-alias-state-business-primary))}.sstWLa_tokType{color:color-mix(in oklab, var(--dsw-alias-brand-primary) 60%, var(--dsw-alias-state-success-primary))}.sstWLa_tokNumber{color:var(--dsw-alias-state-warn-primary)}.sstWLa_tokFunction{color:color-mix(in oklab, var(--dsw-alias-state-warn-primary) 55%, var(--dsw-alias-state-error-primary))}.sstWLa_tokMacro{color:color-mix(in oklab, var(--dsw-alias-state-error-primary) 45%, var(--dsw-alias-state-business-primary))}.sstWLa_foldRow{padding:0 10px}.sstWLa_foldRow[data-expandable=true]{cursor:pointer}.sstWLa_foldRow[data-expandable=true]:hover{background:var(--dsw-alias-interactive-bg-hover)}.sstWLa_foldRow[data-expanded=true]{cursor:default;padding:0}.sstWLa_foldRow[data-expanded=true] .sstWLa_foldMarker{display:none}.sstWLa_foldMarker{color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-interactive-bg-hover);border-radius:4px;align-items:center;gap:5px;margin:2px 0;padding:2px 7px;display:inline-flex}.sstWLa_foldRow[data-expandable=true] .sstWLa_foldMarker{color:var(--dsw-alias-label-secondary)}.sstWLa_foldRow[data-expandable=true] .sstWLa_foldMarker:before{content:\"›\";color:var(--dsw-alias-label-tertiary);transition:transform var(--ds-transition-duration-slow) var(--ds-ease-in-out)}.sstWLa_expand{border:1px solid var(--dsw-alias-border-l1);width:calc(100% - 20px);color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;background:0 0;border-radius:6px;margin:4px 10px;padding:4px;font-size:11px;display:block}.sstWLa_expand:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.sstWLa_files,.sstWLa_fileBlock{flex-direction:column;display:flex}.sstWLa_file{width:100%;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;align-items:center;gap:6px;padding:6px 10px;font-size:11px;display:flex}.sstWLa_file:disabled{cursor:default}.sstWLa_file:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.sstWLa_fileChevron{width:12px;color:var(--dsw-alias-label-tertiary);transition:transform var(--ds-transition-duration-slow) var(--ds-ease-in-out);flex:none}.sstWLa_fileChevronExpanded{transform:rotate(90deg)}.sstWLa_filePath{font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-primary);word-break:break-all;min-width:0}.sstWLa_fileOld{text-overflow:ellipsis;white-space:nowrap;max-width:40%;color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code,monospace);flex:none;overflow:hidden}.sstWLa_fileTag{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);border-radius:4px;flex:none;padding:0 5px;font-size:10px;line-height:16px}.sstWLa_fileStats{font-size:10px;font-family:var(--ds-font-family-code,monospace);flex:none;gap:5px;margin-left:auto;display:inline-flex}.sstWLa_statAdd{color:var(--dsw-alias-state-success-primary)}.sstWLa_statDel{color:var(--dsw-alias-state-error-primary)}.sstWLa_row:focus-visible,.sstWLa_foldRow:focus-visible,.sstWLa_file:focus-visible,.sstWLa_expand:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}@media (prefers-reduced-motion:reduce){.sstWLa_fileChevron{transition:none}}";
+		const tagId$7 = "dsh-external/dsh-better-sidebar/diff.module.css";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$7) + "]") === null) {
 			const tag = document.createElement("style");
 			tag.dataset.plugin = "dsh-external/dsh-better-sidebar";
-			tag.dataset.pluginCss = tagId$6;
-			tag.textContent = css$6;
+			tag.dataset.pluginCss = tagId$7;
+			tag.textContent = css$7;
 			document.head.appendChild(tag);
 		}
 		var diff_module_css_default = {
-			"fileChevronExpanded": "sstWLa_fileChevronExpanded",
-			"metaText": "sstWLa_metaText",
 			"files": "sstWLa_files",
-			"fileOld": "sstWLa_fileOld",
-			"tokKeyword": "sstWLa_tokKeyword",
-			"fileTag": "sstWLa_fileTag",
+			"tokNumber": "sstWLa_tokNumber",
+			"file": "sstWLa_file",
+			"inlineChange": "sstWLa_inlineChange",
+			"fileChevron": "sstWLa_fileChevron",
+			"sign": "sstWLa_sign",
+			"fileChevronExpanded": "sstWLa_fileChevronExpanded",
+			"foldMarker": "sstWLa_foldMarker",
+			"foldRow": "sstWLa_foldRow",
 			"expand": "sstWLa_expand",
+			"filePath": "sstWLa_filePath",
+			"fileStats": "sstWLa_fileStats",
+			"tokString": "sstWLa_tokString",
+			"metaText": "sstWLa_metaText",
+			"tokKeyword": "sstWLa_tokKeyword",
+			"tokComment": "sstWLa_tokComment",
 			"fileBlock": "sstWLa_fileBlock",
 			"row": "sstWLa_row",
+			"tokMacro": "sstWLa_tokMacro",
+			"text": "sstWLa_text",
+			"fileOld": "sstWLa_fileOld",
+			"rows": "sstWLa_rows",
+			"tokType": "sstWLa_tokType",
 			"lineNo": "sstWLa_lineNo",
-			"inlineChange": "sstWLa_inlineChange",
-			"tokComment": "sstWLa_tokComment",
-			"tokString": "sstWLa_tokString",
-			"foldMarker": "sstWLa_foldMarker",
-			"fileStats": "sstWLa_fileStats",
-			"filePath": "sstWLa_filePath",
+			"fileTag": "sstWLa_fileTag",
 			"statAdd": "sstWLa_statAdd",
 			"statDel": "sstWLa_statDel",
-			"text": "sstWLa_text",
-			"tokType": "sstWLa_tokType",
-			"tokFunction": "sstWLa_tokFunction",
-			"tokNumber": "sstWLa_tokNumber",
-			"rows": "sstWLa_rows",
-			"foldRow": "sstWLa_foldRow",
-			"sign": "sstWLa_sign",
-			"file": "sstWLa_file",
-			"tokMacro": "sstWLa_tokMacro",
-			"fileChevron": "sstWLa_fileChevron"
+			"tokFunction": "sstWLa_tokFunction"
 		};
 		//#endregion
 		//#region src/client/changes/GitLens.tsx
 		/**
-		* The Git lens of the changes tab: repository truth — the changed files
-		* (unstaged / staged) as a directory tree, stage/unstage, commit with a
-		* message box, branch and checkout switching, and a VSCode-like history with
-		* decorations, author and relative time. Clicking a changed file or a history
-		* row previews it in the tab's shared bottom pane (see {@link DiffPane}); rows
-		* carry right-click context menus with advanced operations (open in editor,
-		* discard, revert, cherry-pick, copy paths/hashes).
+		* Source Control inside the unchanged changes-tab shell: independent Changes
+		* and Graph disclosures, a draft above the resource groups, and a sticky
+		* checkout/sync footer. Status still comes from the one shared Git poller;
+		* mutations, worktree inventory and history reuse the existing host routes.
 		*
-		* The change list is a TREE, not a flat list: {@link buildChangeTree} folds
-		* each group's paths into directories (single-child chains compressed), so a
-		* nested change reads as structure instead of as a wall of rows. Directory
-		* rows disclose their subtree (`aria-expanded`); file rows carry the host's
-		* own file artwork, the porcelain letter and the trailing stage action, which
-		* only shows on hover/focus to keep the row quiet.
-		*
-		* The git status itself is NOT fetched here: it comes from the plugin's one
-		* shared store (`ui/git-status.ts`), which the file tree also subscribes to,
-		* so both surfaces color/lists the same answer from a single poller. This
-		* component owns the checkout-derived surfaces a status call cannot answer
-		* (worktree inventory, branch choices, history) and every mutation.
-		*
-		* Two error channels, one each: the commit bar owns its single status line
-		* (commit / stage / discard / revert failures), and the lens owns the top
-		* banner (refresh, branch switch, history paging). Branch and history
-		* failures used to land under the commit box, which read as "your commit
-		* failed" for an action the user never ran.
+		* UI semantics reference: VS Code 76f9f309edc0682f4ef9465be8d12af754b87236,
+		* extensions/git and src/vs/workbench/contrib/scm (not a runtime dependency).
 		*/
 		/** Whether the entry carries STAGED (index) changes — the X letter is set. */
 		function isStagedEntry(entry) {
@@ -11070,18 +12086,48 @@ window.__ModuleLoader__.load({
 			copied: "renamed",
 			conflict: "conflict"
 		};
-		/** The ref names of one log row's decorations (`HEAD -> main` → `main`), deduped. */
-		function refNames(refs) {
-			return [...new Set(refs.split(",").map((ref) => ref.trim()).filter((ref) => ref !== "").map((ref) => ref.includes(" -> ") ? ref.slice(ref.indexOf(" -> ") + 4) : ref).map((ref) => ref.startsWith("tag: ") ? ref.slice(5) : ref))];
-		}
 		/** One thrown value as display text (every error line here normalizes through
 		*  this so non-Error rejections never render as '[object Object]'). */
 		function errorMessage(reason) {
 			return reason instanceof Error ? reason.message : String(reason);
 		}
+		/**
+		* Whether two inventory listings say the same thing. Every listing pass answers
+		* with a fresh array of fresh rows, so identity alone would republish on each
+		* poll; a field-by-field compare is what lets an unchanged silent tick stay
+		* silent (see `runOnce`).
+		*/
+		function sameWorktrees(left, right) {
+			if (left === right) return true;
+			if (left.length !== right.length) return false;
+			return left.every((entry, index) => {
+				const other = right[index];
+				return entry.path === other.path && entry.branch === other.branch && entry.current === other.current && entry.changes === other.changes;
+			});
+		}
+		/**
+		* Write one scope's draft into the record, remembering at most
+		* {@link COMMIT_DRAFT_CAP} scopes. Re-writing a key moves it to the back, so
+		* the draft evicted past the cap is the scope typed into longest ago — a typed
+		* message for another project is never what a commit here submits (the record
+		* is keyed by scope, and `commit()` reads only its own key).
+		*
+		* @param prev - the current record (never mutated).
+		* @param key - the scope key (session + cwd).
+		* @param text - the draft (`''` = cleared; the key stays, so it reads back as
+		*  an empty box rather than as a missing one).
+		* @returns the next record.
+		*/
+		function withCommitDraft(prev, key, text) {
+			const next = { ...prev };
+			delete next[key];
+			next[key] = text;
+			const keys = Object.keys(next);
+			for (const stale of keys.slice(0, Math.max(0, keys.length - 32))) delete next[stale];
+			return next;
+		}
 		/** History batch size: the log loads lazily in pages so a long history never
 		*  floods the panel at once (the end of the log is reached by paging). */
-		const LOG_BATCH = 20;
 		/** Cadence of the background worktree re-list: the shared status store already
 		*  polls the selected checkout's status, so the inventory (a different call)
 		*  only needs to notice a linked checkout the agent created mid-session —
@@ -11090,6 +12136,32 @@ window.__ModuleLoader__.load({
 		/** A stable empty entry list: the tree memo must not rebuild on every render
 		*  just because `snapshot?.entries ?? []` minted a new array. */
 		const NO_ENTRIES = [];
+		const MINUS_ICON = /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+			width: 12,
+			height: 12,
+			viewBox: "0 0 16 16",
+			fill: "none",
+			"aria-hidden": "true",
+			children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", {
+				d: "M2 8H14",
+				stroke: "currentColor",
+				strokeWidth: 1
+			})
+		});
+		/** The tree's indent guides: one hairline per level ABOVE the row (the group's
+		*  own column carries no line), drawn in the same 12px column the old nested
+		*  tree used to draw at — 17px for the first level, +12 per level — so a deep
+		*  path reads as deep as it did before the SCM rewrite. The lines are absolutely
+		*  placed (no part in the flex row's metrics) and span the whole 28px band, so
+		*  they stay continuous across every sibling and every hover/selected fill. */
+		function IndentGuides(props) {
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: Array.from({ length: props.depth }, (_, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+				className: changes_module_css_default.guide,
+				"data-guide": "",
+				"aria-hidden": "true",
+				style: { left: (index + 1) * 12 + 5 }
+			}, index)) });
+		}
 		/**
 		* A CONTENT key for one status answer. The shared store mints a brand-new
 		* entries array for every poll — idle polls with byte-identical content
@@ -11103,11 +12175,15 @@ window.__ModuleLoader__.load({
 		function entriesKey(entries) {
 			let key = "";
 			for (const entry of entries) {
-				const counts = entry.counts;
-				const lines = counts === void 0 ? "" : "additions" in counts ? `${counts.additions}/${counts.deletions}` : "binary";
+				const lines = `${sideKey(entry.staged)}/${sideKey(entry.unstaged)}`;
 				key += `${entry.xy}\u0000${entry.path}\u0000${lines}\n`;
 			}
 			return key;
+		}
+		/** One side's counts as a key fragment ('' when that side has none). */
+		function sideKey(counts) {
+			if (counts === void 0) return "";
+			return "additions" in counts ? `${counts.additions}/${counts.deletions}` : "binary";
 		}
 		/** The `+N` / `−M` pair, ink and sign included: shared by a file row and its
 		*  group header so the two can never drift apart. A zero side is omitted (the
@@ -11128,18 +12204,13 @@ window.__ModuleLoader__.load({
 				})]
 			});
 		}
-		/** One row's line counts (#131): the numbers for a text change, the binary
-		*  mark when git has none for a blob, and "new file" for an untracked entry —
-		*  git never diffs those, so there is no numstat row and `+0 −0` would be an
-		*  invented number. An entry with no counts that is NOT untracked (a status
-		*  answer whose numstat read failed) shows nothing at all. */
+		/** One row's line counts (#131): the numbers for a text change and the binary
+		*  mark when git has none for a blob. git never diffs an untracked entry (its
+		*  `U` badge already says so), and an entry whose numstat read failed must not
+		*  show an invented `+0 −0` — both render nothing. */
 		function LineCounts(props) {
 			const { counts } = props;
-			if (counts === void 0) return props.untracked ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-				className: changes_module_css_default.lineNote,
-				"data-lines": "new",
-				children: t("changesNewFile")
-			}) : null;
+			if (counts === void 0) return null;
 			if (!("additions" in counts)) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 				className: changes_module_css_default.lineNote,
 				"data-lines": "binary",
@@ -11174,111 +12245,116 @@ window.__ModuleLoader__.load({
 			const action = staged ? t("unstage") : t("stage");
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: changes_module_css_default.row,
+				style: { paddingLeft: props.depth * 12 + 8 },
 				"data-row": node.path,
 				"data-selected": selected ? "true" : void 0,
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-					type: "button",
-					className: changes_module_css_default.rowMain,
-					"data-path": node.path,
-					title: node.path,
-					onClick: () => {
-						props.onPreview(node, staged);
-					},
-					onContextMenu: (event) => {
-						props.onContextMenu(event, node, staged);
-					},
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: changes_module_css_default.rowIcon,
-							"aria-hidden": "true",
-							children: props.glyph(node.path)
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusBadge, {
-							tone: BADGE_TONE[node.status.tone],
-							title: node.path,
-							children: node.status.letter
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: changes_module_css_default.rowName,
-							children: node.name
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LineCounts, {
-							counts: node.counts,
-							untracked: node.status.tone === "untracked"
-						})
-					]
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
-					size: "sm",
-					className: changes_module_css_default.rowAction,
-					disabled: busy,
-					label: action,
-					icon: staged ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconTrashOutlineRegular, { size: 14 }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutlineRegular, { size: 14 }),
-					onClick: () => {
-						props.onToggleStage(node.path, staged);
-					}
-				})]
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IndentGuides, { depth: props.depth }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+						type: "button",
+						className: changes_module_css_default.rowMain,
+						"data-path": node.path,
+						title: node.path,
+						onClick: () => {
+							props.onPreview(node, staged);
+						},
+						onContextMenu: (event) => {
+							props.onContextMenu(event, node, staged);
+						},
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: changes_module_css_default.rowIcon,
+								"aria-hidden": "true",
+								children: props.glyph(node.path)
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: changes_module_css_default.rowName,
+								children: node.name
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: changes_module_css_default.rowPath,
+								children: node.path.slice(0, -node.name.length).replace(/[\\/]+$/, "") || "/"
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusBadge, {
+								tone: BADGE_TONE[node.status.tone],
+								title: node.path,
+								children: node.status.letter
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LineCounts, { counts: node.counts })
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
+						size: "sm",
+						className: changes_module_css_default.rowAction,
+						disabled: busy,
+						label: action,
+						icon: staged ? MINUS_ICON : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutlineRegular, { size: 12 }),
+						onClick: () => {
+							props.onToggleStage(node.path, staged);
+						}
+					})
+				]
 			});
 		});
 		/** One directory row: the disclosure chevron + folder artwork + the label
 		*  (a compressed chain reads as one 'a/b/c' line) + how much changed below,
 		*  plus the SAME trailing action a file row carries — applied to the whole
-		*  subtree (`git add -A -- <dir>` / `git reset -q -- <dir>`, both of which
-		*  take a directory pathspec). The action is a sibling of the disclosure
-		*  button, so a click can never fold the row; it stops propagation anyway so
+		*  subtree (only this group's paths when conflicts exist). The action is a
+		*  sibling of the disclosure button, so a click can never fold the row; it stops propagation anyway so
 		*  the intent survives a future nesting change. Memoized like {@link FileRow}. */
 		const DirRow = (0, react.memo)(function DirRow(props) {
-			const { row: node, staged, open, busy } = props;
-			const key = `${staged ? "s" : "u"}:${node.path}`;
+			const { row: node, staged, open, busy, merge } = props;
+			const key = `${merge ? "m" : staged ? "s" : "u"}:${node.path}`;
 			const action = staged ? t("unstageAll") : t("stageAll");
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: changes_module_css_default.row,
+				style: { paddingLeft: props.depth * 12 + 8 },
 				"data-row": node.path,
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-					type: "button",
-					className: changes_module_css_default.dirRow,
-					"data-dir": node.path,
-					"aria-expanded": open,
-					title: node.path,
-					onClick: () => {
-						props.onToggle(key);
-					},
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: changes_module_css_default.chevron,
-							"data-open": open ? "true" : void 0,
-							"aria-hidden": "true",
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronRightOutlineRegular, { size: 12 })
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: changes_module_css_default.rowIcon,
-							"aria-hidden": "true",
-							children: props.folderGlyph(node.path, open)
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: changes_module_css_default.dirName,
-							children: node.name
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: changes_module_css_default.countPill,
-							"data-count": node.changes,
-							children: node.changes
-						})
-					]
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
-					size: "sm",
-					className: changes_module_css_default.rowAction,
-					disabled: busy,
-					label: action,
-					icon: staged ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconTrashOutlineRegular, { size: 14 }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutlineRegular, { size: 14 }),
-					onClick: (event) => {
-						event.stopPropagation();
-						props.onToggleStage(node.path, staged);
-					}
-				})]
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IndentGuides, { depth: props.depth }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+						type: "button",
+						className: changes_module_css_default.dirRow,
+						"data-dir": node.path,
+						"aria-expanded": open,
+						title: node.path,
+						onClick: () => {
+							props.onToggle(key);
+						},
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: changes_module_css_default.chevron,
+								"data-open": open ? "true" : void 0,
+								"aria-hidden": "true",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronRightOutlineRegular, { size: 12 })
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: changes_module_css_default.rowIcon,
+								"aria-hidden": "true",
+								children: props.folderGlyph(node.path, open)
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: changes_module_css_default.dirName,
+								children: node.name
+							})
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
+						size: "sm",
+						className: changes_module_css_default.rowAction,
+						disabled: busy,
+						label: action,
+						icon: staged ? MINUS_ICON : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutlineRegular, { size: 12 }),
+						onClick: (event) => {
+							event.stopPropagation();
+							props.onToggleStage(node.path, staged, merge);
+						}
+					})
+				]
 			});
 		});
 		function GitLens(props) {
-			const { scope, onOpenFile, onPreview, selectedRef, visible, refreshTick = 0, ctx } = props;
+			const { scope, onOpenFile, onPreview, selectedRef, visible, active = visible, ctx } = props;
 			const service = ctx?.get("betterSidebar");
 			/** The file row's artwork: a registered icon wins, else the host's own
 			*  (the same chain the file tree runs, so both pages agree). */
@@ -11287,33 +12363,40 @@ window.__ModuleLoader__.load({
 			const [worktrees, setWorktrees] = (0, react.useState)([]);
 			const [selectedWorktree, setSelectedWorktree] = (0, react.useState)();
 			const [repoRoot, setRepoRoot] = (0, react.useState)();
+			/** The scope the Graph section reads with: the session's, plus the selected
+			*  child repository once discovery picked one. */
+			const graphScope = (0, react.useMemo)(() => repoRoot === void 0 ? scope : {
+				...scope,
+				repoRoot
+			}, [scope, repoRoot]);
 			/** Every repository of the session workspace, kept once discovered: the
 			*  status of a SELECTED child reports only itself, so the selector's option
 			*  list cannot be re-derived from the current snapshot alone. */
 			const [repoChoices, setRepoChoices] = (0, react.useState)([]);
 			const [branchNames, setBranchNames] = (0, react.useState)([]);
-			const [logEntries, setLogEntries] = (0, react.useState)([]);
-			/** Whether the history was fully paged (a batch shorter than LOG_BATCH). */
-			const [logEnded, setLogEnded] = (0, react.useState)(false);
-			const [logLoadingMore, setLogLoadingMore] = (0, react.useState)(false);
-			/** The history's own failure state: an empty list must not claim "no commits"
-			*  when the log call failed. */
-			const [logFailed, setLogFailed] = (0, react.useState)(false);
+			/** Bumped by every explicit refresh, the repo/worktree switch and the
+			*  branch switch: the commit graph (a child of the Graph section) re-reads
+			*  its own bounded page on each tick instead of duplicating status here. */
+			const [graphRefresh, setGraphRefresh] = (0, react.useState)(0);
+			const [changesOpen, setChangesOpen] = (0, react.useState)(true);
+			const [graphOpen, setGraphOpen] = (0, react.useState)(true);
+			const [moreOpen, setMoreOpen] = (0, react.useState)(false);
+			const [branchOpen, setBranchOpen] = (0, react.useState)(false);
 			/** Commit drafts, one per scope: the Commit button asks only for a message
 			*  and a staged row, so a draft typed against another project would submit
 			*  verbatim under this one. Keyed rather than cleared on a scope swap, so a
 			*  kept-mounted tab shows a conversation its own message when it comes back
-			*  (#712). */
+			*  (#712) — bounded to the newest {@link COMMIT_DRAFT_CAP} scopes, because
+			*  that tab lives for the whole page. */
 			const [commitDrafts, setCommitDrafts] = (0, react.useState)({});
-			const draftKey = `${scope.sessionId}\u0000${scope.cwd ?? ""}`;
+			const draftWorktree = selectedWorktree === worktrees.find((entry) => entry.current)?.path ? "" : selectedWorktree ?? "";
+			const draftKey = `${scope.sessionId}\u0000${scope.cwd ?? ""}\u0000${repoRoot ?? ""}\u0000${draftWorktree}`;
 			const commitMsg = commitDrafts[draftKey] ?? "";
 			const writeDraft = (text) => {
-				setCommitDrafts((prev) => ({
-					...prev,
-					[draftKey]: text
-				}));
+				setCommitDrafts((prev) => withCommitDraft(prev, draftKey, text));
 			};
 			const [busy, setBusy] = (0, react.useState)(false);
+			const actionLock = (0, react.useRef)(null);
 			/** Whether a commit-message suggestion is being generated host-side (the
 			*  host streams the diff through the harness LLM — no agent is spawned). */
 			const [suggesting, setSuggesting] = (0, react.useState)(false);
@@ -11327,13 +12410,17 @@ window.__ModuleLoader__.load({
 			(0, react.useLayoutEffect)(() => {
 				const box = commitBoxRef.current;
 				if (box === null || box.scrollHeight === 0) return;
-				const max = 120;
+				const max = 132;
 				box.style.height = "auto";
 				const next = Math.min(box.scrollHeight, max);
 				box.style.height = `${next}px`;
 				box.style.overflowY = box.scrollHeight > max ? "auto" : "hidden";
-			}, [commitMsg]);
-			/** The commit bar's ONE status line (commit / stage / discard / revert). */
+			}, [
+				commitMsg,
+				changesOpen,
+				visible
+			]);
+			/** One footer status channel for generation and Git mutations. */
 			const [actionError, setActionError] = (0, react.useState)(null);
 			/** The lens-level error banner (refresh / branch switch / history paging). */
 			const [viewError, setViewError] = (0, react.useState)(null);
@@ -11418,9 +12505,25 @@ window.__ModuleLoader__.load({
 				repoRoot
 			}, {
 				worktree: statusWorktree,
-				visible
+				visible,
+				poll: active
 			});
-			const snapshot = status.snapshot;
+			/** The last answer seen for THIS scope. While the lens is hidden the shared
+			*  store may forget the slot (nothing in the session is watching it, and the
+			*  store drops a slot whose last consumer left), so a RETAINED lens keeps
+			*  painting the rows it already had instead of flashing its loading state the
+			*  moment the user switches back. A scope change starts it over. */
+			const lastStatus = (0, react.useRef)({
+				key: "",
+				value: null
+			});
+			const statusKey = `${scope.sessionId}\u0000${scope.cwd ?? ""}\u0000${repoRoot ?? ""}\u0000${statusWorktree ?? ""}`;
+			if (lastStatus.current.key !== statusKey) lastStatus.current = {
+				key: statusKey,
+				value: null
+			};
+			if (status.snapshot !== null) lastStatus.current.value = status.snapshot;
+			const snapshot = status.snapshot ?? lastStatus.current.value;
 			(0, react.useEffect)(() => {
 				const repositories = snapshot?.repositories;
 				if (repositories !== void 0 && repositories.length > 1) setRepoChoices(repositories);
@@ -11432,32 +12535,31 @@ window.__ModuleLoader__.load({
 			};
 			/** Drop every checkout-derived surface before another one loads. */
 			const clearDerived = () => {
+				scopeGen.current += 1;
+				actionLock.current = null;
+				setBusy(false);
+				setSuggesting(false);
+				setCommitting(false);
 				setBranchNames([]);
-				setLogEntries([]);
-				setLogEnded(false);
-				setLogLoadingMore(false);
-				setLogFailed(false);
+				setGraphRefresh((value) => value + 1);
 				setActionError(null);
+				setFileMenu(null);
+				setHistoryMenu(null);
+				setConfirm(null);
+				setMoreOpen(false);
+				setBranchOpen(false);
 			};
-			/** Load the branch choices and the first history page of one checkout. */
+			/** Load the branch choices of one checkout; its history is the commit
+			*  graph's own business (the Graph section reads `git.graph` in pages). */
 			const loadTarget = (0, react.useCallback)(async (target) => {
 				const generation = scopeGen.current;
 				const gitScope = gitScopeNow();
-				const [branchResult, logResult] = await Promise.all([api.gitBranch(gitScope, target).catch(() => ({
+				const branchResult = await api.gitBranch(gitScope, target).catch(() => ({
 					current: "",
 					names: []
-				})), api.gitLog(gitScope, LOG_BATCH, 0, target).then((entries) => ({
-					entries,
-					failed: false
-				}), () => ({
-					entries: [],
-					failed: true
-				}))]);
-				if (generation !== scopeGen.current) return;
+				}));
+				if (generation !== scopeGen.current || target !== chosenPathRef.current) return;
 				setBranchNames(branchResult.names);
-				setLogEntries(logResult.entries);
-				setLogEnded(logResult.entries.length < LOG_BATCH);
-				setLogFailed(logResult.failed);
 			}, [gitScopeNow]);
 			/** One listing pass: re-read the worktree inventory, apply the first-pass
 			*  automatic selection, then load the chosen checkout's derived surfaces.
@@ -11472,7 +12574,7 @@ window.__ModuleLoader__.load({
 					return;
 				}
 				if (signal?.aborted === true || generation !== scopeGen.current) return;
-				setWorktrees(listed);
+				setWorktrees((previous) => sameWorktrees(previous, listed) ? previous : listed);
 				const current = listed.find((entry) => entry.current);
 				let target = chosenPathRef.current !== void 0 && listed.some((entry) => entry.path === chosenPathRef.current) ? chosenPathRef.current : current?.path;
 				if (!autoSelectDone.current) {
@@ -11487,10 +12589,12 @@ window.__ModuleLoader__.load({
 				}
 				const targetChanged = target !== chosenPathRef.current;
 				if (targetChanged) {
+					const checkoutChanged = chosenPathRef.current !== void 0 || target !== current?.path;
 					selectWorktree(target);
-					clearDerived();
+					if (checkoutChanged) clearDerived();
 				}
 				if (silent && !targetChanged) return;
+				setGraphRefresh((value) => value + 1);
 				await loadTarget(target);
 			}, [gitScopeNow, loadTarget]);
 			/** Run one refresh, replaying a request that arrives mid-flight exactly once. */
@@ -11545,30 +12649,35 @@ window.__ModuleLoader__.load({
 				if (!rising) return;
 				refresh(false);
 			}, [visible]);
-			(0, react.useEffect)(() => {
-				if (refreshTick === 0) return;
-				refresh(false);
-				invalidateGitStatus(scope.sessionId);
-			}, [refreshTick]);
-			usePolling(visible, (0, react.useCallback)((signal) => refresh(true, signal), [refresh]), {
+			/** The inventory poll: a linked checkout created mid-session shows up
+			*  without a manual refresh (the status poll itself belongs to the store). */
+			const pollInventory = (0, react.useCallback)((signal) => refresh(true, signal), [refresh]);
+			usePolling(visible && active, pollInventory, {
 				intervalMs: WORKTREE_POLL_MS,
 				mode: "self-scheduling"
 			});
-			/** Run one mutating git action: lock the bar, refresh the shared status and
-			*  the derived surfaces on success, and report the failure in the commit
-			*  bar's single status line (never as an unhandled rejection). */
+			/** Lock one target's mutation and refresh even a partially failed sync. */
 			const runAction = async (action, failure = errorMessage, onSuccess) => {
+				if (actionLock.current !== null) return;
+				const lock = Symbol();
+				actionLock.current = lock;
+				const generation = scopeGen.current;
+				const sessionId = scope.sessionId;
 				setBusy(true);
 				setActionError(null);
 				try {
 					await action();
-					onSuccess?.();
-					invalidateGitStatus(scope.sessionId);
-					await refresh(false);
+					if (generation === scopeGen.current) onSuccess?.();
 				} catch (reason) {
-					setActionError(failure(reason));
+					if (generation === scopeGen.current) setActionError(failure(reason));
 				} finally {
-					setBusy(false);
+					invalidateGitStatus(sessionId);
+					if (generation === scopeGen.current) await refresh(false);
+					if (actionLock.current === lock) {
+						actionLock.current = null;
+						setBusy(false);
+						setCommitting(false);
+					}
 				}
 			};
 			const stageError = (reason) => t("changesStageFailed", { message: errorMessage(reason) });
@@ -11576,20 +12685,25 @@ window.__ModuleLoader__.load({
 			*  upstream or a diverged branch says nothing about which button ran. */
 			const pushError = (reason) => `${t("pushError")}: ${errorMessage(reason)}`;
 			const pullError = (reason) => `${t("pullError")}: ${errorMessage(reason)}`;
-			const stageEntry = (path, staged) => {
-				runAction(() => staged ? api.gitUnstage(gitScopeNow(), path, selectedWorktree) : api.gitStage(gitScopeNow(), path, selectedWorktree), stageError);
+			const stageEntry = (path, staged, merge = false) => {
+				const gitScope = gitScopeNow();
+				const target = selectedWorktree;
+				const rows = staged ? stagedEntries : merge || mergeEntries.some((entry) => entry.path === path) ? mergeEntries : unstagedEntries;
+				const paths = mergeEntries.length === 0 ? [path] : rows.filter((entry) => path === void 0 || entry.path === path || entry.path.startsWith(`${path}/`)).map((entry) => entry.path);
+				runAction(async () => {
+					for (const selectedPath of paths) if (staged) await api.gitUnstage(gitScope, selectedPath, target);
+					else await api.gitStage(gitScope, selectedPath, target);
+				}, stageError);
 			};
-			const stageAll = (staged) => {
-				runAction(() => staged ? api.gitUnstage(gitScopeNow(), void 0, selectedWorktree) : api.gitStage(gitScopeNow(), void 0, selectedWorktree), stageError);
+			const stageAll = (staged, merge = false) => {
+				stageEntry(void 0, staged, merge);
 			};
 			const commit = () => {
 				const message = commitMsg.trim();
-				if (message === "" || busy || suggesting) return;
+				if (!canCommit || actionLock.current) return;
 				setCommitting(true);
 				runAction(() => api.gitCommit(gitScopeNow(), message, selectedWorktree), errorMessage, () => {
 					writeDraft("");
-				}).finally(() => {
-					setCommitting(false);
 				});
 			};
 			/** The generate button's label/tooltip: names the model when one resolves,
@@ -11598,17 +12712,24 @@ window.__ModuleLoader__.load({
 			/** Ask the host to draft a commit message from the pending changes, then
 			*  fill the message box (still editable; regenerating is allowed). */
 			const suggestMessage = async () => {
-				if (busy || suggesting) return;
+				if (actionLock.current !== null || entries.length === 0) return;
+				const lock = Symbol();
+				actionLock.current = lock;
+				const generation = scopeGen.current;
 				setSuggesting(true);
 				setActionError(null);
 				try {
 					const { message } = await api.gitSuggestMessage(gitScopeNow(), isZh() ? "zh" : "en", selectedWorktree);
-					writeDraft(message);
+					if (generation === scopeGen.current) writeDraft(message);
 				} catch (reason) {
+					if (generation !== scopeGen.current) return;
 					if (reason instanceof SidebarApiError && reason.code === "git-suggest-empty") setActionError(t("suggestCommitEmpty"));
 					else setActionError(`${t("suggestCommitError")}: ${errorMessage(reason)}`);
 				} finally {
-					setSuggesting(false);
+					if (actionLock.current === lock) {
+						actionLock.current = null;
+						setSuggesting(false);
+					}
 				}
 			};
 			/** Push the selected checkout's branch. Local commits and the remote ride the
@@ -11621,6 +12742,23 @@ window.__ModuleLoader__.load({
 			/** Pull into the selected checkout (fast-forward only host-side). */
 			const pull = () => {
 				runAction(() => api.gitPull(gitScopeNow(), selectedWorktree), pullError);
+			};
+			const sync = () => {
+				if (!canSync) return;
+				const gitScope = gitScopeNow();
+				const target = selectedWorktree;
+				runAction(async () => {
+					try {
+						await api.gitPull(gitScope, target);
+					} catch (reason) {
+						throw new Error(pullError(reason), { cause: reason });
+					}
+					try {
+						await api.gitPush(gitScope, target);
+					} catch (reason) {
+						throw new Error(pushError(reason), { cause: reason });
+					}
+				});
 			};
 			/** Switching the selected checkout changes which rows are legitimate to act
 			*  on: clear the derived surfaces before the asynchronous refresh resolves
@@ -11648,17 +12786,23 @@ window.__ModuleLoader__.load({
 				refresh(false);
 			};
 			const checkout = async (branch) => {
-				if (branch === (snapshot?.branch ?? "") || busy) return;
+				if (branch === (snapshot?.branch ?? "") || actionLock.current !== null) return;
+				const lock = Symbol();
+				actionLock.current = lock;
+				const generation = scopeGen.current;
 				setBusy(true);
 				setViewError(null);
 				try {
 					await api.gitCheckout(gitScopeNow(), branch, selectedWorktree);
 					invalidateGitStatus(scope.sessionId);
-					await refresh(false);
+					if (generation === scopeGen.current) await refresh(false);
 				} catch (reason) {
-					setViewError(`${t("checkoutError")}: ${errorMessage(reason)}`);
+					if (generation === scopeGen.current) setViewError(`${t("checkoutError")}: ${errorMessage(reason)}`);
 				} finally {
-					setBusy(false);
+					if (actionLock.current === lock) {
+						actionLock.current = null;
+						setBusy(false);
+					}
 				}
 			};
 			/** Run one destructive operation after the confirm dialog, then refresh. */
@@ -11670,24 +12814,6 @@ window.__ModuleLoader__.load({
 				if (pending === null) return;
 				setConfirm(null);
 				runAction(pending.onConfirm);
-			};
-			/** Append the next history page (lazy: only when the user asks for more). */
-			const loadMoreLog = async () => {
-				if (logLoadingMore || logEnded) return;
-				const generation = scopeGen.current;
-				const target = chosenPathRef.current;
-				setLogLoadingMore(true);
-				setViewError(null);
-				try {
-					const next = await api.gitLog(gitScopeNow(), LOG_BATCH, logEntries.length, target);
-					if (generation !== scopeGen.current || target !== chosenPathRef.current) return;
-					setLogEntries((entries) => [...entries, ...next]);
-					if (next.length < LOG_BATCH) setLogEnded(true);
-				} catch (reason) {
-					if (generation === scopeGen.current && target === chosenPathRef.current) setViewError(`${t("historyLoadError")}: ${errorMessage(reason)}`);
-				} finally {
-					if (generation === scopeGen.current && target === chosenPathRef.current) setLogLoadingMore(false);
-				}
 			};
 			/** Copy `text` to the clipboard (best-effort; no visual feedback needed — the menu closes). */
 			const copy = (text) => {
@@ -11714,26 +12840,42 @@ window.__ModuleLoader__.load({
 			/** Whether a worktree row is the one currently previewed. */
 			const isPreviewedWorktree = (path, staged) => {
 				if (selectedRef === null || selectedRef.kind !== "worktree") return false;
-				return selectedRef.path === path && selectedRef.staged === staged && (selectedRef.worktree ?? "") === (selectedWorktree ?? "");
+				return selectedRef.path === path && selectedRef.staged === staged && (selectedRef.worktree ?? "") === (selectedWorktree ?? "") && (selectedRef.repoRoot ?? "") === (repoRoot ?? "");
 			};
 			const entries = snapshot?.entries ?? NO_ENTRIES;
 			const contentKey = (0, react.useMemo)(() => entriesKey(entries), [entries]);
-			const { stagedEntries, unstagedEntries, stagedTree, unstagedTree } = (0, react.useMemo)(() => {
-				const staged = entries.filter(isStagedEntry);
-				const unstaged = entries.filter(isUnstagedEntry);
+			const { mergeEntries, stagedEntries, unstagedEntries, mergeTree, stagedTree, unstagedTree } = (0, react.useMemo)(() => {
+				const merge = entries.filter((entry) => statusOfXY(entry.xy)?.tone === "conflict");
+				const regular = entries.filter((entry) => statusOfXY(entry.xy)?.tone !== "conflict");
+				const staged = regular.filter(isStagedEntry);
+				const unstaged = regular.filter(isUnstagedEntry);
+				const sideEntries = (rows, index) => rows.map((entry) => ({
+					...entry,
+					xy: entry.xy === "??" ? "??" : index === 0 ? `${entry.xy[0]} ` : ` ${entry.xy[1]}`
+				}));
 				return {
+					mergeEntries: merge,
 					stagedEntries: staged,
 					unstagedEntries: unstaged,
-					stagedTree: buildChangeTree(staged),
-					unstagedTree: buildChangeTree(unstaged)
+					mergeTree: buildChangeTree(merge),
+					stagedTree: buildChangeTree(sideEntries(staged, 0), "staged"),
+					unstagedTree: buildChangeTree(sideEntries(unstaged, 1), "unstaged")
 				};
 			}, [contentKey]);
 			const unstagedTotal = (0, react.useMemo)(() => sumLineCounts(unstagedTree), [unstagedTree]);
 			const stagedTotal = (0, react.useMemo)(() => sumLineCounts(stagedTree), [stagedTree]);
 			const isRepo = snapshot?.isRepo === true;
 			const branch = snapshot?.branch ?? "";
-			const branchOptions = branch === "" ? branchNames : [branch, ...branchNames.filter((name) => name !== branch)];
-			const clean = isRepo && stagedEntries.length === 0 && unstagedEntries.length === 0;
+			const clean = isRepo && entries.length === 0;
+			const canCommit = isRepo && !busy && !suggesting && mergeEntries.length === 0 && stagedEntries.length > 0 && commitMsg.trim() !== "";
+			const branchLabel = branch || t("gitDetached");
+			const branchMarkers = `${unstagedEntries.length > 0 ? "*" : ""}${stagedEntries.length > 0 ? "+" : ""}${snapshot?.operation !== void 0 || mergeEntries.length > 0 ? "!" : ""}`;
+			const messagePlaceholder = t("commitPlaceholder", {
+				branch: branchLabel,
+				shortcut: /Mac|iPhone|iPad/.test(globalThis.navigator?.platform ?? "") ? "Cmd+Enter" : "Ctrl+Enter"
+			});
+			const canSync = isRepo && !busy && !suggesting && branch !== "" && snapshot?.detached !== true && snapshot?.upstream !== void 0 && snapshot.ahead !== void 0 && snapshot.behind !== void 0 && snapshot.operation === void 0 && mergeEntries.length === 0;
+			const syncLabel = snapshot?.detached === true || branch === "" ? t("gitDetached") : snapshot?.upstream === void 0 ? t("gitNoUpstream") : snapshot.ahead === void 0 || snapshot.behind === void 0 ? t("gitSyncUnavailable") : `${t("gitSync")}: ${snapshot.upstream} · ${snapshot.behind}↓ ${snapshot.ahead}↑`;
 			/** Fold or unfold one directory row (keyed per group, see `collapsed`).
 			*  Stable: it is a memoized row's prop. */
 			const toggleDir = (0, react.useCallback)((key) => {
@@ -11749,15 +12891,15 @@ window.__ModuleLoader__.load({
 			*  current closures through the ref instead of closing over them. */
 			const rowActions = (0, react.useRef)({
 				preview: (_node, _staged) => {},
-				stage: (_path, _staged) => {}
+				stage: (_path, _staged, _merge) => {}
 			});
 			(0, react.useEffect)(() => {
 				rowActions.current = {
 					preview: (node, staged) => {
 						onPreview(worktreeRefOf(node.path, isUntrackedStatus(node.status), staged, chosenPathRef.current, repoRootRef.current));
 					},
-					stage: (path, staged) => {
-						stageEntry(path, staged);
+					stage: (path, staged, merge) => {
+						stageEntry(path, staged, merge);
 					}
 				};
 			});
@@ -11765,8 +12907,8 @@ window.__ModuleLoader__.load({
 			const previewFile = (0, react.useCallback)((node, staged) => {
 				rowActions.current.preview(node, staged);
 			}, []);
-			const stagePath = (0, react.useCallback)((path, staged) => {
-				rowActions.current.stage(path, staged);
+			const stagePath = (0, react.useCallback)((path, staged, merge = false) => {
+				rowActions.current.stage(path, staged, merge);
 			}, []);
 			const openRowMenu = (0, react.useCallback)((event, node, staged) => {
 				event.preventDefault();
@@ -11779,99 +12921,94 @@ window.__ModuleLoader__.load({
 					y: event.clientY
 				});
 			}, []);
-			/** One file row of a group's tree (the single file-row renderer). */
-			const renderFile = (node, staged) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(FileRow, {
+			/** Indent the content, not its container: hover and selection stay full-width. */
+			const renderFile = (node, staged, depth = 0) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(FileRow, {
 				row: node,
+				depth,
 				glyph: fileGlyph,
 				staged,
-				busy,
+				busy: busy || suggesting,
 				selected: isPreviewedWorktree(node.path, staged),
 				onPreview: previewFile,
 				onContextMenu: openRowMenu,
 				onToggleStage: stagePath
 			}, `file:${staged ? "s" : "u"}:${node.path}`);
-			/** One directory row plus its (default-expanded) subtree. */
-			const renderDir = (node, staged) => {
-				const key = `${staged ? "s" : "u"}:${node.path}`;
+			const renderDir = (node, staged, merge, depth = 0) => {
+				const key = `${merge ? "m" : staged ? "s" : "u"}:${node.path}`;
 				const open = !collapsed.has(key);
 				return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(DirRow, {
 					row: node,
+					depth,
 					folderGlyph,
 					staged,
 					open,
-					busy,
+					busy: busy || suggesting,
+					merge,
 					onToggle: toggleDir,
 					onToggleStage: stagePath
-				}), open && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-					className: changes_module_css_default.treeChildren,
-					children: node.children.map((child) => child.kind === "dir" ? renderDir(child, staged) : renderFile(child, staged))
-				})] }, `dir:${key}`);
+				}), open && node.children.map((child) => child.kind === "dir" ? renderDir(child, staged, merge, depth + 1) : renderFile(child, staged, depth + 1))] }, `dir:${key}`);
 			};
-			/** One group's whole tree. */
-			const renderTree = (nodes, staged) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+			const renderTree = (nodes, staged, merge = false) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 				className: changes_module_css_default.tree,
-				children: nodes.map((node) => node.kind === "dir" ? renderDir(node, staged) : renderFile(node, staged))
+				children: nodes.map((node) => node.kind === "dir" ? renderDir(node, staged, merge) : renderFile(node, staged))
 			});
+			const renderGroup = (id, label, rows, nodes, staged, merge = false) => {
+				if (rows.length === 0) return null;
+				const key = `group:${id}`;
+				const open = !collapsed.has(key);
+				const totals = staged ? stagedTotal : merge ? void 0 : unstagedTotal;
+				return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: changes_module_css_default.group,
+					"data-group": id,
+					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: `${changes_module_css_default.scmHeader} ${changes_module_css_default.groupHeader}`,
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+								type: "button",
+								className: changes_module_css_default.scmDisclosure,
+								"aria-expanded": open,
+								"aria-label": `${label} (${rows.length})`,
+								onClick: () => {
+									toggleDir(key);
+								},
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										className: changes_module_css_default.chevron,
+										"data-open": open ? "true" : void 0,
+										"aria-hidden": "true",
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronRightOutlineRegular, { size: 12 })
+									}),
+									label,
+									totals !== void 0 && totals.files > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PlusMinus, {
+										additions: totals.additions,
+										deletions: totals.deletions,
+										note: "group"
+									})
+								]
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
+								className: changes_module_css_default.headerAction,
+								size: "sm",
+								disabled: busy || suggesting,
+								label: staged ? t("unstageAll") : t("stageAll"),
+								icon: staged ? MINUS_ICON : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutlineRegular, { size: 12 }),
+								onClick: () => {
+									stageAll(staged, merge);
+								}
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: changes_module_css_default.countPill,
+								"data-count": rows.length,
+								children: rows.length
+							})
+						]
+					}), open && renderTree(nodes, staged, merge)]
+				});
+			};
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: changes_module_css_default.git,
 				"data-git-root": true,
 				children: [
-					(repoChoices.length > 1 || worktrees.length > 1 || branch !== "") && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: changes_module_css_default.selectors,
-						"data-git-head": true,
-						children: [
-							repoChoices.length > 1 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("select", {
-								className: changes_module_css_default.select,
-								value: repoRoot ?? "",
-								title: repoRoot,
-								disabled: busy,
-								onChange: (event) => {
-									chooseRepo(event.target.value);
-								},
-								children: repoChoices.map((root) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-									value: root,
-									children: baseName$1(root)
-								}, root))
-							}),
-							worktrees.length > 1 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("select", {
-								className: changes_module_css_default.select,
-								value: selectedWorktree ?? "",
-								title: selectedWorktree,
-								disabled: busy,
-								onChange: (event) => {
-									chooseWorktree(event.target.value);
-								},
-								children: worktrees.map((entry) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("option", {
-									value: entry.path,
-									children: [
-										entry.branch,
-										" · ",
-										baseName$1(entry.path),
-										" (",
-										entry.changes,
-										")"
-									]
-								}, entry.path))
-							}),
-							branch !== "" && (branchOptions.length > 1 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("select", {
-								className: changes_module_css_default.select,
-								value: branch,
-								title: t("branch"),
-								disabled: busy,
-								onChange: (event) => {
-									checkout(event.target.value);
-								},
-								children: branchOptions.map((name) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-									value: name,
-									children: name
-								}, name))
-							}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-								className: changes_module_css_default.branchLabel,
-								title: `${t("branch")}: ${branch}`,
-								children: branch
-							}))
-						]
-					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: changes_module_css_default.gitScroll,
 						"data-git-scroll": true,
@@ -11900,206 +13037,274 @@ window.__ModuleLoader__.load({
 								kind: "warn",
 								children: t("statusTruncated")
 							}),
-							clean && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Notice, {
-								kind: "empty",
-								tone: "page",
-								children: t("changesClean")
-							}),
-							isRepo && !clean && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: changes_module_css_default.group,
-								"data-group": "unstaged",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(SectionHeader, {
-									className: changes_module_css_default.groupHeader,
-									label: t("unstaged"),
-									action: unstagedEntries.length > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
-										className: changes_module_css_default.headerAction,
-										size: "sm",
-										disabled: busy,
-										label: t("stageAll"),
-										icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutlineRegular, { size: 14 }),
+							isRepo && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
+								className: changes_module_css_default.changesSection,
+								"data-scm-section": "changes",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: changes_module_css_default.scmHeader,
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+										type: "button",
+										className: changes_module_css_default.scmDisclosure,
+										"aria-expanded": changesOpen,
 										onClick: () => {
-											stageAll(false);
-										}
-									}) : void 0,
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										className: changes_module_css_default.countPill,
-										"data-count": unstagedEntries.length,
-										children: unstagedEntries.length
-									}), unstagedTotal.files > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PlusMinus, {
-										additions: unstagedTotal.additions,
-										deletions: unstagedTotal.deletions,
-										note: "group"
-									})]
-								}), renderTree(unstagedTree, false)]
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: changes_module_css_default.group,
-								"data-group": "staged",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(SectionHeader, {
-									className: changes_module_css_default.groupHeader,
-									label: t("staged"),
-									action: stagedEntries.length > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
-										className: changes_module_css_default.headerAction,
-										size: "sm",
-										disabled: busy,
-										label: t("unstageAll"),
-										icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconTrashOutlineRegular, { size: 14 }),
-										onClick: () => {
-											stageAll(true);
-										}
-									}) : void 0,
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										className: changes_module_css_default.countPill,
-										"data-count": stagedEntries.length,
-										children: stagedEntries.length
-									}), stagedTotal.files > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PlusMinus, {
-										additions: stagedTotal.additions,
-										deletions: stagedTotal.deletions,
-										note: "group"
-									})]
-								}), renderTree(stagedTree, true)]
-							})] }),
-							isRepo && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SectionHeader, {
-									label: t("history"),
-									count: logEntries.length > 0 ? logEntries.length : void 0
-								}),
-								logEntries.length === 0 && logFailed && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Notice, {
-									kind: "error",
-									children: t("historyLoadError")
-								}),
-								logEntries.length === 0 && !logFailed && logEnded && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Notice, {
-									kind: "empty",
-									tone: "page",
-									children: t("changesNoHistory")
-								}),
-								logEntries.map((entry) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									role: "button",
-									tabIndex: 0,
-									className: changes_module_css_default.logRow,
-									"data-selected": selectedRef?.kind === "commit" && selectedRef.hashFull === entry.hashFull ? "true" : void 0,
-									title: `${entry.author} · ${entry.date}\n${entry.hashFull}`,
-									onClick: () => {
-										onPreview(commitRefOf(entry));
-									},
-									onKeyDown: (event) => {
-										if (event.key === "Enter" || event.key === " ") {
-											event.preventDefault();
-											onPreview(commitRefOf(entry));
-										}
-									},
-									onContextMenu: (event) => {
-										openHistoryMenu(event, entry);
-									},
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-										className: changes_module_css_default.logLine1,
+											setChangesOpen((open) => !open);
+										},
 										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: changes_module_css_default.logHash,
-											children: entry.hash
-										}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: changes_module_css_default.logSubject,
-											children: entry.subject
-										})]
-									}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-										className: changes_module_css_default.logLine2,
-										children: [refNames(entry.refs).map((ref) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: changes_module_css_default.logRef,
-											children: ref
-										}, ref)), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-											className: changes_module_css_default.logMeta,
-											children: [
-												entry.author,
-												" · ",
-												relativeTime(entry.date)
-											]
-										})]
+											className: changes_module_css_default.chevron,
+											"data-open": changesOpen ? "true" : void 0,
+											"aria-hidden": "true",
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronRightOutlineRegular, { size: 12 })
+										}), t("gitChanges")]
+									}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: changes_module_css_default.scmActions,
+										children: [
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
+												size: "sm",
+												icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCheckOutlineRegular, { size: 14 }),
+												label: t("commit"),
+												disabled: !canCommit,
+												onClick: commit
+											}),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
+												size: "sm",
+												icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconRefreshOutlineRegular, { size: 14 }),
+												label: t("refresh"),
+												disabled: busy || suggesting,
+												onClick: () => {
+													invalidateGitStatus(scope.sessionId);
+													refresh(false);
+												}
+											}),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {
+												open: moreOpen,
+												onClose: () => {
+													setMoreOpen(false);
+												},
+												portal: true,
+												compact: true,
+												align: "end",
+												autoFocus: true,
+												anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
+													size: "sm",
+													icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconEllipsisOutlineRegular, { size: 14 }),
+													label: t("gitMoreActions"),
+													active: moreOpen,
+													onClick: () => {
+														setMoreOpen((open) => !open);
+													}
+												}),
+												items: [
+													{
+														id: "pull",
+														label: t("pull"),
+														disabled: busy || suggesting || snapshot?.detached === true
+													},
+													{
+														id: "push",
+														label: t("push"),
+														disabled: busy || suggesting || snapshot?.detached === true
+													},
+													...repoChoices.length > 1 ? [{
+														id: "repos",
+														label: t("gitRepository"),
+														submenu: repoChoices.map((root) => ({
+															id: `repo:${root}`,
+															label: baseName$1(root),
+															disabled: busy || suggesting
+														}))
+													}] : [],
+													...worktrees.length > 1 ? [{
+														id: "worktrees",
+														label: t("worktree"),
+														submenu: worktrees.map((entry) => ({
+															id: `worktree:${entry.path}`,
+															label: `${entry.branch || t("gitDetached")} · ${baseName$1(entry.path)} (${entry.changes})`,
+															disabled: busy || suggesting
+														}))
+													}] : []
+												],
+												onSelect: (id) => {
+													setMoreOpen(false);
+													if (id === "push") push();
+													else if (id === "pull") pull();
+													else if (id.startsWith("repo:")) chooseRepo(id.slice(5));
+													else if (id.startsWith("worktree:")) chooseWorktree(id.slice(9));
+												}
+											})
+										]
 									})]
-								}, entry.hashFull)),
-								!logEnded && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-									type: "button",
-									className: changes_module_css_default.logMore,
-									disabled: logLoadingMore || busy,
-									onClick: () => {
-										loadMoreLog();
-									},
-									children: logLoadingMore ? t("loading") : t("loadMore")
-								})
-							] })
+								}), changesOpen && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									"data-scm-changes": true,
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+											className: changes_module_css_default.messageBox,
+											"data-message-box": true,
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+												className: changes_module_css_default.commitInputWrap,
+												children: [
+													/* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
+														ref: commitBoxRef,
+														className: changes_module_css_default.commitInput,
+														placeholder: busy || suggesting ? "" : messagePlaceholder,
+														value: commitMsg,
+														disabled: busy || suggesting,
+														"aria-busy": busy || suggesting,
+														"data-message-busy": suggesting || committing ? "true" : void 0,
+														"aria-label": messagePlaceholder,
+														rows: 1,
+														onChange: (event) => {
+															writeDraft(event.currentTarget.value);
+															setActionError(null);
+														},
+														onKeyDown: (event) => {
+															if (event.nativeEvent.isComposing) return;
+															if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+																event.preventDefault();
+																commit();
+															}
+															if ((event.ctrlKey || event.metaKey) && (event.key === "g" || event.key === "G")) {
+																event.preventDefault();
+																suggestMessage();
+															}
+														}
+													}),
+													(suggesting || committing) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+														className: changes_module_css_default.commitBusyText,
+														role: "status",
+														"aria-live": "polite",
+														children: suggesting ? t("generatingCommitMessage") : t("committingMessage")
+													}),
+													/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+														type: "button",
+														className: suggesting ? `${changes_module_css_default.suggestButton} ${changes_module_css_default.suggestBusy}` : changes_module_css_default.suggestButton,
+														"aria-label": generateLabel,
+														"aria-busy": suggesting,
+														title: generateLabel,
+														disabled: busy || suggesting || entries.length === 0,
+														onClick: () => {
+															suggestMessage();
+														},
+														children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconSparkleRegular, { size: 14 })
+													})
+												]
+											})
+										}),
+										clean && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Notice, {
+											kind: "empty",
+											children: t("changesClean")
+										}),
+										renderGroup("merge", t("gitMergeChanges"), mergeEntries, mergeTree, false, true),
+										renderGroup("staged", t("gitStagedChanges"), stagedEntries, stagedTree, true),
+										renderGroup("unstaged", t("gitChanges"), unstagedEntries, unstagedTree, false)
+									]
+								})]
+							}),
+							isRepo && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
+								className: graphOpen ? changes_module_css_default.graphSection : void 0,
+								"data-scm-section": "graph",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+									className: changes_module_css_default.scmHeader,
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+										type: "button",
+										className: changes_module_css_default.scmDisclosure,
+										"aria-expanded": graphOpen,
+										onClick: () => {
+											setGraphOpen((open) => !open);
+										},
+										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: changes_module_css_default.chevron,
+											"data-open": graphOpen ? "true" : void 0,
+											"aria-hidden": "true",
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronRightOutlineRegular, { size: 12 })
+										}), t("gitGraph")]
+									})
+								}), graphOpen && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+									"data-scm-graph": true,
+									className: changes_module_css_default.graphArea,
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GitGraphSection, {
+										scope: graphScope,
+										worktree: selectedWorktree,
+										visible: visible && active && graphOpen,
+										refreshTick: graphRefresh,
+										selectedRef,
+										onPreview: props.onGraphPreview ?? onPreview,
+										onClearPreview: () => {
+											props.onClearPreview?.();
+										},
+										onDetailsChange: props.onDetailsChange,
+										onContextMenu: openHistoryMenu
+									})
+								})]
+							})
 						]
 					}),
 					isRepo && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: changes_module_css_default.commitBar,
-						"data-commit-bar": true,
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: changes_module_css_default.commitRow,
-							children: [
-								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-									className: changes_module_css_default.commitInputWrap,
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
-										ref: commitBoxRef,
-										className: changes_module_css_default.commitInput,
-										placeholder: busy || suggesting ? "" : t("commitPlaceholder"),
-										value: commitMsg,
-										disabled: busy || suggesting,
-										"aria-busy": busy || suggesting,
-										"aria-label": t("commitPlaceholder"),
-										rows: 1,
-										onChange: (event) => {
-											writeDraft(event.currentTarget.value);
-											setActionError(null);
-										},
-										onKeyDown: (event) => {
-											if ((event.ctrlKey || event.metaKey) && event.key === "Enter") commit();
-											if ((event.ctrlKey || event.metaKey) && (event.key === "g" || event.key === "G")) {
-												event.preventDefault();
-												suggestMessage();
-											}
-										}
-									}), (suggesting || committing) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										className: changes_module_css_default.commitBusyText,
-										role: "status",
-										"aria-live": "polite",
-										children: suggesting ? t("generatingCommitMessage") : t("committingMessage")
-									})]
-								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-									type: "button",
-									className: suggesting ? `${changes_module_css_default.suggestButton} ${changes_module_css_default.suggestBusy}` : changes_module_css_default.suggestButton,
-									"aria-label": generateLabel,
-									"aria-busy": suggesting,
-									title: generateLabel,
-									disabled: busy || suggesting || stagedEntries.length === 0 && unstagedEntries.length === 0,
-									onClick: () => {
-										suggestMessage();
-									},
-									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconSparkleRegular, { size: 14 })
-								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-									variant: "primary",
-									size: "sm",
-									disabled: busy || suggesting || commitMsg.trim() === "" || stagedEntries.length === 0,
-									onClick: commit,
-									children: t("commit")
-								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-									variant: "ghost",
-									size: "sm",
-									disabled: busy || suggesting,
-									onClick: push,
-									children: t("push")
-								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-									variant: "ghost",
-									size: "sm",
-									disabled: busy || suggesting,
-									onClick: pull,
-									children: t("pull")
-								})
-							]
-						}), actionError !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Notice, {
+						className: changes_module_css_default.gitFooter,
+						"data-git-footer": true,
+						children: [actionError !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Notice, {
 							kind: "error",
 							tone: "inline",
 							role: "alert",
-							children: actionError
+							className: changes_module_css_default.actionError,
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: changes_module_css_default.actionErrorText,
+								children: actionError
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
+								size: "sm",
+								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCloseFillRegular, { size: 12 }),
+								label: t("dismiss"),
+								onClick: () => {
+									setActionError(null);
+								}
+							})]
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: changes_module_css_default.footerRow,
+							"data-footer-row": true,
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {
+								open: branchOpen,
+								onClose: () => {
+									setBranchOpen(false);
+								},
+								portal: true,
+								compact: true,
+								side: "top",
+								autoFocus: true,
+								className: changes_module_css_default.branchMenu,
+								anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+									type: "button",
+									className: changes_module_css_default.branchButton,
+									"aria-haspopup": "menu",
+									"aria-expanded": branchOpen,
+									title: `${t("branch")}: ${branchLabel}${branchMarkers}`,
+									disabled: busy || suggesting,
+									onClick: () => {
+										setBranchOpen((open) => !open);
+									},
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconBranchOutlineRegular, { size: 14 }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [branchLabel, branchMarkers] })]
+								}),
+								items: branchNames.length === 0 ? [{
+									id: "none",
+									label: t("gitBranchesUnavailable"),
+									disabled: true
+								}] : branchNames.map((name) => ({
+									id: name,
+									label: name,
+									disabled: busy || suggesting
+								})),
+								selectedId: branch,
+								onSelect: (name) => {
+									setBranchOpen(false);
+									checkout(name);
+								}
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+								type: "button",
+								className: changes_module_css_default.syncButton,
+								"aria-label": syncLabel,
+								title: syncLabel,
+								disabled: !canSync,
+								onClick: sync,
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconRefreshOutlineRegular, { size: 11 }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: snapshot?.upstream !== void 0 && snapshot.ahead !== void 0 && snapshot.behind !== void 0 ? `${snapshot.behind}↓ ${snapshot.ahead}↑` : syncLabel })]
+							})]
 						})]
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {
@@ -12148,7 +13353,7 @@ window.__ModuleLoader__.load({
 							if (target === null) return;
 							setFileMenu(null);
 							if (id === "open") {
-								const resolved = resolveSidebarPath(repoRoot ?? selectedWorktree ?? scope.cwd, target.path);
+								const resolved = resolveSidebarPath(selectedWorktree ?? repoRoot ?? snapshot?.root ?? scope.cwd, target.path);
 								onOpenFile(resolved);
 								return;
 							}
@@ -12166,10 +13371,10 @@ window.__ModuleLoader__.load({
 								return;
 							}
 							if (id === "relative") {
-								copy(relativeTo(repoRoot ?? selectedWorktree ?? scope.cwd ?? "", target.path));
+								copy(relativeTo(selectedWorktree ?? repoRoot ?? snapshot?.root ?? scope.cwd ?? "", target.path));
 								return;
 							}
-							if (id === "absolute") copy(resolveSidebarPath(repoRoot ?? selectedWorktree ?? scope.cwd, target.path));
+							if (id === "absolute") copy(resolveSidebarPath(selectedWorktree ?? repoRoot ?? snapshot?.root ?? scope.cwd, target.path));
 						},
 						portal: true,
 						compact: true,
@@ -12271,6 +13476,140 @@ window.__ModuleLoader__.load({
 						onClose: () => {
 							setConfirm(null);
 						}
+					})
+				]
+			});
+		}
+		//#endregion
+		//#region src/client/markdown-labels.tsx
+		/** MarkdownText props carrying the nested chrome labels. */
+		function markdownTextProps(text, labels) {
+			return {
+				text,
+				labels: {
+					code: {
+						copyLabel: labels.copyLabel,
+						copiedLabel: labels.copiedLabel,
+						toolbarLabels: {
+							codeLabel: labels.codeLabel,
+							wrapLabel: labels.wrapLabel,
+							unwrapLabel: labels.unwrapLabel
+						}
+					},
+					footnotes: ""
+				}
+			};
+		}
+		//#endregion
+		//#region src/client/changes/CommitDetails.tsx
+		/**
+		* The bottom pane's `details` tab: the commit card the graph lens used to
+		* render under its own list (title, author, date, full hash + copy, parents,
+		* refs, message), lifted out of {@link GitGraphSection} so selecting a commit no
+		* longer stacks a second pane below the shared diff preview — the two views are
+		* now tabs of ONE pane (see `ChangesTab` / `DiffPane`).
+		*
+		* Frameless by design: the pane frame, the tab strip and the height belong to
+		* the shared bottom region, so this fills whatever body it is given and scrolls
+		* itself — there is no inner height cap and no nested scroller any more, and
+		* the message is rendered through the same `MarkdownText` the rest of the
+		* plugin uses instead of a `<pre>`.
+		*/
+		/**
+		* `git log %B` is the RAW body: its first line is the very subject the card
+		* already shows as its title, so the markdown block renders only what follows
+		* (the split GitHub's commit page makes). When the first line is not the
+		* subject — a hand-written message whose `%s` was folded differently — the
+		* whole body renders rather than silently dropping a line.
+		*/
+		function messageBodyOf(entry) {
+			const lines = entry.message.replace(/\r\n/g, "\n").split("\n");
+			return ((lines[0] ?? "").trim() === entry.subject.trim() ? lines.slice(1) : lines).join("\n").trim();
+		}
+		function CommitDetails({ entry, remotes = /* @__PURE__ */ new Set(), slot }) {
+			const body = messageBodyOf(entry);
+			const labels = {
+				copyLabel: t("copy"),
+				copiedLabel: t("copied"),
+				codeLabel: t("codeBlockTitle"),
+				wrapLabel: t("codeBlockWrap"),
+				unwrapLabel: t("codeBlockUnwrap")
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
+				className: graph_module_css_default.details,
+				"aria-label": t("graphDetails"),
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("strong", {
+						className: graph_module_css_default.detailSubject,
+						children: entry.subject
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: graph_module_css_default.metaRow,
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: graph_module_css_default.metaGlyph,
+							"aria-hidden": "true",
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconUserOutlineRegular, { size: 12 })
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: graph_module_css_default.metaValue,
+							children: entry.author
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: graph_module_css_default.metaRow,
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: graph_module_css_default.metaGlyph,
+							"aria-hidden": "true",
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconClockOutlineRegular, { size: 12 })
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+							className: graph_module_css_default.metaValue,
+							children: [
+								relativeTime(entry.date),
+								" · ",
+								entry.date
+							]
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: graph_module_css_default.metaRow,
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", {
+							className: graph_module_css_default.hashChip,
+							children: entry.hashFull
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
+							size: "sm",
+							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCopyOutlineRegular, { size: 14 }),
+							label: t("copyFullHash"),
+							onClick: () => {
+								(0, _deepseek_ai_dsh_client_ui_primitives.writeClipboard)(entry.hashFull);
+							}
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: graph_module_css_default.metaRow,
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: graph_module_css_default.metaLabel,
+							children: t("graphParents")
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+							className: graph_module_css_default.parents,
+							children: [entry.parents.length === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: graph_module_css_default.dash,
+								children: "—"
+							}) : entry.parents.map((parent) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", {
+								className: graph_module_css_default.parentChip,
+								title: parent,
+								children: parent.slice(0, 7)
+							}, parent)), "      "]
+						})]
+					}),
+					entry.refs.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: graph_module_css_default.detailRefs,
+						children: refPills(entry.refs, remotes).map((pill) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(RefPill, {
+							pill,
+							slot
+						}, pill.name))
+					}),
+					body !== "" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: graph_module_css_default.messageBody,
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.MarkdownText, { ...markdownTextProps(body, labels) })
 					})
 				]
 			});
@@ -12938,7 +14277,7 @@ window.__ModuleLoader__.load({
 		//#region src/client/changes/SessionLens.tsx
 		/**
 		* The session lens of the changes tab: agent truth — every file the model
-		* read, wrote, or edited in this session, grouped by file, newest first,
+		* read, wrote, or edited in this session, one operation per row, newest first,
 		* with kind filters. Clicking an op previews it in the tab's shared bottom
 		* pane (see {@link DiffPane}): writes and edits as line diffs, reads as a
 		* line-numbered content view, failures as their real error text. The ops
@@ -12953,7 +14292,6 @@ window.__ModuleLoader__.load({
 		function SessionLens({ ops, loadError, onPreview, selectedCallId }) {
 			const [filter, setFilter] = (0, react.useState)("all");
 			const filteredOps = (0, react.useMemo)(() => filter === "all" ? ops : ops.filter((op) => op.kind === filter), [ops, filter]);
-			const groups = (0, react.useMemo)(() => groupByFile(filteredOps), [filteredOps]);
 			const counts = (0, react.useMemo)(() => {
 				const map = /* @__PURE__ */ new Map([
 					["read", 0],
@@ -13011,47 +14349,45 @@ window.__ModuleLoader__.load({
 							tone: "page",
 							children: t("changesFilterEmpty")
 						}),
-						[...groups.entries()].map(([path, fileOps]) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: changes_module_css_default.fileGroup,
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: changes_module_css_default.filePath,
-								title: path,
-								children: path
-							}), fileOps.map((op) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-								type: "button",
-								className: changes_module_css_default.opRow,
-								"data-op-kind": op.kind,
-								"data-op-error": op.isError ? "true" : void 0,
-								"data-selected": selectedCallId === op.callId ? "true" : void 0,
-								onClick: () => {
-									onPreview(path, op);
-								},
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusBadge, {
-										tone: op.kind,
-										children: t(KIND_LABEL[op.kind])
-									}),
-									op.running && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										className: changes_module_css_default.opFlag,
-										children: t("changesRunning")
-									}),
-									op.isError && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										className: changes_module_css_default.opFlagError,
-										children: t("changesError")
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-										className: changes_module_css_default.opMeta,
-										children: [opSizes.get(op.callId) !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: changes_module_css_default.opSize,
-											children: opSizes.get(op.callId)
-										}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: changes_module_css_default.opTime,
-											children: relativeTime(new Date(op.time).toISOString())
-										})]
-									})
-								]
-							}, op.callId))]
-						}, path))
+						filteredOps.map((op) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+							type: "button",
+							className: changes_module_css_default.opRow,
+							"data-op-kind": op.kind,
+							"data-op-error": op.isError ? "true" : void 0,
+							"data-selected": selectedCallId === op.callId ? "true" : void 0,
+							onClick: () => {
+								onPreview(op.path, op);
+							},
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusBadge, {
+									tone: op.kind,
+									children: t(KIND_LABEL[op.kind])
+								}),
+								op.running && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: changes_module_css_default.opFlag,
+									children: t("changesRunning")
+								}),
+								op.isError && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: changes_module_css_default.opFlagError,
+									children: t("changesError")
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: changes_module_css_default.filePath,
+									title: op.path,
+									children: op.path
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+									className: changes_module_css_default.opMeta,
+									children: [opSizes.get(op.callId) !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										className: changes_module_css_default.opSize,
+										children: opSizes.get(op.callId)
+									}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										className: changes_module_css_default.opTime,
+										children: relativeTime(new Date(op.time).toISOString())
+									})]
+								})
+							]
+						}, op.callId))
 					]
 				})]
 			});
@@ -14522,26 +15858,6 @@ window.__ModuleLoader__.load({
 			}));
 		}
 		//#endregion
-		//#region src/client/markdown-labels.tsx
-		/** MarkdownText props carrying the nested chrome labels. */
-		function markdownTextProps(text, labels) {
-			return {
-				text,
-				labels: {
-					code: {
-						copyLabel: labels.copyLabel,
-						copiedLabel: labels.copiedLabel,
-						toolbarLabels: {
-							codeLabel: labels.codeLabel,
-							wrapLabel: labels.wrapLabel,
-							unwrapLabel: labels.unwrapLabel
-						}
-					},
-					footnotes: ""
-				}
-			};
-		}
-		//#endregion
 		//#region src/client/markdown-navigation.ts
 		/**
 		* Cross-file / anchor navigation for the markdown the PLUGIN draws (the editor
@@ -14920,6 +16236,27 @@ window.__ModuleLoader__.load({
 			return `${sessionId}::${normalizeLocalPath(isAbsolutePath$1(path) ? path : joinPath(cwd ?? "", path)).replace(/\\/g, "/")}`;
 		}
 		/**
+		* Drop every parked fragment whose TTL ran out.
+		*
+		* The TTL is already honoured when a fragment is TAKEN, but a fragment parked
+		* for a document the reader never opens is never taken — it would sit in the
+		* map for the page's lifetime (since v0.25 every visited native tab body stays
+		* mounted, and every cross-file link click parks one entry). Sweeping on WRITE
+		* is what bounds it: a write is the only event that can add an entry.
+		*
+		* @returns how many expired entries were dropped.
+		*/
+		function sweepPendingAnchors() {
+			const now = Date.now();
+			let dropped = 0;
+			for (const [key, entry] of pendingAnchors) {
+				if (now - entry.at <= PENDING_TTL_MS) continue;
+				pendingAnchors.delete(key);
+				dropped += 1;
+			}
+			return dropped;
+		}
+		/**
 		* Park the fragment a cross-file link wants to land on, for the target
 		* document's own surface to take once it mounts.
 		* @param sessionId - the session both documents live in.
@@ -14929,6 +16266,7 @@ window.__ModuleLoader__.load({
 		*/
 		function rememberMarkdownAnchor(sessionId, cwd, path, fragment) {
 			if (fragment === "") return;
+			sweepPendingAnchors();
 			pendingAnchors.set(anchorKey(sessionId, cwd, path), {
 				fragment,
 				at: Date.now()
@@ -15241,10 +16579,18 @@ window.__ModuleLoader__.load({
 		* worktree change, a commit patch, or a session file op — rendered through
 		* the unified diff stack (the same one the diff tab uses). Git targets load
 		* through the shared {@link useGitDiffTarget} hook (refreshable, with the
-		* untracked full-addition fallback); op targets are pure snapshots (diff /
-		* read view / error text). The pane is resizable by drag (clamped; the
-		* height commits to the tab's persisted meta on release) and by keyboard;
-		* git targets can expand into a dedicated diff tab via the shell.
+		* untracked full-addition fallback); op targets are pure snapshots. The pane
+		* is resizable by drag (clamped; the height commits to the tab's persisted
+		* meta on release) and by keyboard; git targets can expand into a dedicated
+		* diff tab via the shell.
+		*
+		* The pane's views are TABS, one per question: `content` answers "what is in
+		* the file" (every read op, and the rendered view for md/html/pdf ops — the
+		* plugin's renderers no longer hide behind a toggle inside the diff view),
+		* `diff` answers "what changed" (git targets, write/edit ops), and extra
+		* views the caller hosts (the graph commit's `details` card) sit ahead of
+		* both. A read op has no `diff` tab — nothing changed. With one or zero tabs
+		* the pane is byte-for-byte the strip-less preview of before.
 		*/
 		/** Drag handle height clamp (px) and keyboard-resize step. */
 		const HEIGHT_MIN = 140;
@@ -15303,6 +16649,59 @@ window.__ModuleLoader__.load({
 				children: props.label
 			});
 		}
+		/**
+		* A compact tab strip — a real tablist with roving focus: the active tab is
+		* the only tab stop, and Left/Right/Home/End move focus AND selection (the
+		* standard automatic-activation model). Born as the bottom pane's strip
+		* (details / diff); the changes tab's header reuses it for the lens switcher
+		* so the page's two switchers read as one component. Rendered only when the
+		* caller hosts more than one view, so a diff-only preview never grows a strip.
+		*/
+		function PaneTabStrip(props) {
+			const buttons = (0, react.useRef)([]);
+			const move = (to) => {
+				const count = props.tabs.length;
+				if (count === 0) return;
+				const index = (to % count + count) % count;
+				props.onSelect(props.tabs[index].id);
+				buttons.current[index]?.focus();
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: props.className === void 0 ? changes_module_css_default.paneTabs : `${changes_module_css_default.paneTabs} ${props.className}`,
+				role: "tablist",
+				"aria-label": props.label,
+				children: props.tabs.map((tab, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+					ref: (node) => {
+						buttons.current[index] = node;
+					},
+					type: "button",
+					role: "tab",
+					className: changes_module_css_default.paneTab,
+					"data-active": tab.id === props.active ? "true" : void 0,
+					"aria-selected": tab.id === props.active,
+					tabIndex: tab.id === props.active ? 0 : -1,
+					onClick: () => {
+						props.onSelect(tab.id);
+					},
+					onKeyDown: (event) => {
+						if (event.key === "ArrowRight") {
+							event.preventDefault();
+							move(index + 1);
+						} else if (event.key === "ArrowLeft") {
+							event.preventDefault();
+							move(index - 1);
+						} else if (event.key === "Home") {
+							event.preventDefault();
+							move(0);
+						} else if (event.key === "End") {
+							event.preventDefault();
+							move(props.tabs.length - 1);
+						}
+					},
+					children: tab.label
+				}, tab.id))
+			});
+		}
 		/** The reading-mode body of one markdown op target: the shared MarkdownText
 		*  pass (local image destinations already rewritten to the media route by
 		*  the caller). Mermaid fences render through the same chunk-resident
@@ -15359,8 +16758,89 @@ window.__ModuleLoader__.load({
 				diff: ref
 			};
 		}
-		function DiffPane({ target, ctx, scope, height, onHeightCommit, onClose, onExpand }) {
-			const { loading, error, diffText, untracked, refresh, resolveFold } = useGitDiffTarget(target.kind === "git" ? target.ref : null, scope);
+		/** One tab's "nothing here" body — a page-level empty notice. */
+		function PaneEmpty({ text }) {
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: changes_module_css_default.paneBody,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Notice, {
+					kind: "empty",
+					tone: "page",
+					children: text
+				})
+			});
+		}
+		function DiffPane({ target, ctx, scope, height, onHeightCommit, onClose, onExpand, tabs, bodies, activeTab, onSelectTab }) {
+			const gitRef = target.kind === "git" ? target.ref : null;
+			/** The git target when it is a WORKTREE file (the only git target with a
+			*  content view, and the only one carrying a `path`). */
+			const gitWorktree = gitRef !== null && gitRef.kind === "worktree" ? gitRef : null;
+			const { loading, error, diffText, untracked, refresh, resolveFold } = useGitDiffTarget(gitRef, scope);
+			/** The path the content view is about: a worktree file's, or an op's. */
+			const targetPath = gitWorktree !== null ? gitWorktree.path : target.kind === "op" ? target.path : "";
+			/** A target whose content view may RENDER: a non-error op, or a worktree
+			*  file (the plugin's renderers are the reason the content tab exists). */
+			const renderable = target.kind === "op" && !target.op.isError || gitWorktree !== null;
+			const mdOp = renderable && /\.(md|markdown|mdx)$/i.test(targetPath);
+			const htmlOp = renderable && /\.(html?)$/i.test(targetPath);
+			const pdfOp = renderable && /\.pdf$/i.test(targetPath);
+			/** Source vs rendered inside the CONTENT tab. Markdown starts rendered (the
+			*  sanitized MarkdownText is the point of the tab); html starts on SOURCE —
+			*  selecting a row must never auto-load an iframe without an explicit click
+			*  (the sandbox spec pins this). */
+			const [contentRaw, setContentRaw] = (0, react.useState)(htmlOp);
+			const opKind = target.kind === "op" ? target.op.kind : null;
+			const opError = target.kind === "op" && target.op.isError;
+			/** What this target can offer: every read op has a content view, md/html/pdf
+			*  ops have one whatever they did, and a git WORKTREE file has one too (the
+			*  file itself, next to its patch). */
+			const hasContentTab = target.kind === "git" ? target.ref.kind === "worktree" : opKind !== null && !opError && (opKind === "read" || mdOp || htmlOp || pdfOp);
+			const hasDiffTab = target.kind === "git" || opKind !== null && (opKind !== "read" || opError);
+			/** The host may PIN the tab set (the changes tab pins details/content/diff
+			*  so the panel is identical in every lens); otherwise the set is composed
+			*  from what this target offers. An unlisted / absent active id lands on the
+			*  built-in home (`diff`, else `content`, else the first pinned view). */
+			const allTabs = tabs !== void 0 ? [...tabs] : [...hasContentTab ? [{
+				id: "content",
+				label: t("changesContentTab")
+			}] : [], ...hasDiffTab ? [{
+				id: "diff",
+				label: t("changesDiffTab")
+			}] : []];
+			const hasStrip = allTabs.length > 1;
+			const active = activeTab !== void 0 && allTabs.some((tab) => tab.id === activeTab) ? activeTab : hasDiffTab ? "diff" : hasContentTab ? "content" : allTabs[0]?.id ?? "diff";
+			const activeExtra = active !== "diff" && active !== "content";
+			const [gitContent, setGitContent] = (0, react.useState)({ status: "idle" });
+			(0, react.useEffect)(() => {
+				if (gitWorktree === null) {
+					setGitContent({ status: "idle" });
+					return;
+				}
+				if (active !== "content") return;
+				const controller = new AbortController();
+				setGitContent({ status: "loading" });
+				api.fsRead(scope, resolveSidebarPath(gitWorktree.repoRoot ?? gitWorktree.worktree ?? scope.cwd, gitWorktree.path), controller.signal).then((result) => {
+					if (controller.signal.aborted) return;
+					if (result.kind === "text") setGitContent({
+						status: "text",
+						text: result.content
+					});
+					else if (result.kind === "binary") setGitContent({ status: "binary" });
+					else setGitContent({ status: "large" });
+				}).catch((reason) => {
+					if (controller.signal.aborted) return;
+					setGitContent({
+						status: "error",
+						error: reason instanceof Error ? reason.message : String(reason)
+					});
+				});
+				return () => {
+					controller.abort();
+				};
+			}, [
+				gitWorktree,
+				scope,
+				active
+			]);
 			const opRaw = target.kind === "op" ? target.op : null;
 			const priorRaw = target.kind === "op" ? target.prior : void 0;
 			const [redactionOn, setRedactionOn] = (0, react.useState)(() => {
@@ -15433,10 +16913,11 @@ window.__ModuleLoader__.load({
 			const opSegments = (0, react.useMemo)(() => buildDiffSegments(opRows), [opRows]);
 			const opStats = (0, react.useMemo)(() => diffStats(opSegments), [opSegments]);
 			const opReadLines = (0, react.useMemo)(() => op?.kind === "read" && op.read !== void 0 ? parseReadLines(op.read) : [], [op]);
-			const mdOp = target.kind === "op" && !target.op.isError && /\.(md|markdown|mdx)$/i.test(target.path);
-			const [reading, setReading] = (0, react.useState)(false);
-			const readingSrc = (0, react.useMemo)(() => {
-				if (!mdOp || op === null) return "";
+			/** The textual source behind the content view — the op's snapshot for op
+			*  targets, the file on disk for a git worktree file. */
+			const contentSrc = (0, react.useMemo)(() => {
+				if (gitWorktree !== null) return gitContent.status === "text" ? gitContent.text : "";
+				if (target.kind !== "op" || op === null) return "";
 				if (op.kind === "read") return parseReadContent(op.read ?? "");
 				if (op.kind === "write") return op.content ?? "";
 				if (op.kind === "edit" && op.edit !== void 0) {
@@ -15445,36 +16926,38 @@ window.__ModuleLoader__.load({
 				}
 				return "";
 			}, [
-				mdOp,
+				gitWorktree,
+				target.kind,
 				op,
-				prior
+				prior,
+				gitContent
 			]);
-			const readingText = (0, react.useMemo)(() => mdOp && reading && readingSrc !== "" && target.kind === "op" ? rewriteLocalImageUrls(readingSrc, scope, target.path, hostTransportBase()) : "", [
-				mdOp,
-				reading,
-				readingSrc,
+			/** The display path (for the language highlighter) and the resolved path the
+			*  media/html routes need — a child-repo path is relative to its repo root,
+			*  exactly as the diff loader resolves it. */
+			const contentPath = targetPath;
+			const contentAbs = (0, react.useMemo)(() => gitWorktree !== null ? resolveSidebarPath(gitWorktree.repoRoot ?? gitWorktree.worktree ?? scope.cwd, gitWorktree.path) : resolveSidebarPath(scope.cwd, contentPath), [
+				gitWorktree,
 				scope,
-				target
+				contentPath
 			]);
-			const htmlOp = target.kind === "op" && !target.op.isError && /\.(html?)$/i.test(target.path);
-			const [rendering, setRendering] = (0, react.useState)(false);
-			const htmlRenderSrc = (0, react.useMemo)(() => {
-				if (!htmlOp || target.kind !== "op") return "";
-				return htmlUrl(scope, resolveSidebarPath(scope.cwd, target.path));
-			}, [
+			/** Source lines: a read keeps its ORIGINAL numbering (`opReadLines`), a
+			*  whole-file source is renumbered from 1. */
+			const contentLines = (0, react.useMemo)(() => contentSrc === "" ? [] : contentSrc.split("\n").map((text, index) => ({
+				line: index + 1,
+				text
+			})), [contentSrc]);
+			const contentText = (0, react.useMemo)(() => mdOp && !contentRaw && contentSrc !== "" ? rewriteLocalImageUrls(contentSrc, scope, contentPath, hostTransportBase()) : "", [
+				mdOp,
+				contentRaw,
+				contentSrc,
+				scope,
+				contentPath
+			]);
+			const htmlRenderSrc = (0, react.useMemo)(() => htmlOp && contentAbs !== "" ? htmlUrl(scope, contentAbs) : "", [
 				htmlOp,
 				scope,
-				target
-			]);
-			const pdfOp = target.kind === "op" && !target.op.isError && /\.pdf$/i.test(target.path);
-			const [renderingPdf, setRenderingPdf] = (0, react.useState)(false);
-			const pdfRenderPath = (0, react.useMemo)(() => {
-				if (!pdfOp || target.kind !== "op") return "";
-				return resolveSidebarPath(scope.cwd, target.path);
-			}, [
-				pdfOp,
-				scope,
-				target
+				contentAbs
 			]);
 			const gitStats = (0, react.useMemo)(() => {
 				if (target.kind !== "git" || diffText === null || diffText === "") return null;
@@ -15524,28 +17007,105 @@ window.__ModuleLoader__.load({
 			};
 			const title = target.kind === "op" ? target.path : target.ref.kind === "worktree" ? target.ref.path : `${target.ref.hash} ${target.ref.subject}`;
 			const stats = gitStats ?? (target.kind === "op" && op !== null && op.kind !== "read" && !op.isError ? opStats : null);
+			const handle = /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: changes_module_css_default.dragHandle,
+				role: "separator",
+				"aria-orientation": "horizontal",
+				"aria-label": t("changesResizePreview"),
+				tabIndex: 0,
+				onPointerDown: onHandleDown,
+				onKeyDown: (event) => {
+					if (event.key === "ArrowUp") {
+						event.preventDefault();
+						onHeightCommit(clamp(paneHeight + HEIGHT_STEP));
+					}
+					if (event.key === "ArrowDown") {
+						event.preventDefault();
+						onHeightCommit(clamp(paneHeight - HEIGHT_STEP));
+					}
+				}
+			});
+			const strip = hasStrip ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaneTabStrip, {
+				tabs: allTabs,
+				active,
+				onSelect: onSelectTab ?? (() => {})
+			}) : null;
+			if (activeExtra) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: changes_module_css_default.diffPane,
+				style: { height: paneHeight },
+				children: [
+					handle,
+					strip,
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: changes_module_css_default.altBody,
+						children: bodies?.[active] ?? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaneEmpty, { text: t("changesNoContent") })
+					})
+				]
+			});
+			/** Which rendering the content view uses. Resolved up front so this stays a
+			*  single switch (an aliased-condition narrowing would turn `target` into
+			*  `never` in the remaining branch). */
+			const contentView = pdfOp && contentAbs !== "" ? "pdf" : htmlOp && !contentRaw && htmlRenderSrc !== "" ? "html" : mdOp && !contentRaw && contentText !== "" ? "md" : "source";
+			/** The `content` tab's body: the plugin's rendered view for md/html/pdf
+			*  (with the source toggle for md/html), line-numbered source otherwise, and
+			*  the worktree file itself for a git target — the diff tab keeps the patch. */
+			const contentBody = contentView === "pdf" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: changes_module_css_default.htmlPane,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PdfView, {
+					scope,
+					path: contentAbs,
+					title
+				})
+			}) : contentView === "html" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(HtmlRenderPreview, {
+				src: htmlRenderSrc,
+				title
+			}) : contentView === "md" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(MdReadingView, {
+				text: contentText,
+				ctx,
+				scope,
+				path: contentPath
+			}) : gitWorktree !== null ? gitContent.status === "loading" || gitContent.status === "idle" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: changes_module_css_default.paneBody,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Notice, {
+					kind: "loading",
+					tone: "page",
+					children: t("loading")
+				})
+			}) : gitContent.status === "error" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: changes_module_css_default.paneBody,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Notice, {
+					kind: "error",
+					children: [
+						t("diffLoadError"),
+						": ",
+						gitContent.error
+					]
+				})
+			}) : gitContent.status === "binary" || gitContent.status === "large" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: changes_module_css_default.paneBody,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(BinaryDownload, {
+					scope,
+					path: contentAbs
+				})
+			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: changes_module_css_default.paneBody,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ReadRows, {
+					lines: contentLines,
+					lang: langOfPath(gitWorktree.path)
+				})
+			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: changes_module_css_default.paneBody,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ReadRows, {
+					lines: opKind === "read" ? opReadLines : contentLines,
+					lang: opLang
+				})
+			});
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: changes_module_css_default.diffPane,
 				style: { height: paneHeight },
 				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: changes_module_css_default.dragHandle,
-						role: "separator",
-						"aria-orientation": "horizontal",
-						"aria-label": t("changesResizePreview"),
-						tabIndex: 0,
-						onPointerDown: onHandleDown,
-						onKeyDown: (event) => {
-							if (event.key === "ArrowUp") {
-								event.preventDefault();
-								onHeightCommit(clamp(paneHeight + HEIGHT_STEP));
-							}
-							if (event.key === "ArrowDown") {
-								event.preventDefault();
-								onHeightCommit(clamp(paneHeight - HEIGHT_STEP));
-							}
-						}
-					}),
+					handle,
+					strip,
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: changes_module_css_default.diffHead,
 						children: [
@@ -15566,7 +17126,7 @@ window.__ModuleLoader__.load({
 								title,
 								children: title
 							}),
-							stats !== null && (stats.added > 0 || stats.deleted > 0) && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+							active === "diff" && stats !== null && (stats.added > 0 || stats.deleted > 0) && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
 								className: changes_module_css_default.diffStats,
 								children: [stats.added > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
 									className: diff_module_css_default.statAdd,
@@ -15599,25 +17159,18 @@ window.__ModuleLoader__.load({
 								title: redactionOn ? t("changesRedactOff") : t("changesRedactOn"),
 								onClick: toggleRedaction
 							}),
-							mdOp && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaneToggle, {
-								on: reading,
-								label: t(reading ? "changesMdRaw" : "changesMdReading"),
+							active === "content" && mdOp && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaneToggle, {
+								on: !contentRaw,
+								label: t(contentRaw ? "changesMdReading" : "changesMdRaw"),
 								onClick: () => {
-									setReading((value) => !value);
+									setContentRaw((value) => !value);
 								}
 							}),
-							htmlOp && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaneToggle, {
-								on: rendering,
-								label: t(rendering ? "changesHtmlRaw" : "changesHtmlRender"),
+							active === "content" && htmlOp && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaneToggle, {
+								on: !contentRaw,
+								label: t(contentRaw ? "changesHtmlRender" : "changesHtmlRaw"),
 								onClick: () => {
-									setRendering((value) => !value);
-								}
-							}),
-							pdfOp && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaneToggle, {
-								on: renderingPdf,
-								label: t(renderingPdf ? "changesPdfRaw" : "changesPdfRender"),
-								onClick: () => {
-									setRenderingPdf((value) => !value);
+									setContentRaw((value) => !value);
 								}
 							}),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
@@ -15628,35 +17181,14 @@ window.__ModuleLoader__.load({
 							})
 						]
 					}),
-					target.kind === "op" && htmlOp && rendering && htmlRenderSrc !== "" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(HtmlRenderPreview, {
-						src: htmlRenderSrc,
-						title: target.path
-					}) : target.kind === "op" && pdfOp && renderingPdf && pdfRenderPath !== "" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: changes_module_css_default.htmlPane,
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PdfView, {
-							scope,
-							path: pdfRenderPath,
-							title: target.path
-						})
-					}) : target.kind === "op" && mdOp && reading && readingText !== "" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(MdReadingView, {
-						text: readingText,
-						ctx,
-						scope,
-						path: target.path
-					}) : target.kind === "op" && op !== null && op.isError ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					active === "content" ? hasContentTab ? contentBody : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaneEmpty, { text: t("changesNoContent") }) : active === "diff" ? opError ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: changes_module_css_default.paneBody,
 						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Notice, {
 							kind: "error",
 							className: changes_module_css_default.readError,
-							children: op.errorText ?? t("changesError")
+							children: op?.errorText ?? t("changesError")
 						})
-					}) : target.kind === "op" && op !== null && op.kind === "read" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: changes_module_css_default.paneBody,
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ReadRows, {
-							lines: opReadLines,
-							lang: opLang
-						})
-					}) : target.kind === "op" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					}) : opKind === "read" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaneEmpty, { text: t("changesReadNoDiff") }) : target.kind === "op" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: changes_module_css_default.paneBody,
 						children: [op !== null && op.kind === "write" && prior === void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Notice, {
 							kind: "hint",
@@ -15695,7 +17227,7 @@ window.__ModuleLoader__.load({
 							tone: "page",
 							children: t("diffEmpty")
 						})]
-					})
+					}) : bodies?.[active] ?? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaneEmpty, { text: t("changesNoContent") })
 				]
 			});
 		}
@@ -15705,12 +17237,16 @@ window.__ModuleLoader__.load({
 		* The unified changes tab: one tab, two lenses on "what changed?" — Git
 		* (repository truth: staged/unstaged files, commit box, history) and the
 		* session round (agent truth: every file the model read, wrote, or edited).
-		* A 36px header carries the host {@link SegmentedControl} and the current
+		* A 36px header carries the host conversation Tabs and the current
 		* lens's refresh action; both lenses preview their selections in a shared
 		* resizable bottom pane ({@link DiffPane}), and git targets expand into the
-		* dedicated diff tab docked in the workbench's diff pane. The active lens and
-		* the pane height persist in the tab's meta, so the tab reopens exactly where
-		* it was left.
+		* dedicated diff tab docked in the workbench's diff pane. The bottom pane is
+		* ONE region with a tab strip when a Git Graph commit supplies a second view:
+		* `details` (that commit's card, {@link CommitDetails}) and `diff` (the shared
+		* preview). Every other preview — a worktree file, a history row, a session op
+		* — keeps the pane diff-only, exactly as before. The active lens, the pane
+		* height and the pane tab persist in the tab's meta, so the tab reopens
+		* exactly where it was left.
 		*
 		* The session events ride the host's `changes.ops` route (the client runtime
 		* exposes no event-log face): the tab pulls the delta past its cursor and
@@ -15735,14 +17271,21 @@ window.__ModuleLoader__.load({
 		}
 		function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpenDiff }) {
 			const meta = tab.meta ?? {};
+			const lensId = (0, react.useId)();
 			const [lens, setLens] = (0, react.useState)(meta.lens === "session" ? "session" : "git");
 			const [selection, setSelection] = (0, react.useState)(null);
+			/** The Git Graph's selected commit (its card + the ref tones it needs), or
+			*  null while nothing is selected there. Null keeps the pane diff-only. */
+			const [graphDetails, setGraphDetails] = (0, react.useState)(null);
+			/** The pane's active tab: null only before anything picks one, so the FIRST
+			*  graph commit lands on `details` while a tab already chosen (including one
+			*  restored from the meta) is kept — the `diff` default with no strip. */
+			const [bottomTab, setBottomTab] = (0, react.useState)(meta.paneTab === "details" || meta.paneTab === "content" || meta.paneTab === "diff" ? meta.paneTab : null);
 			const [paneHeight, setPaneHeight] = (0, react.useState)(() => clampPaneHeight(typeof meta.previewH === "number" ? meta.previewH : PANE_HEIGHT_DEFAULT));
-			/** The header refresh action for the Git lens (the lens owns its own queue). */
-			const [gitRefresh, setGitRefresh] = (0, react.useState)(0);
 			const eventsRef = (0, react.useRef)([]);
 			const opsRef = (0, react.useRef)([]);
-			const seqRef = (0, react.useRef)(0);
+			const seqRef = (0, react.useRef)(-1);
+			const primedRef = (0, react.useRef)(false);
 			const pollGen = (0, react.useRef)(0);
 			/** One delta request in flight at a time (the poller is fixed-interval, so a
 			*  slow host would otherwise run two pulls over the same cursor and append
@@ -15756,8 +17299,9 @@ window.__ModuleLoader__.load({
 				if (pullingRef.current) return;
 				pullingRef.current = true;
 				try {
-					const { events, lastSeq } = await api.changesOps(scope, seqRef.current, signal);
+					const { events, lastSeq } = await api.changesOps(scope, primedRef.current ? seqRef.current : void 0, signal, primedRef.current);
 					if (generation !== pollGen.current || signal?.aborted === true) return;
+					primedRef.current = true;
 					if (events.length === 0 && lastSeq <= seqRef.current && opsRef.current.length > 0) {
 						setOpsError(false);
 						return;
@@ -15767,7 +17311,7 @@ window.__ModuleLoader__.load({
 						eventsRef.current = merged.length > EVENTS_CAP ? merged.slice(merged.length - EVENTS_CAP) : merged;
 					}
 					if (lastSeq > seqRef.current) seqRef.current = lastSeq;
-					const folded = extractFileOps(eventsRef.current);
+					const folded = extractFileOps(eventsRef.current, scope.cwd);
 					opsRef.current = folded;
 					opCounts.set(scope.sessionId, folded.length);
 					setOpsError(false);
@@ -15775,15 +17319,20 @@ window.__ModuleLoader__.load({
 				} catch {
 					if (generation === pollGen.current && signal?.aborted !== true) setOpsError(true);
 				} finally {
-					pullingRef.current = false;
+					if (generation === pollGen.current) pullingRef.current = false;
 				}
 			}, [scope.sessionId, scope.cwd]);
 			(0, react.useEffect)(() => {
 				pollGen.current += 1;
+				pullingRef.current = false;
 				eventsRef.current = [];
 				opsRef.current = [];
-				seqRef.current = 0;
+				seqRef.current = -1;
+				primedRef.current = false;
 				setOpsError(false);
+				return () => {
+					pollGen.current += 1;
+				};
 			}, [scope.sessionId]);
 			(0, react.useEffect)(() => {
 				if (visible) pull();
@@ -15804,24 +17353,31 @@ window.__ModuleLoader__.load({
 					prior: knownContentBefore(ops, selection.path, op)
 				};
 			}, [selection, ops]);
-			/** Persist a meta patch onto the tab (lens choice, pane height). */
+			/** Persist a meta patch onto the tab (lens choice, pane height, pane tab). */
 			const patchMeta = (patch) => {
 				ctx.get("betterSidebar")?.updateTab(tab.id, { meta: {
 					...tab.meta ?? {},
 					...patch
 				} }, scope.sessionId);
 			};
+			/** Switch the bottom pane's tab (a strip click) and persist the choice
+			*  beside lens / previewH, so the pane reopens on the same view. */
+			const chooseBottomTab = (next) => {
+				if (next === bottomTab) return;
+				setBottomTab(next);
+				patchMeta({ paneTab: next });
+			};
+			/** The graph lens's selected commit, or null. Its arrival is what arms the
+			*  pane's two-tab strip, and the FIRST one of a tab's life lands on `details`
+			*  (the graph's own card); a tab the user already worked on keeps its tab. */
+			const reportGraphDetails = (selection) => {
+				setGraphDetails(selection);
+				if (selection !== null && bottomTab === null) chooseBottomTab("details");
+			};
 			const chooseLens = (next) => {
 				if (next === lens) return;
 				setLens(next);
 				patchMeta({ lens: next });
-			};
-			/** The header's refresh action: the Git lens reloads through its own queue
-			*  (a click while a refresh is in flight is queued, not dropped), the
-			*  session lens re-pulls its event delta. */
-			const refreshCurrent = () => {
-				if (lens === "git") setGitRefresh((value) => value + 1);
-				else pull();
 			};
 			/** Preview one git change (worktree file or commit) from the Git lens. */
 			const previewGit = (ref) => {
@@ -15829,14 +17385,26 @@ window.__ModuleLoader__.load({
 					kind: "git",
 					ref
 				});
+				chooseBottomTab("diff");
 			};
-			/** Preview one session op by callId (the tab re-derives it each render). */
+			/** Preview one commit from the GRAPH lens: the pane stays on whatever tab
+			*  the user is on (the default is decided when the entry arrives). */
+			const previewGraphCommit = (ref) => {
+				setSelection({
+					kind: "git",
+					ref
+				});
+			};
+			/** Preview one session op by callId (the tab re-derives it each render). A
+			*  READ lands on the content tab — nothing changed, so there is no diff —
+			*  a write/edit lands on the diff. */
 			const previewOp = (path, op) => {
 				setSelection({
 					kind: "op",
 					path,
 					callId: op.callId
 				});
+				chooseBottomTab(op.kind === "read" ? "content" : "diff");
 			};
 			/** Expand the current git preview into the dedicated diff tab, docked
 			*  into the workbench's diff pane. */
@@ -15850,39 +17418,77 @@ window.__ModuleLoader__.load({
 				children: [
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: changes_module_css_default.head,
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.SegmentedControl, {
-							id: `changes-lens-${tab.id}`,
-							value: lens,
-							options: [{
-								value: "git",
-								label: t("changesGitLens")
-							}, {
-								value: "session",
-								label: t("changesSessionLens")
-							}],
-							onChange: chooseLens,
-							label: t("changes")
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "wSkVaW_tabs",
+							role: "tablist",
+							"aria-label": t("changes"),
+							children: ["git", "session"].map((value) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								id: `${lensId}-${value}`,
+								type: "button",
+								role: "tab",
+								"aria-selected": lens === value,
+								"aria-controls": `${lensId}-${value}-panel`,
+								tabIndex: lens === value ? 0 : -1,
+								className: `wSkVaW_tab${lens === value ? " wSkVaW_tabActive" : ""}`,
+								onClick: () => {
+									chooseLens(value);
+								},
+								onKeyDown: (event) => {
+									let next;
+									if (event.key === "ArrowLeft" || event.key === "ArrowRight") next = value === "git" ? "session" : "git";
+									else if (event.key === "Home") next = "git";
+									else if (event.key === "End") next = "session";
+									else return;
+									event.preventDefault();
+									chooseLens(next);
+									event.currentTarget.parentElement?.querySelector(`[id="${lensId}-${next}"]`)?.focus();
+								},
+								children: t(value === "git" ? "changesGitLens" : "changesSessionLens")
+							}, value))
+						}), lens === "session" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconButton, {
 							className: changes_module_css_default.headAction,
-							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconRefreshOutlineRegular, {}),
+							size: "sm",
+							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconRefreshOutlineRegular, { size: 14 }),
 							label: t("refresh"),
-							onClick: refreshCurrent
+							onClick: () => {
+								pull();
+							}
 						})]
 					}),
-					lens === "git" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GitLens, {
-						ctx,
-						scope,
-						store,
-						visible,
-						refreshTick: gitRefresh,
-						onOpenFile: onOpenFile ?? (() => {}),
-						onPreview: previewGit,
-						selectedRef: previewTarget !== null && previewTarget.kind === "git" ? previewTarget.ref : null
-					}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SessionLens, {
-						ops,
-						loadError: opsError && ops.length === 0,
-						onPreview: previewOp,
-						selectedCallId: selection !== null && selection.kind === "op" ? selection.callId : null
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: changes_module_css_default.lensBody,
+						id: `${lensId}-git-panel`,
+						role: "tabpanel",
+						"aria-labelledby": `${lensId}-git`,
+						hidden: lens !== "git",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GitLens, {
+							ctx,
+							scope,
+							store,
+							visible,
+							active: lens === "git",
+							onOpenFile: onOpenFile ?? (() => {}),
+							onPreview: previewGit,
+							selectedRef: previewTarget !== null && previewTarget.kind === "git" ? previewTarget.ref : null,
+							onGraphPreview: previewGraphCommit,
+							onClearPreview: () => {
+								setSelection(null);
+							},
+							onDetailsChange: reportGraphDetails
+						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: changes_module_css_default.lensBody,
+						id: `${lensId}-session-panel`,
+						role: "tabpanel",
+						"aria-labelledby": `${lensId}-session`,
+						hidden: lens !== "session",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SessionLens, {
+							ops,
+							loadError: opsError && ops.length === 0,
+							onPreview: previewOp,
+							selectedCallId: selection !== null && selection.kind === "op" ? selection.callId : null
+						})
 					}),
 					previewTarget !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DiffPane, {
 						target: previewTarget,
@@ -15896,7 +17502,37 @@ window.__ModuleLoader__.load({
 						onClose: () => {
 							setSelection(null);
 						},
-						onExpand: expandPreview
+						onExpand: expandPreview,
+						tabs: [
+							{
+								id: "details",
+								label: t("graphDetails")
+							},
+							{
+								id: "content",
+								label: t("changesContentTab")
+							},
+							{
+								id: "diff",
+								label: t("changesDiffTab")
+							}
+						],
+						activeTab: bottomTab ?? "diff",
+						onSelectTab: (id) => {
+							if (id === "details" || id === "content" || id === "diff") chooseBottomTab(id);
+						},
+						bodies: { details: graphDetails === null ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: changes_module_css_default.altBody,
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Notice, {
+								kind: "empty",
+								tone: "page",
+								children: t("changesNoCommit")
+							})
+						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CommitDetails, {
+							entry: graphDetails.entry,
+							remotes: graphDetails.remotes,
+							slot: graphDetails.slot
+						}) }
 					}, previewKey(previewTarget)),
 					selection !== null && selection.kind === "op" && previewTarget === null && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: changes_module_css_default.paneGone,
@@ -16607,6 +18243,706 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 				});
 			}
 			return rows;
+		}
+		//#endregion
+		//#region src/client/context-diagnostics.ts
+		const CONTEXT_KIND = "dsh-context";
+		const BODY_SLOT = "sidebar.right.pane.tab";
+		const TIMEOUT_MS = 1e4;
+		const RETRY_MS = 50;
+		function record(value) {
+			return value !== null && typeof value === "object" ? value : void 0;
+		}
+		function methods(value, names) {
+			const face = record(value);
+			return face !== void 0 && names.every((name) => typeof face[name] === "function");
+		}
+		/** Re-prove the optional runtime faces; never treat package installation as readiness. */
+		function facesOf(ctx) {
+			try {
+				const right = ctx.get("sidebarRight");
+				const registry = ctx.get("sidebarRightTabs");
+				const workspace = ctx.get("uiWorkspace");
+				const layout = ctx.get("layout");
+				const slots = ctx.get("slots");
+				if (!methods(right, [
+					"openTab",
+					"focus",
+					"active",
+					"isExpanded",
+					"toggleExpanded"
+				]) || !methods(record(right)?.mounted, ["getSnapshot", "subscribe"]) || !methods(record(right)?.openTabs, ["getSnapshot", "subscribe"]) || !methods(registry, ["get", "subscribe"]) || !methods(workspace, ["openSession"]) || !methods(layout, ["beginNavigation"]) || !methods(slots, ["entriesOfSlot", "subscribe"])) return void 0;
+				return {
+					right,
+					registry,
+					workspace,
+					layout,
+					slots
+				};
+			} catch {
+				return;
+			}
+		}
+		function available(faces) {
+			if (faces === void 0) return false;
+			try {
+				const type = faces.registry.get(CONTEXT_KIND);
+				return type?.kind === CONTEXT_KIND && typeof type.id === "string" && type.id !== "" && faces.slots.entriesOfSlot(BODY_SLOT).some((entry) => entry.options.key === type.id);
+			} catch {
+				return false;
+			}
+		}
+		/** Create once in apply(), not once per keepMounted view. No idle timers or requests. */
+		function createContextDiagnostics(ctx) {
+			let snapshot = {
+				available: false,
+				busy: false
+			};
+			const listeners = /* @__PURE__ */ new Set();
+			let faces;
+			let pending;
+			let disposed = false;
+			const publish = (next) => {
+				if (disposed || snapshot.available === next.available && snapshot.busy === next.busy && snapshot.error === next.error) return;
+				snapshot = next;
+				for (const listener of listeners) listener();
+			};
+			const finish = (request, reason) => {
+				if (pending !== request) return;
+				pending = void 0;
+				if (request.retry !== void 0) clearTimeout(request.retry);
+				for (const cleanup of request.cleanups.splice(0).reverse()) cleanup();
+				publish({
+					available: available(faces),
+					busy: false,
+					...reason === void 0 ? {} : { error: {
+						reason,
+						targetLabel: request.target.label ?? request.target.sessionId
+					} }
+				});
+			};
+			const own = (request, cleanup) => {
+				if (pending === request) request.cleanups.push(cleanup);
+				else cleanup();
+			};
+			const refresh = () => {
+				const ready = available(faces);
+				if (!ready && pending !== void 0) finish(pending, "unavailable");
+				else publish({
+					...snapshot,
+					available: ready
+				});
+			};
+			const retry = (request) => {
+				if (pending !== request || request.retry !== void 0) return;
+				request.retry = setTimeout(() => {
+					request.retry = void 0;
+					attempt(request);
+				}, RETRY_MS);
+			};
+			const attempt = (request) => {
+				if (pending !== request || !request.ready || request.working) return;
+				if (request.signal?.aborted === true) {
+					finish(request);
+					return;
+				}
+				const current = faces;
+				if (current === void 0 || !available(current)) {
+					finish(request, "unavailable");
+					return;
+				}
+				request.working = true;
+				try {
+					if (current.right.mounted.getSnapshot() !== request.target.sessionId) return;
+					let tab = current.right.openTabs.getSnapshot().find((row) => row.sessionId === request.target.sessionId && row.kind === CONTEXT_KIND);
+					if (tab === void 0 && !request.opened) {
+						current.right.openTab(CONTEXT_KIND);
+						request.opened = true;
+						tab = current.right.openTabs.getSnapshot().find((row) => row.sessionId === request.target.sessionId && row.kind === CONTEXT_KIND);
+					}
+					if (pending !== request || request.signal?.aborted) return;
+					if (tab !== void 0) {
+						current.right.focus(tab.tabId);
+						if (!current.right.isExpanded()) current.right.toggleExpanded();
+						if (current.right.mounted.getSnapshot() === request.target.sessionId && current.right.active()?.id === tab.tabId && current.right.isExpanded()) {
+							finish(request);
+							return;
+						}
+					}
+					retry(request);
+				} catch (error) {
+					if (record(error)?.message === "sidebarRight: no session surface is mounted") retry(request);
+					else finish(request, "open");
+				} finally {
+					request.working = false;
+				}
+			};
+			const integration = ctx.inject([
+				"sidebarRightTabs",
+				"sidebarRight",
+				"uiWorkspace",
+				"layout",
+				"slots"
+			], (injected) => {
+				const connected = facesOf(injected);
+				if (disposed || connected === void 0) return;
+				faces = connected;
+				const cleanups = [];
+				try {
+					cleanups.push(connected.registry.subscribe(refresh));
+					cleanups.push(connected.slots.subscribe(BODY_SLOT, refresh));
+					refresh();
+				} catch {
+					faces = void 0;
+					for (const cleanup of cleanups.reverse()) cleanup();
+					refresh();
+					return;
+				}
+				return () => {
+					faces = void 0;
+					for (const cleanup of cleanups.reverse()) cleanup();
+					refresh();
+				};
+			});
+			return {
+				getSnapshot: () => snapshot,
+				subscribe: (listener) => {
+					if (disposed) return () => {};
+					listeners.add(listener);
+					return () => {
+						listeners.delete(listener);
+					};
+				},
+				open: (target) => {
+					if (disposed || pending !== void 0) return;
+					const current = faces;
+					if (current === void 0 || !available(current)) {
+						publish({
+							available: false,
+							busy: false,
+							error: {
+								reason: "unavailable",
+								targetLabel: target.label ?? target.sessionId
+							}
+						});
+						return;
+					}
+					if (target.sessionId === "" || target.address !== void 0 && (target.address.childSessionId !== target.sessionId || target.address.parentSessionId === "")) {
+						publish({
+							available: true,
+							busy: false,
+							error: {
+								reason: "navigation",
+								targetLabel: target.label ?? target.sessionId
+							}
+						});
+						return;
+					}
+					const request = {
+						target: { ...target },
+						ready: false,
+						working: false,
+						opened: false,
+						cleanups: []
+					};
+					pending = request;
+					publish({
+						available: true,
+						busy: true
+					});
+					if (pending !== request) return;
+					const deadline = setTimeout(() => {
+						finish(request, "timeout");
+					}, TIMEOUT_MS);
+					own(request, () => {
+						clearTimeout(deadline);
+					});
+					try {
+						own(request, current.right.mounted.subscribe(() => {
+							attempt(request);
+						}));
+						own(request, current.right.openTabs.subscribe(() => {
+							attempt(request);
+						}));
+						if (current.right.mounted.getSnapshot() !== target.sessionId) current.workspace.openSession(target.address ?? target.sessionId);
+						if (pending !== request) return;
+						const signal = current.layout.beginNavigation();
+						request.signal = signal;
+						const cancel = () => {
+							finish(request);
+						};
+						signal.addEventListener("abort", cancel, { once: true });
+						own(request, () => {
+							signal.removeEventListener("abort", cancel);
+						});
+						request.ready = true;
+						attempt(request);
+					} catch {
+						finish(request, "navigation");
+					}
+				},
+				dismissError: () => {
+					publish({
+						available: snapshot.available,
+						busy: snapshot.busy
+					});
+				},
+				dispose: () => {
+					if (disposed) return;
+					disposed = true;
+					if (pending !== void 0) finish(pending);
+					snapshot = {
+						available: false,
+						busy: false
+					};
+					integration?.dispose();
+					listeners.clear();
+				}
+			};
+		}
+		//#endregion
+		//#region src/client/native/surface.ts
+		/** The native controller, probed at call time (the service can arrive late). */
+		function controllerOf(ctx) {
+			try {
+				return ctx.get("sidebarRight");
+			} catch {
+				return;
+			}
+		}
+		/**
+		* The on-screen-session feed, as anything outside this module should read it.
+		*
+		* The session-list snapshot carries NO current-session field in any DSH
+		* release (0.1.6 and 0.1.7 both publish only `ids` / `byId` / `phase` plus
+		* projections), so a read of one was always `undefined`: `mounted` is the
+		* only sanctioned source, and the plugin's own type invented the field it
+		* used to read.
+		*
+		* The probe tolerates a host without `mounted` (or a controller the runtime
+		* has not provided yet — the seat race this plugin already hit once on
+		* 0.1.5): the session list then doubles as the change pulse, so a late
+		* service is still picked up on the next list publish instead of never.
+		*
+		* @param ctx - the client context.
+		* @returns the observable face of the mounted seat's session id.
+		*/
+		function mountedSessions(ctx) {
+			return {
+				getSnapshot: () => {
+					try {
+						const mounted = controllerOf(ctx)?.mounted;
+						return typeof mounted?.getSnapshot === "function" ? mounted.getSnapshot() : void 0;
+					} catch {
+						return;
+					}
+				},
+				subscribe: (listener) => {
+					const mounted = controllerOf(ctx)?.mounted;
+					return typeof mounted?.subscribe === "function" ? mounted.subscribe(listener) : ctx.sessions.list.subscribe(listener);
+				}
+			};
+		}
+		/**
+		* The session whose seat is on screen, or `undefined` — no seat is mounted
+		* (global panel, column not mounted) or the host has no mounted feed. Callers
+		* treat `undefined` as "not this session": nothing the plugin draws belongs to
+		* that surface, so it must neither write into it nor manage its column.
+		*
+		* @param ctx - the client context.
+		* @returns the on-screen session id, when there is one.
+		*/
+		function mountedSessionId(ctx) {
+			return mountedSessions(ctx).getSnapshot();
+		}
+		/**
+		* Bind the plugin's write face to the native controller.
+		* @param ctx - the client context (session list + `ctx.sidebarRight`).
+		* @param records - the plugin's native tab record registry.
+		* @returns the surface, plus a disposer unbinding its two feed subscriptions.
+		*/
+		function createNativeSurface(ctx, records) {
+			const pending = [];
+			const controller = () => controllerOf(ctx);
+			const place = (entry) => {
+				const api = controller();
+				if (api === void 0) return false;
+				const onScreen = mountedSessionId(ctx) === entry.sessionId;
+				if (entry.kind === "tab") {
+					const options = {
+						params: entry.params,
+						revealIfOpened: entry.revealIfOpened,
+						...entry.preferNewPane ? { preferNewPane: true } : {}
+					};
+					if (onScreen) {
+						api.openTab(entry.tabKind, options);
+						return true;
+					}
+					return false;
+				}
+				const options = {
+					...entry.line === void 0 ? {} : { params: { line: entry.line } },
+					revealIfOpened: entry.revealIfOpened,
+					...entry.preferNewPane ? { preferNewPane: true } : {}
+				};
+				if (onScreen) {
+					api.openResource(entry.address, options);
+					return true;
+				}
+				return false;
+			};
+			const flushPending = () => {
+				if (pending.length === 0) return;
+				for (let index = pending.length - 1; index >= 0; index--) {
+					const entry = pending[index];
+					if (entry !== void 0 && place(entry)) pending.splice(index, 1);
+				}
+			};
+			const enqueue = (entry) => {
+				if (!place(entry)) pending.push(entry);
+			};
+			/**
+			* The seat session a bare tab id belongs to.
+			*
+			* The public write face speaks ids without sessions (its consumer contract),
+			* while records are per seat session — the same native id names a tab in
+			* EVERY session. The mounted seat answers for a caller acting on what is on
+			* screen; with no seat mounted (a global panel) a unique match across the
+			* live sessions still resolves, and an id that names a tab in more than one
+			* session resolves to none — guessing would write into another conversation.
+			* @param tabId - the native tab id.
+			* @param sessionId - the explicit session, when the caller has one.
+			* @returns the owning session, or undefined.
+			*/
+			const sessionOf = (tabId, sessionId) => {
+				if (sessionId !== void 0) return records.has(sessionId, tabId) ? sessionId : void 0;
+				const mounted = mountedSessionId(ctx);
+				if (mounted !== void 0 && records.has(mounted, tabId)) return mounted;
+				const byId = ctx.sessions.list.getSnapshot().byId ?? {};
+				let found;
+				for (const candidate of Object.keys(byId)) {
+					if (!records.has(candidate, tabId)) continue;
+					if (found !== void 0 && found !== candidate) return void 0;
+					found = candidate;
+				}
+				return found;
+			};
+			/**
+			* Forget the records of sessions that no longer exist.
+			*
+			* A `keepMounted` body survives until its tab or its session ends, and a
+			* session the user DELETED never unmounts anything the plugin can hook, so
+			* its records (and their tree/edit state) would live for the life of the
+			* page. The mounted session is always kept: it can be missing from `byId`
+			* for a moment while the list reloads.
+			*/
+			const evictGoneSessions = () => {
+				try {
+					const live = new Set(Object.keys(ctx.sessions.list.getSnapshot().byId ?? {}));
+					const mounted = mountedSessionId(ctx);
+					if (mounted !== void 0) live.add(mounted);
+					records.retain(live);
+				} catch {}
+			};
+			let mountedUnsubscribe;
+			const onListChange = () => {
+				if (mountedUnsubscribe === void 0) {
+					const mounted = controller()?.mounted;
+					if (typeof mounted?.subscribe === "function") mountedUnsubscribe = mounted.subscribe(flushPending);
+				}
+				flushPending();
+				evictGoneSessions();
+			};
+			const unsubscribeList = ctx.sessions.list.subscribe(onListChange);
+			evictGoneSessions();
+			return {
+				openTab({ sessionId, kind, params, revealIfOpened, preferNewPane }) {
+					enqueue({
+						kind: "tab",
+						sessionId,
+						tabKind: kind,
+						params,
+						revealIfOpened,
+						preferNewPane: preferNewPane === true
+					});
+				},
+				openResource({ sessionId, address, line, revealIfOpened, preferNewPane }) {
+					enqueue({
+						kind: "resource",
+						sessionId,
+						address,
+						line,
+						revealIfOpened,
+						preferNewPane: preferNewPane === true
+					});
+				},
+				fileAddress(sessionId, cwd, path) {
+					return fileAddressFor(sessionId, cwd, path);
+				},
+				tabTypeOf(sessionId, tabId) {
+					return records.get(sessionId, tabId)?.tab.type;
+				},
+				close(sessionId, tabId) {
+					const record = records.get(sessionId, tabId);
+					if (record === void 0) return void 0;
+					records.drop(sessionId, tabId);
+					const api = controller();
+					if (api !== void 0) {
+						if (sessionId === mountedSessionId(ctx)) api.close(tabId);
+						else if (api.closeIn !== void 0) api.closeIn(sessionId, tabId);
+					}
+					return {
+						type: record.tab.type,
+						title: record.tab.title,
+						...record.tab.meta === void 0 ? {} : { meta: record.tab.meta }
+					};
+				},
+				update(tabId, patch, sessionId) {
+					const owner = sessionOf(tabId, sessionId);
+					if (owner === void 0) return false;
+					records.update(owner, tabId, patch);
+					return true;
+				},
+				activate(tabId, sessionId) {
+					if (sessionOf(tabId, sessionId) === void 0) return false;
+					controller()?.focus?.(tabId);
+					return true;
+				},
+				has: (tabId, sessionId) => sessionOf(tabId, sessionId) !== void 0,
+				pathTabs: () => records.pathTabs(),
+				flushPending,
+				dispose: () => {
+					unsubscribeList();
+					mountedUnsubscribe?.();
+				}
+			};
+		}
+		//#endregion
+		//#region \0dsh-css:/home/runner/work/DSH-better-sidebar/DSH-better-sidebar/src/client/context-diagnostics.module.css.mjs
+		const css$6 = ".MFPsMa_headerButton{flex:none;width:28px;padding:0}.MFPsMa_alertLayer{z-index:40;pointer-events:auto;justify-content:center;max-width:min(420px,100vw - 24px);display:flex;position:fixed;bottom:16px;left:50%;transform:translate(-50%)}.MFPsMa_alert{background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-state-warn-primary);width:100%;font:var(--dsw-font-xxs-12);border-radius:8px;align-items:flex-start;gap:8px;padding:8px 8px 8px 10px;display:flex}.MFPsMa_alertIcon{color:var(--dsw-alias-state-warn-primary);flex:none;margin-top:2px;display:inline-flex}.MFPsMa_alertText{flex-direction:column;flex:1;gap:2px;min-width:0;display:flex}.MFPsMa_alertTitle{color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}.MFPsMa_alertReason{color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere}.MFPsMa_alertClose{flex:none;width:24px;padding:0}";
+		const tagId$6 = "dsh-external/dsh-better-sidebar/context-diagnostics.module.css";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$6) + "]") === null) {
+			const tag = document.createElement("style");
+			tag.dataset.plugin = "dsh-external/dsh-better-sidebar";
+			tag.dataset.pluginCss = tagId$6;
+			tag.textContent = css$6;
+			document.head.appendChild(tag);
+		}
+		var context_diagnostics_module_css_default = {
+			"alertText": "MFPsMa_alertText",
+			"alertLayer": "MFPsMa_alertLayer",
+			"alertTitle": "MFPsMa_alertTitle",
+			"alertIcon": "MFPsMa_alertIcon",
+			"alertReason": "MFPsMa_alertReason",
+			"headerButton": "MFPsMa_headerButton",
+			"alertClose": "MFPsMa_alertClose",
+			"alert": "MFPsMa_alert"
+		};
+		//#endregion
+		//#region src/client/context-diagnostics-ui.tsx
+		/**
+		* The UI half of the optional dsh-context diagnostics: three entry points into
+		* ONE conversation's "Context" view (an agent node's detail card, a background
+		* job's output window, the session header's utilities row) and the frame-wide
+		* error alert they share.
+		*
+		* Availability comes from the controller (./context-diagnostics.ts), never from
+		* a guess here: it re-proves the optional runtime faces and answers `available`
+		* (the tab type AND its keyed body), and its single `busy` flag disables all
+		* three entry points for the duration of an open.
+		*
+		* The controller is threaded PER ACTIVATION — created in ./index.tsx, handed to
+		* the host's two slots by closure, to the plugin's tree through the provider,
+		* and to the native bodies through the native surface's deps bag. No
+		* module-level store on purpose: two activations must never share one, and a
+		* body unmounting must never clear another entry point's controller.
+		*/
+		/** The entry id both slot registrations use. */
+		const HEADER_ENTRY_ID = "dsh-better-sidebar:context-diagnostics";
+		/** Testid of an entry point's control; ABSENT while the control is not offered. */
+		const DIAGNOSTICS_ENTRY_ATTR = "data-dsh-ctx-entry";
+		/** Testid of the frame-wide alert. */
+		const DIAGNOSTICS_ALERT_ATTR = "data-dsh-ctx-alert";
+		/** The controller's carrier; `undefined` = this tree has no diagnostics. */
+		const DiagnosticsStoreContext = (0, react.createContext)(void 0);
+		/** Thread one activation's controller into a subtree (shell, native tab body). */
+		function ContextDiagnosticsHost(props) {
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DiagnosticsStoreContext.Provider, {
+				value: props.controller,
+				children: props.children
+			});
+		}
+		/** The controller in scope for this tree (undefined = no entry point renders). */
+		function useDiagnosticsStore() {
+			return (0, react.useContext)(DiagnosticsStoreContext);
+		}
+		function useDiagnosticsSnapshot(store) {
+			return (0, react.useSyncExternalStore)(store?.subscribe ?? NO_SUBSCRIBE, store?.getSnapshot ?? NO_SNAPSHOT);
+		}
+		const NO_SUBSCRIBE = () => () => {};
+		const NO_SNAPSHOT = () => void 0;
+		/**
+		* One entry point's control, shared so the three surfaces cannot drift apart:
+		* the gate (capability available AND a resolved target), the single-open
+		* disable, and the e2e handle.
+		*/
+		function ContextDiagnosticsButton(props) {
+			const { kind, target, iconSize, className } = props;
+			const store = useDiagnosticsStore();
+			const snapshot = useDiagnosticsSnapshot(store);
+			if (store === void 0 || target === void 0 || snapshot?.available !== true) return null;
+			const busy = snapshot.busy === true;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+				variant: "ghost",
+				size: "sm",
+				...className === void 0 ? {} : { className },
+				[DIAGNOSTICS_ENTRY_ATTR]: kind,
+				"aria-busy": busy ? "true" : void 0,
+				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconContextInjectionOutlineRegular, { size: iconSize }),
+				"aria-label": t("contextDiagnostics"),
+				title: t("contextDiagnostics"),
+				disabled: busy,
+				onClick: () => {
+					store.open(target);
+					props.onNavigate?.();
+				}
+			});
+		}
+		/**
+		* The header's control: an entry is drawn for the session the SLOT was mounted
+		* with and can outlive it by a moment while the host rebuilds the row, so the
+		* click re-checks `sidebarRight.mounted` and refuses to act once that session
+		* left the screen — a stale header must never navigate into the previous
+		* conversation.
+		*/
+		function ContextDiagnosticsHeader(props) {
+			const { controller, sessionId, isCurrent } = props;
+			const snapshot = useDiagnosticsSnapshot(controller);
+			if (snapshot?.available !== true) return null;
+			const busy = snapshot.busy === true;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+				variant: "ghost",
+				size: "sm",
+				className: context_diagnostics_module_css_default.headerButton,
+				[DIAGNOSTICS_ENTRY_ATTR]: "session",
+				"aria-busy": busy ? "true" : void 0,
+				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconContextInjectionOutlineRegular, { size: 14 }),
+				"aria-label": t("contextDiagnostics"),
+				title: t("contextDiagnostics"),
+				disabled: busy,
+				onClick: () => {
+					if (!isCurrent()) return;
+					controller.open({
+						sessionId,
+						label: t("contextDiagnosticsTarget")
+					});
+				}
+			});
+		}
+		/** The copy key of one failure reason. */
+		function reasonKey(reason) {
+			switch (reason) {
+				case "navigation": return "contextDiagnosticsNavigation";
+				case "timeout": return "contextDiagnosticsTimeout";
+				case "open": return "contextDiagnosticsOpenFailed";
+				case "unavailable": return "contextDiagnosticsUnavailable";
+			}
+		}
+		/**
+		* The ONE error alert (`shell.overlay`), dismissed by the controller's own
+		* `dismissError()` — never a timer. Gated on the ERROR only, not on
+		* `available`: an open already in flight when the capability went away must
+		* still report why it failed.
+		*/
+		function ContextDiagnosticsAlert(props) {
+			const { controller } = props;
+			const error = useDiagnosticsSnapshot(controller)?.error;
+			if (error === void 0) return null;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: context_diagnostics_module_css_default.alertLayer,
+				[DIAGNOSTICS_ALERT_ATTR]: "",
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: context_diagnostics_module_css_default.alert,
+					role: "alert",
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: context_diagnostics_module_css_default.alertIcon,
+							"aria-hidden": "true",
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconWarningTriangleOutlineRegular, { size: 14 })
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+							className: context_diagnostics_module_css_default.alertText,
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: context_diagnostics_module_css_default.alertTitle,
+								children: t("contextDiagnosticsFailed", { label: error.targetLabel })
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: context_diagnostics_module_css_default.alertReason,
+								children: t(reasonKey(error.reason))
+							})]
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+							variant: "ghost",
+							size: "sm",
+							className: context_diagnostics_module_css_default.alertClose,
+							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCloseOutlineRegular, { size: 12 }),
+							"aria-label": t("contextDiagnosticsDismiss"),
+							title: t("contextDiagnosticsDismiss"),
+							onClick: () => {
+								controller.dismissError();
+							}
+						})
+					]
+				})
+			});
+		}
+		/**
+		* Contribute the header control and the frame-wide alert. Both ride
+		* `slots.inject`: neither declaration is guaranteed to be on the ledger at
+		* activation (the header and the frame come from other entries), and the
+		* callback re-runs if one collapses and is re-declared.
+		* @param ctx - the client context (slots + the native right column probe).
+		* @param controller - the controller of this activation.
+		* @returns a disposer unregistering both entries.
+		*/
+		function registerContextDiagnosticsUI(ctx, controller) {
+			const disposers = [];
+			try {
+				disposers.push(ctx.slots.inject("conversation.session.header.utilities", () => ctx.slots.register({
+					name: "conversation.session.header.utilities",
+					id: HEADER_ENTRY_ID,
+					order: 20,
+					registrant: "dsh-better-sidebar",
+					inject: (sessionId) => ({
+						controller,
+						sessionId,
+						isCurrent: () => mountedSessionId(ctx) === sessionId
+					})
+				}, ContextDiagnosticsHeader)));
+				disposers.push(ctx.slots.inject("shell.overlay", () => ctx.slots.register({
+					name: "shell.overlay",
+					id: HEADER_ENTRY_ID,
+					order: 20,
+					registrant: "dsh-better-sidebar",
+					inject: () => ({ controller })
+				}, ContextDiagnosticsAlert)));
+			} catch (error) {
+				for (const dispose of disposers.reverse()) dispose();
+				throw error;
+			}
+			return () => {
+				for (const dispose of disposers.reverse()) dispose();
+				disposers.length = 0;
+			};
+		}
+		/** The activation's diagnostics controller (one per client activation). */
+		function createContextDiagnosticsHost(ctx) {
+			return createContextDiagnostics(ctx);
+		}
+		/** A tree node's navigable address, when the tree really has one: the ROOT node
+		*  carries none (it IS the main session) and is addressed by its own id, and an
+		*  incomplete pair (a stale parent, a synthesized member) yields no control. */
+		function diagnosticAddressOf(nodeId, address) {
+			return address !== void 0 && address.parentSessionId !== "" && address.childSessionId === nodeId ? address : void 0;
 		}
 		//#endregion
 		//#region src/client/tasks-model.ts
@@ -17370,7 +19706,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		}
 		//#endregion
 		//#region \0dsh-css:/home/runner/work/DSH-better-sidebar/DSH-better-sidebar/src/client/tasks-graph.module.css.mjs
-		const css$5 = ".d2hvtW_graphView{flex-direction:column;flex:1;min-height:0;display:flex;position:relative;overflow:hidden}.d2hvtW_canvas{cursor:grab;touch-action:none;user-select:none;background-image:radial-gradient(circle, var(--dsw-alias-border-l1) .6px, transparent .6px);background-position:0 0;background-size:16px 16px;position:absolute;inset:0}.d2hvtW_canvasDragging{cursor:grabbing}.d2hvtW_canvasInner{transform-origin:0 0;position:absolute;top:0;left:0}.d2hvtW_edges{pointer-events:none;position:absolute;top:0;left:0;overflow:visible}.d2hvtW_edge{fill:none;stroke:var(--dsw-alias-label-tertiary);stroke-width:1.5px;stroke-linecap:round}.d2hvtW_edgeTeam{stroke:var(--dsw-alias-state-business-primary);stroke-dasharray:3 3;opacity:.9}.d2hvtW_edgeWorkflow{stroke:var(--dsw-alias-state-business-primary);opacity:.9}.d2hvtW_edgeFold{stroke-dasharray:1 4;opacity:.5}.d2hvtW_phaseFrame{border:1px dashed var(--dsw-alias-border-l2);pointer-events:none;border-radius:4px;position:absolute}.d2hvtW_phaseFrame.d2hvtW_phase0{border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 42%, transparent)}.d2hvtW_phaseFrame.d2hvtW_phase1{border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 34%, transparent)}.d2hvtW_phaseFrame.d2hvtW_phase2{border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 27%, transparent)}.d2hvtW_phaseFrame.d2hvtW_phase3{border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 21%, transparent)}.d2hvtW_phaseLabel{background:var(--dsw-alias-bg-layer-1);font-family:var(--ds-font-family-code,monospace);letter-spacing:.12em;text-transform:uppercase;color:var(--dsw-alias-label-secondary);padding:0 5px;font-size:10px;position:absolute;top:-7px;left:8px}.d2hvtW_node{box-sizing:border-box;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);cursor:pointer;border-radius:8px;flex-direction:column;padding:0;animation:.3s cubic-bezier(.2,.9,.25,1.06) backwards d2hvtW_dsh-card-in;display:flex;position:absolute;overflow:hidden}.d2hvtW_node:hover{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_nodeCurrent{border-color:var(--dsw-alias-state-business-primary);border-width:2px}.d2hvtW_nodeTeam{border-color:var(--dsw-alias-state-business-primary)}.d2hvtW_nodeWorkflow{border-color:var(--dsw-alias-state-business-primary);background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 6%, var(--dsw-alias-bg-layer-1))}.d2hvtW_nodeSettled{opacity:.62}.d2hvtW_nodeError{border-color:var(--dsw-alias-state-error-primary)}.d2hvtW_depth0{--card-tint:9%}.d2hvtW_depth1{--card-tint:7%}.d2hvtW_depth2{--card-tint:5%}.d2hvtW_depth3{--card-tint:3.5%}.d2hvtW_cardTop{background:color-mix(in srgb, var(--dsw-alias-state-business-primary) var(--card-tint,6%), var(--dsw-alias-bg-layer-1));flex-direction:column;flex:1;gap:2px;min-width:0;padding:6px 8px 5px;display:flex;position:relative}.d2hvtW_cardBadges{align-items:center;gap:4px;min-width:0;display:flex}.d2hvtW_kindBadge{border:1px solid var(--dsw-alias-border-l2);font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);border-radius:2px;flex:none;padding:0 4px}.d2hvtW_kindChip{max-width:46%;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;flex:none;overflow:hidden}.d2hvtW_phaseBadge{max-width:62%;font:var(--dsw-font-xxxs-11);white-space:nowrap;text-overflow:ellipsis;border:1px solid;border-radius:2px;flex:none;padding:0 4px;overflow:hidden}.d2hvtW_phase0{color:var(--dsw-alias-label-primary);border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 45%, transparent)}.d2hvtW_phase1{color:color-mix(in srgb, var(--dsw-alias-label-primary) 78%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 38%, transparent)}.d2hvtW_phase2{color:color-mix(in srgb, var(--dsw-alias-label-primary) 58%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 30%, transparent)}.d2hvtW_phase3{color:color-mix(in srgb, var(--dsw-alias-label-primary) 42%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 24%, transparent)}.d2hvtW_cardName{-webkit-line-clamp:2;overflow-wrap:anywhere;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);-webkit-box-orient:vertical;display:-webkit-box;overflow:hidden}.d2hvtW_cardNamePlain{-webkit-line-clamp:1;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-secondary)}.d2hvtW_cardText{overflow-wrap:anywhere;color:var(--dsw-alias-label-secondary);-webkit-box-orient:vertical;margin-top:2px;font-size:10px;line-height:1.3;display:-webkit-box;overflow:hidden}.d2hvtW_cardMeta{font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.d2hvtW_cardBar{border-top:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);height:22px;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);flex:none;align-items:center;gap:5px;padding:0 6px 0 8px;display:flex;position:relative;overflow:hidden}.d2hvtW_cardBar[data-running=true]:after{content:\"\";background-image:linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, transparent) 50%, transparent 100%);pointer-events:none;width:100%;animation:1.5s cubic-bezier(.33,0,.67,1) infinite d2hvtW_dsh-tasks-bar-sweep;position:absolute;top:0;bottom:0;left:0;transform:translate(-100%)}@keyframes d2hvtW_dsh-tasks-bar-sweep{0%{transform:translate(-100%)}66.6667%,to{transform:translate(100%)}}@media (prefers-reduced-motion:reduce){.d2hvtW_cardBar[data-running=true]:after{opacity:0;animation:none}}.d2hvtW_barDot{flex:none}.d2hvtW_barState{color:var(--dsw-alias-label-secondary);flex:none}.d2hvtW_barActivity{min-width:0;color:var(--dsw-alias-state-business-primary);white-space:nowrap;text-overflow:ellipsis;flex:1;overflow:hidden}.d2hvtW_barFoldGlyph{color:var(--dsw-alias-label-tertiary);flex:none;align-items:center;display:inline-flex}.d2hvtW_barAction{min-width:0;color:var(--dsw-alias-state-business-primary);white-space:nowrap;text-overflow:ellipsis;flex:1;overflow:hidden}.d2hvtW_barError{color:var(--dsw-alias-state-error-primary);flex:none}.d2hvtW_barFold{width:16px;height:16px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:2px;flex:none;justify-content:center;align-items:center;margin-left:auto;padding:0;display:inline-flex}.d2hvtW_barFold:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.d2hvtW_nodeFold{border:1px dashed var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base)}.d2hvtW_nodeFold:hover{border-color:var(--dsw-alias-label-primary)}.d2hvtW_nodeHeader{align-items:center;gap:5px;min-width:0;display:flex}.d2hvtW_nodeDot{flex:none}.d2hvtW_nodeGlyph{color:var(--dsw-alias-label-tertiary);flex:none;display:inline-flex}.d2hvtW_treeGlyph{color:var(--dsw-alias-label-tertiary);flex:none;margin-top:3px;display:inline-flex}.d2hvtW_treeDot{flex:none;margin-top:6px}.d2hvtW_nodeMeta{font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;margin-top:2px;overflow:hidden}.d2hvtW_nodeFold .d2hvtW_nodeMeta{color:var(--dsw-alias-label-tertiary)}.d2hvtW_taskLine{cursor:pointer;min-width:0;color:var(--dsw-alias-label-secondary);white-space:nowrap;align-items:center;gap:4px;margin-top:3px;font-size:10px;line-height:1.3;display:flex;overflow:hidden}.d2hvtW_taskGlyph{color:var(--dsw-alias-state-business-primary);flex:none;display:inline-flex}.d2hvtW_taskLine:hover .d2hvtW_taskSubject{color:var(--dsw-alias-label-primary)}.d2hvtW_taskLine:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px;border-radius:2px}.d2hvtW_taskSubject{text-overflow:ellipsis;flex:1;min-width:0;overflow:hidden}.d2hvtW_taskState{font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-tertiary);flex:none;font-size:10px}.d2hvtW_taskMore{border:1px solid var(--dsw-alias-border-l2);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-tertiary);border-radius:2px;flex:none;padding:0 3px;font-size:10px}.d2hvtW_live{min-width:0;font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-state-business-primary);white-space:nowrap;align-items:center;gap:4px;margin-top:3px;font-size:10px;line-height:1.3;display:flex;overflow:hidden}.d2hvtW_liveGlyph{border:1px solid;border-radius:2px;flex:none;justify-content:center;align-items:center;width:11px;height:11px;display:inline-flex}.d2hvtW_liveTool{flex:none}.d2hvtW_liveArgs{color:var(--dsw-alias-label-secondary);text-overflow:ellipsis;overflow:hidden}.d2hvtW_liveText{color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;margin-top:2px;font-size:10px;overflow:hidden}.d2hvtW_controls{z-index:6;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:3px;flex-direction:row;align-items:center;display:flex;position:absolute;bottom:10px;right:10px}.d2hvtW_controlBtn{box-sizing:border-box;min-width:28px;height:28px;color:var(--dsw-alias-label-secondary);font-family:var(--ds-font-family-code,monospace);cursor:pointer;background:0 0;border:none;justify-content:center;align-items:center;padding:0 4px;font-size:12px;line-height:1;display:inline-flex}.d2hvtW_controlBtn+.d2hvtW_controlBtn,.d2hvtW_controlZoomLevel+.d2hvtW_controlBtn,.d2hvtW_controlBtn+.d2hvtW_controlZoomLevel{border-left:1px solid var(--dsw-alias-border-l2)}.d2hvtW_controlBtn:hover{color:var(--dsw-alias-label-primary)}.d2hvtW_controlBtnActive{color:var(--dsw-alias-state-business-primary)}.d2hvtW_controlText{box-sizing:border-box;height:28px;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-11);white-space:nowrap;cursor:pointer;background:0 0;border:none;justify-content:center;align-items:center;padding:0 8px;display:inline-flex}.d2hvtW_controlText:hover{color:var(--dsw-alias-label-primary)}.d2hvtW_controlZoomLevel{box-sizing:border-box;min-width:36px;height:28px;font-family:var(--ds-font-family-code,monospace);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);justify-content:center;align-items:center;padding:0 5px;font-size:10px;display:inline-flex}.d2hvtW_treeView{scrollbar-width:thin;user-select:none;flex:1;min-height:0;padding:8px 10px 44px;overflow-y:auto}.d2hvtW_treeRow{cursor:pointer;border-radius:4px;align-items:flex-start;gap:7px;padding:0 8px;display:flex;position:relative}.d2hvtW_treeRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_treeRow:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.d2hvtW_treeRowActive{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_treeRowActive:before{content:\"\";background:var(--dsw-alias-state-business-primary);border-radius:1px;width:2px;position:absolute;top:4px;bottom:4px;left:0}.d2hvtW_treeRowSettled{opacity:.62}.d2hvtW_treeKids{margin-left:11px;padding-left:14px}.d2hvtW_treeDisclosure{width:16px;height:16px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:2px;flex:none;justify-content:center;align-self:flex-start;align-items:center;margin:8px 0 0 auto;padding:0;display:inline-flex}.d2hvtW_treeDisclosure:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.d2hvtW_treeChild{position:relative}.d2hvtW_treeChild:before{content:\"\";background:var(--dsw-alias-border-l1);width:1px;position:absolute;top:0;bottom:0;left:-14px}.d2hvtW_treeChildLast:before{height:16px;bottom:auto}.d2hvtW_treeChip{max-width:46%;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;flex:none;overflow:hidden}.d2hvtW_treeContent{flex-direction:column;flex:1;justify-content:center;min-width:0;min-height:32px;display:flex}.d2hvtW_treeTitle{font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);white-space:nowrap;text-overflow:ellipsis;align-items:center;gap:6px;display:flex;overflow:hidden}.d2hvtW_treeMeta{font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.d2hvtW_treeFoldRow{border:1px dashed var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:4px;margin:2px 0}.d2hvtW_popCard{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);max-width:100%;box-shadow:var(--dsw-shadow-lv3);font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);box-sizing:border-box;border-radius:4px;flex-direction:column;gap:4px;padding:10px 12px;animation:.14s cubic-bezier(.2,.8,.3,1) d2hvtW_dsh-pop-in;display:flex}@keyframes d2hvtW_dsh-card-in{0%{opacity:0;transform:translateY(10px)scale(.88)}60%{opacity:1}to{opacity:1;transform:none}}@keyframes d2hvtW_dsh-pop-in{0%{opacity:0;transform:translateY(4px)scale(.985)}to{opacity:1;transform:none}}@media (prefers-reduced-motion:reduce){.d2hvtW_popCard,.d2hvtW_node{animation:none}}.d2hvtW_popHead{min-height:28px;font-family:var(--ds-font-family-code,monospace);letter-spacing:.12em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px;font-size:10px;display:flex}.d2hvtW_popFoot{border-top:1px solid var(--dsw-alias-border-l1);gap:8px;margin-top:8px;padding-top:8px;display:flex}.d2hvtW_popFoot>*{flex:1}.d2hvtW_jobPopTitle{align-items:center;gap:6px;min-width:0;display:flex}.d2hvtW_taskBody{flex-direction:column;min-height:0;display:flex}.d2hvtW_taskHeadRow{align-items:center;gap:6px;min-width:0;margin-bottom:8px;display:flex}.d2hvtW_taskHeadRow .d2hvtW_popTitle{font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-primary);flex:1}.d2hvtW_jobPopMeta{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);flex-wrap:wrap;align-items:center;gap:6px;display:flex}.d2hvtW_jobPopValue{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-secondary);line-height:1.45}.d2hvtW_jobPopActions{justify-content:space-between;align-items:center;gap:8px;display:flex}.d2hvtW_jobPopFollow{min-width:0;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);align-items:center;gap:6px;display:inline-flex}.d2hvtW_jobPopFollowLabel{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.d2hvtW_jobPopKillArmed,.d2hvtW_jobPopKillArmed:hover{border:1px solid var(--dsw-alias-state-error-primary);background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);color:var(--dsw-alias-state-error-primary)}.d2hvtW_popTitleRow{align-items:center;gap:6px;min-width:0;display:flex}.d2hvtW_popGlyph{color:var(--dsw-alias-label-tertiary);flex:none;display:inline-flex}.d2hvtW_popTitle{text-overflow:ellipsis;white-space:nowrap;text-transform:none;letter-spacing:0;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);overflow:hidden}.d2hvtW_popRows{grid-template-columns:auto 1fr;align-items:baseline;gap:3px 10px;margin:0;line-height:1.45;display:grid}.d2hvtW_popKey{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);line-height:1.45}.d2hvtW_popValue{text-align:right;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-secondary);text-overflow:ellipsis;white-space:nowrap;margin:0;line-height:1.45;overflow:hidden}.d2hvtW_popValueMono{font-family:var(--ds-font-family-code,monospace);font-size:11px}.d2hvtW_popSection{border-top:1px solid var(--dsw-alias-border-l1);margin-top:4px;padding-top:8px}.d2hvtW_popList{scrollbar-width:thin;flex-direction:column;gap:1px;max-height:160px;display:flex;overflow-y:auto}.d2hvtW_popGroup{font-family:var(--ds-font-family-code,monospace);letter-spacing:.12em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);padding:4px 2px 2px;font-size:10px}.d2hvtW_popList .d2hvtW_popListRow{box-sizing:border-box;cursor:pointer;border-radius:4px;align-items:center;gap:6px;min-height:28px;padding:0 4px;display:flex}.d2hvtW_popList .d2hvtW_popListRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_popListLabel{min-width:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);text-overflow:ellipsis;white-space:nowrap;flex:1;overflow:hidden}.d2hvtW_popActivityBlock{flex-direction:column;gap:1px;min-width:0;display:flex}.d2hvtW_popActivity{color:var(--dsw-alias-state-business-primary);white-space:nowrap;text-overflow:ellipsis;font-size:10px;line-height:1.45;overflow:hidden}.d2hvtW_popFoot>.d2hvtW_jumpMore{flex:none;width:28px;display:inline-flex;position:relative}.d2hvtW_jumpMoreButton{width:100%;padding:0}.d2hvtW_jumpMenu{z-index:4;min-width:152px;padding:4px;position:absolute;bottom:calc(100% + 6px);right:0}.d2hvtW_jumpMenuItem{justify-content:flex-start;width:100%}.d2hvtW_popActivityBlock .d2hvtW_popHint{-webkit-line-clamp:3;overflow-wrap:anywhere;-webkit-box-orient:vertical;display:-webkit-box;overflow:hidden}.d2hvtW_popHint.d2hvtW_popHint{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:1.45}.d2hvtW_popError{color:var(--dsw-alias-state-error-primary);font-size:10px}.d2hvtW_taskMarkdown{min-height:0;font:var(--dsw-font-xxs-12);scrollbar-width:thin;--dsw-font-markdown-base:var(--dsw-font-xxs-12);--dsw-font-markdown-base-strong:var(--dsw-font-xxs-strong-12);--dsw-font-markdown-h1:600 13px/18px var(--dsw-font-family);--dsw-font-markdown-h2:600 13px/18px var(--dsw-font-family);--dsw-font-markdown-h3:var(--dsw-font-xxs-strong-12);--dsw-font-markdown-h4:var(--dsw-font-xxs-strong-12);--dsw-font-markdown-code:var(--dsw-font-xxxs-11);--dsw-font-markdown-code-block:var(--dsw-font-markdown-code-block-small);--dsw-font-markdown-table:var(--dsw-font-xxxs-11);--dsw-font-markdown-table-head:var(--dsw-font-xxxs-strong-11);flex:1;padding:2px 0;line-height:1.5;overflow-y:auto}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown>*{color:var(--dsw-alias-label-secondary)}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :is(h1,h2,h3){margin:8px 0 4px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :is(h4,h5,h6){margin:6px 0 2px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :is(p,blockquote,pre){margin:6px 0}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :is(ul,ol){margin:6px 0;padding-left:16px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown li:not(:first-child){margin-top:2px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown li>p{margin:4px 0}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown li::marker{line-height:18px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown blockquote{border-left:1px solid var(--dsw-alias-border-l2);padding-left:10px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown hr{margin:8px 0}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :not(pre)>code{border-radius:3px;font-size:11px!important}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :is(th,td){border-bottom:1px solid var(--dsw-alias-border-l1);padding:4px 8px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown th{border-bottom-color:var(--dsw-alias-border-l2)}.d2hvtW_taskTextarea{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);width:100%;min-height:120px;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code,monospace);resize:vertical;box-sizing:border-box;border-radius:8px;flex:1;padding:6px 8px;font-size:12px;line-height:1.5}.d2hvtW_taskTextarea:focus{border-color:var(--dsw-alias-state-business-primary);outline:none}.d2hvtW_taskForm{flex-direction:column;flex:1;gap:8px;min-height:0;display:flex}.d2hvtW_taskForm>label:last-child{flex:1;min-height:0}.d2hvtW_taskField{flex-direction:column;gap:4px;display:flex}.d2hvtW_taskMarkdown+.d2hvtW_taskField{margin-top:4px}.d2hvtW_taskBody>.d2hvtW_taskField,.d2hvtW_taskBody>.d2hvtW_jobPopMeta,.d2hvtW_taskBody>.d2hvtW_taskHeadRow,.d2hvtW_taskBody>.d2hvtW_teamNote{flex:none}.d2hvtW_taskLabel{font-family:var(--ds-font-family-code,monospace);letter-spacing:.12em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);font-size:10px}.d2hvtW_taskForm .d2hvtW_taskInput input{font:var(--dsw-font-xxs-12)}.d2hvtW_taskForm .d2hvtW_taskInput:not(:focus-within){border-color:var(--dsw-alias-border-l2)}.d2hvtW_taskForm .d2hvtW_taskInput:has(input[aria-invalid=true]):not(:focus-within){border-color:var(--dsw-alias-state-error-primary)}.d2hvtW_taskOwnerRow{flex-wrap:wrap;gap:4px;display:flex}.d2hvtW_taskOwnerRow .d2hvtW_taskOwnerPill{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0}.d2hvtW_taskOwnerRow .d2hvtW_taskOwnerPill:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.d2hvtW_taskOwnerRow .d2hvtW_taskOwnerPillActive{box-sizing:border-box;border:1px solid var(--dsw-alias-button-ghost-active-border);background:var(--dsw-alias-button-ghost-active-fill);color:var(--dsw-alias-label-primary)}.d2hvtW_taskOwnerRow .d2hvtW_taskOwnerPillActive:hover{background:var(--dsw-alias-button-ghost-active-hover)}.d2hvtW_jobPopActions .d2hvtW_taskDanger{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 40%, transparent)}.d2hvtW_jobPopActions .d2hvtW_taskDanger:hover{background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary)}.d2hvtW_jobPopActions .d2hvtW_taskDanger.d2hvtW_taskDangerArmed,.d2hvtW_jobPopActions .d2hvtW_taskDanger.d2hvtW_taskDangerArmed:hover{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.d2hvtW_teamBoard{border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);flex:none}.d2hvtW_teamBoardBar{box-sizing:border-box;border:none;border-bottom:1px solid var(--dsw-alias-border-l1);width:100%;height:28px;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-secondary);cursor:pointer;text-align:left;background:0 0;align-items:center;gap:8px;padding:0 12px;display:flex}.d2hvtW_teamBoardBar:hover{color:var(--dsw-alias-label-primary)}.d2hvtW_teamBoardCount{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary)}.d2hvtW_teamBoardChev{color:var(--dsw-alias-label-tertiary);margin-left:auto}.d2hvtW_teamBoardIcon{color:var(--dsw-alias-label-tertiary);display:inline-flex}.d2hvtW_teamNote{color:var(--dsw-alias-state-warn-primary);padding:0 12px 6px;font-size:10px;line-height:1.4}.d2hvtW_teamActions{flex:none;align-items:center;gap:6px;padding:6px 12px 8px;display:flex}.d2hvtW_teamMembers{flex-wrap:wrap;gap:4px;padding:6px 12px;display:flex}.d2hvtW_teamMemberName{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.d2hvtW_teamTasks{border-bottom:1px solid var(--dsw-alias-border-l1);scrollbar-width:thin;flex-direction:column;gap:1px;max-height:160px;padding:0 6px 6px;display:flex;overflow-y:auto}.d2hvtW_teamTaskRow{align-items:center;gap:2px;display:flex}.d2hvtW_teamTask{text-align:left;border-radius:4px;flex:1;align-items:center;gap:6px;width:100%;min-width:0;min-height:24px;padding:2px 6px;display:flex}.d2hvtW_teamTask>*{min-width:0}.d2hvtW_teamTask:hover{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_teamTaskSubject{min-width:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);text-overflow:ellipsis;white-space:nowrap;flex:1;overflow:hidden}.d2hvtW_teamTaskOwner{max-width:72px;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:none;overflow:hidden}.d2hvtW_teamEmpty{min-height:28px;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);align-items:center;padding:0 6px;display:flex}.d2hvtW_jobsDrawer{border-top:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);z-index:5;flex:none}.d2hvtW_jobsDrawerBar{box-sizing:border-box;border:none;border-bottom:1px solid var(--dsw-alias-border-l1);width:100%;height:28px;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-secondary);cursor:pointer;text-align:left;background:0 0;align-items:center;gap:8px;padding:0 12px;display:flex}.d2hvtW_jobsDrawerBar:hover{color:var(--dsw-alias-label-primary)}.d2hvtW_jobsDrawerBar:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.d2hvtW_jobsBigNum{font-family:var(--ds-font-family-code,monospace);font-variant-numeric:tabular-nums;color:var(--dsw-alias-state-business-primary);font-size:12px;font-weight:600}.d2hvtW_jobsDrawerCount{min-width:0;font:var(--dsw-font-xxs-12);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.d2hvtW_jobsDrawerChev{color:var(--dsw-alias-label-tertiary);flex:none;margin-left:auto;transition:transform .18s;display:inline-flex}.d2hvtW_jobsDrawerChev[data-open=true]{transform:rotate(180deg)}.d2hvtW_jobsAutoNote{color:var(--dsw-alias-label-tertiary);padding:6px 12px;font-size:10px;line-height:1.4}.d2hvtW_jobsDrawerBody{scrollbar-width:thin;flex-direction:column;gap:2px;max-height:156px;padding:4px 8px 8px;display:flex;overflow:hidden auto}.d2hvtW_jobsRow{border-radius:3px;align-items:center;gap:7px;min-height:28px;padding:4px 6px;display:flex}.d2hvtW_jobsRow[data-settled=true]{opacity:.62}.d2hvtW_jobsRowMain{min-width:0;color:inherit;cursor:pointer;text-align:left;background:0 0;border:none;flex:1;align-items:center;gap:7px;padding:0;display:flex;overflow:hidden}.d2hvtW_jobsRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_jobsRow[data-open=true],.d2hvtW_jobsRow[data-open=true]:hover{background:var(--dsw-alias-interactive-bg-active)}.d2hvtW_jobsRowMain:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.d2hvtW_jobsLabel{min-width:33%;font:var(--dsw-font-xxs-strong-12);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-primary);text-overflow:ellipsis;white-space:nowrap;flex:auto;overflow:hidden}.d2hvtW_jobsMeta{min-width:0;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);text-overflow:ellipsis;white-space:nowrap;flex:0 auto;overflow:hidden}.d2hvtW_jobsKillSlot{flex:none;width:28px;height:28px;position:relative}.d2hvtW_jobsKill{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);min-width:28px;height:28px;color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code,monospace);cursor:pointer;opacity:0;background:0 0;border-radius:3px;padding:0 5px;transition:opacity .12s;position:absolute;top:0;right:0}.d2hvtW_jobsRow:hover .d2hvtW_jobsKill,.d2hvtW_jobsRow:focus-within .d2hvtW_jobsKill,.d2hvtW_jobsKill:focus-visible{opacity:1}.d2hvtW_jobsKill:hover{border-color:var(--dsw-alias-label-primary);color:var(--dsw-alias-label-primary)}.d2hvtW_jobsKill.d2hvtW_jobsKill[data-armed=true],.d2hvtW_jobsKill.d2hvtW_jobsKill[data-armed=true]:hover{border-color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-bg-layer-1);width:auto;color:var(--dsw-alias-state-error-primary);opacity:1;white-space:nowrap;padding:0 7px}.d2hvtW_jobsRow:has(.d2hvtW_jobsKill[data-armed=true]) .d2hvtW_jobsKillSlot{align-items:center;width:auto;display:flex}.d2hvtW_jobsRow:has(.d2hvtW_jobsKill[data-armed=true]) .d2hvtW_jobsKill{position:static}.d2hvtW_jobsRow:has(.d2hvtW_jobsKill[data-armed=true]) .d2hvtW_jobsMeta{display:none}.d2hvtW_jobsKillError{pointer-events:none;background:var(--dsw-alias-bg-layer-1);height:28px;font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-state-error-primary);white-space:nowrap;border-radius:3px;align-items:center;padding:0 6px;font-size:10px;display:inline-flex;position:absolute;top:0;right:0}.d2hvtW_viewEmptyHint{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);text-align:center;padding:0 24px}";
+		const css$5 = ".d2hvtW_graphView{flex-direction:column;flex:1;min-height:0;display:flex;position:relative;overflow:hidden}.d2hvtW_canvas{cursor:grab;touch-action:none;user-select:none;background-image:radial-gradient(circle, var(--dsw-alias-border-l1) .6px, transparent .6px);background-position:0 0;background-size:16px 16px;position:absolute;inset:0}.d2hvtW_canvasDragging{cursor:grabbing}.d2hvtW_canvasInner{transform-origin:0 0;position:absolute;top:0;left:0}.d2hvtW_edges{pointer-events:none;position:absolute;top:0;left:0;overflow:visible}.d2hvtW_edge{fill:none;stroke:var(--dsw-alias-label-tertiary);stroke-width:1.5px;stroke-linecap:round}.d2hvtW_edgeTeam{stroke:var(--dsw-alias-state-business-primary);stroke-dasharray:3 3;opacity:.9}.d2hvtW_edgeWorkflow{stroke:var(--dsw-alias-state-business-primary);opacity:.9}.d2hvtW_edgeFold{stroke-dasharray:1 4;opacity:.5}.d2hvtW_phaseFrame{border:1px dashed var(--dsw-alias-border-l2);pointer-events:none;border-radius:4px;position:absolute}.d2hvtW_phaseFrame.d2hvtW_phase0{border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 42%, transparent)}.d2hvtW_phaseFrame.d2hvtW_phase1{border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 34%, transparent)}.d2hvtW_phaseFrame.d2hvtW_phase2{border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 27%, transparent)}.d2hvtW_phaseFrame.d2hvtW_phase3{border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 21%, transparent)}.d2hvtW_phaseLabel{background:var(--dsw-alias-bg-layer-1);font-family:var(--ds-font-family-code,monospace);letter-spacing:.12em;text-transform:uppercase;color:var(--dsw-alias-label-secondary);padding:0 5px;font-size:10px;position:absolute;top:-7px;left:8px}.d2hvtW_node{box-sizing:border-box;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);cursor:pointer;border-radius:8px;flex-direction:column;padding:0;animation:.3s cubic-bezier(.2,.9,.25,1.06) backwards d2hvtW_dsh-card-in;display:flex;position:absolute;overflow:hidden}.d2hvtW_node:hover{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_nodeCurrent{border-color:var(--dsw-alias-state-business-primary);border-width:2px}.d2hvtW_nodeTeam{border-color:var(--dsw-alias-state-business-primary)}.d2hvtW_nodeWorkflow{border-color:var(--dsw-alias-state-business-primary);background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 6%, var(--dsw-alias-bg-layer-1))}.d2hvtW_nodeSettled{opacity:.62}.d2hvtW_nodeError{border-color:var(--dsw-alias-state-error-primary)}.d2hvtW_depth0{--card-tint:9%}.d2hvtW_depth1{--card-tint:7%}.d2hvtW_depth2{--card-tint:5%}.d2hvtW_depth3{--card-tint:3.5%}.d2hvtW_cardTop{background:color-mix(in srgb, var(--dsw-alias-state-business-primary) var(--card-tint,6%), var(--dsw-alias-bg-layer-1));flex-direction:column;flex:1;gap:2px;min-width:0;padding:6px 8px 5px;display:flex;position:relative}.d2hvtW_cardBadges{align-items:center;gap:4px;min-width:0;display:flex}.d2hvtW_kindBadge{border:1px solid var(--dsw-alias-border-l2);font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);border-radius:2px;flex:none;padding:0 4px}.d2hvtW_kindChip{max-width:46%;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;flex:none;overflow:hidden}.d2hvtW_phaseBadge{max-width:62%;font:var(--dsw-font-xxxs-11);white-space:nowrap;text-overflow:ellipsis;border:1px solid;border-radius:2px;flex:none;padding:0 4px;overflow:hidden}.d2hvtW_phase0{color:var(--dsw-alias-label-primary);border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 45%, transparent)}.d2hvtW_phase1{color:color-mix(in srgb, var(--dsw-alias-label-primary) 78%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 38%, transparent)}.d2hvtW_phase2{color:color-mix(in srgb, var(--dsw-alias-label-primary) 58%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 30%, transparent)}.d2hvtW_phase3{color:color-mix(in srgb, var(--dsw-alias-label-primary) 42%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 24%, transparent)}.d2hvtW_cardName{-webkit-line-clamp:2;overflow-wrap:anywhere;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);-webkit-box-orient:vertical;display:-webkit-box;overflow:hidden}.d2hvtW_cardNamePlain{-webkit-line-clamp:1;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-secondary)}.d2hvtW_cardText{overflow-wrap:anywhere;color:var(--dsw-alias-label-secondary);-webkit-box-orient:vertical;margin-top:2px;font-size:10px;line-height:1.3;display:-webkit-box;overflow:hidden}.d2hvtW_cardMeta{font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.d2hvtW_cardBar{border-top:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);height:22px;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);flex:none;align-items:center;gap:5px;padding:0 6px 0 8px;display:flex;position:relative;overflow:hidden}.d2hvtW_cardBar[data-running=true]:after{content:\"\";background-image:linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, transparent) 50%, transparent 100%);pointer-events:none;width:100%;animation:1.5s cubic-bezier(.33,0,.67,1) infinite d2hvtW_dsh-tasks-bar-sweep;position:absolute;top:0;bottom:0;left:0;transform:translate(-100%)}@keyframes d2hvtW_dsh-tasks-bar-sweep{0%{transform:translate(-100%)}66.6667%,to{transform:translate(100%)}}@media (prefers-reduced-motion:reduce){.d2hvtW_cardBar[data-running=true]:after{opacity:0;animation:none}}.d2hvtW_barDot{flex:none}.d2hvtW_barState{color:var(--dsw-alias-label-secondary);flex:none}.d2hvtW_barActivity{min-width:0;color:var(--dsw-alias-state-business-primary);white-space:nowrap;text-overflow:ellipsis;flex:1;overflow:hidden}.d2hvtW_barFoldGlyph{color:var(--dsw-alias-label-tertiary);flex:none;align-items:center;display:inline-flex}.d2hvtW_barAction{min-width:0;color:var(--dsw-alias-state-business-primary);white-space:nowrap;text-overflow:ellipsis;flex:1;overflow:hidden}.d2hvtW_barError{color:var(--dsw-alias-state-error-primary);flex:none}.d2hvtW_barFold{width:16px;height:16px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:2px;flex:none;justify-content:center;align-items:center;margin-left:auto;padding:0;display:inline-flex}.d2hvtW_barFold:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.d2hvtW_nodeFold{border:1px dashed var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base)}.d2hvtW_nodeFold:hover{border-color:var(--dsw-alias-label-primary)}.d2hvtW_nodeHeader{align-items:center;gap:5px;min-width:0;display:flex}.d2hvtW_nodeDot{flex:none}.d2hvtW_nodeGlyph{color:var(--dsw-alias-label-tertiary);flex:none;display:inline-flex}.d2hvtW_treeGlyph{color:var(--dsw-alias-label-tertiary);flex:none;margin-top:3px;display:inline-flex}.d2hvtW_treeDot{flex:none;margin-top:6px}.d2hvtW_nodeMeta{font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;margin-top:2px;overflow:hidden}.d2hvtW_nodeFold .d2hvtW_nodeMeta{color:var(--dsw-alias-label-tertiary)}.d2hvtW_taskLine{cursor:pointer;min-width:0;color:var(--dsw-alias-label-secondary);white-space:nowrap;align-items:center;gap:4px;margin-top:3px;font-size:10px;line-height:1.3;display:flex;overflow:hidden}.d2hvtW_taskGlyph{color:var(--dsw-alias-state-business-primary);flex:none;display:inline-flex}.d2hvtW_taskLine:hover .d2hvtW_taskSubject{color:var(--dsw-alias-label-primary)}.d2hvtW_taskLine:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px;border-radius:2px}.d2hvtW_taskSubject{text-overflow:ellipsis;flex:1;min-width:0;overflow:hidden}.d2hvtW_taskState{font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-tertiary);flex:none;font-size:10px}.d2hvtW_taskMore{border:1px solid var(--dsw-alias-border-l2);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-tertiary);border-radius:2px;flex:none;padding:0 3px;font-size:10px}.d2hvtW_live{min-width:0;font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-state-business-primary);white-space:nowrap;align-items:center;gap:4px;margin-top:3px;font-size:10px;line-height:1.3;display:flex;overflow:hidden}.d2hvtW_liveGlyph{border:1px solid;border-radius:2px;flex:none;justify-content:center;align-items:center;width:11px;height:11px;display:inline-flex}.d2hvtW_liveTool{flex:none}.d2hvtW_liveArgs{color:var(--dsw-alias-label-secondary);text-overflow:ellipsis;overflow:hidden}.d2hvtW_liveText{color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;margin-top:2px;font-size:10px;overflow:hidden}.d2hvtW_controls{z-index:6;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:3px;flex-direction:row;align-items:center;display:flex;position:absolute;bottom:10px;right:10px}.d2hvtW_controlBtn{box-sizing:border-box;min-width:28px;height:28px;color:var(--dsw-alias-label-secondary);font-family:var(--ds-font-family-code,monospace);cursor:pointer;background:0 0;border:none;justify-content:center;align-items:center;padding:0 4px;font-size:12px;line-height:1;display:inline-flex}.d2hvtW_controlBtn+.d2hvtW_controlBtn,.d2hvtW_controlZoomLevel+.d2hvtW_controlBtn,.d2hvtW_controlBtn+.d2hvtW_controlZoomLevel{border-left:1px solid var(--dsw-alias-border-l2)}.d2hvtW_controlBtn:hover{color:var(--dsw-alias-label-primary)}.d2hvtW_controlBtnActive{color:var(--dsw-alias-state-business-primary)}.d2hvtW_controlText{box-sizing:border-box;height:28px;color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xxxs-11);white-space:nowrap;cursor:pointer;background:0 0;border:none;justify-content:center;align-items:center;padding:0 8px;display:inline-flex}.d2hvtW_controlText:hover{color:var(--dsw-alias-label-primary)}.d2hvtW_controlZoomLevel{box-sizing:border-box;min-width:36px;height:28px;font-family:var(--ds-font-family-code,monospace);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);justify-content:center;align-items:center;padding:0 5px;font-size:10px;display:inline-flex}.d2hvtW_treeView{scrollbar-width:thin;user-select:none;flex:1;min-height:0;padding:8px 10px 44px;overflow-y:auto}.d2hvtW_treeRow{cursor:pointer;border-radius:4px;align-items:flex-start;gap:7px;padding:0 8px;display:flex;position:relative}.d2hvtW_treeRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_treeRow:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.d2hvtW_treeRowActive{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_treeRowActive:before{content:\"\";background:var(--dsw-alias-state-business-primary);border-radius:1px;width:2px;position:absolute;top:4px;bottom:4px;left:0}.d2hvtW_treeRowSettled{opacity:.62}.d2hvtW_treeKids{margin-left:11px;padding-left:14px}.d2hvtW_treeDisclosure{width:16px;height:16px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:2px;flex:none;justify-content:center;align-self:flex-start;align-items:center;margin:8px 0 0 auto;padding:0;display:inline-flex}.d2hvtW_treeDisclosure:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.d2hvtW_treeChild{position:relative}.d2hvtW_treeChild:before{content:\"\";background:var(--dsw-alias-border-l1);width:1px;position:absolute;top:0;bottom:0;left:-14px}.d2hvtW_treeChildLast:before{height:16px;bottom:auto}.d2hvtW_treeChip{max-width:46%;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;flex:none;overflow:hidden}.d2hvtW_treeContent{flex-direction:column;flex:1;justify-content:center;min-width:0;min-height:32px;display:flex}.d2hvtW_treeTitle{font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);white-space:nowrap;text-overflow:ellipsis;align-items:center;gap:6px;display:flex;overflow:hidden}.d2hvtW_treeMeta{font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.d2hvtW_treeFoldRow{border:1px dashed var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:4px;margin:2px 0}.d2hvtW_popCard{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);max-width:100%;box-shadow:var(--dsw-shadow-lv3);font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);box-sizing:border-box;border-radius:4px;flex-direction:column;gap:4px;padding:10px 12px;animation:.14s cubic-bezier(.2,.8,.3,1) d2hvtW_dsh-pop-in;display:flex}@keyframes d2hvtW_dsh-card-in{0%{opacity:0;transform:translateY(10px)scale(.88)}60%{opacity:1}to{opacity:1;transform:none}}@keyframes d2hvtW_dsh-pop-in{0%{opacity:0;transform:translateY(4px)scale(.985)}to{opacity:1;transform:none}}@media (prefers-reduced-motion:reduce){.d2hvtW_popCard,.d2hvtW_node{animation:none}}.d2hvtW_popHead{min-height:28px;font-family:var(--ds-font-family-code,monospace);letter-spacing:.12em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px;font-size:10px;display:flex}.d2hvtW_popFoot{border-top:1px solid var(--dsw-alias-border-l1);gap:8px;margin-top:8px;padding-top:8px;display:flex}.d2hvtW_popFoot>*{flex:1}.d2hvtW_jobPopTitle{align-items:center;gap:6px;min-width:0;display:flex}.d2hvtW_taskBody{flex-direction:column;min-height:0;display:flex}.d2hvtW_taskHeadRow{align-items:center;gap:6px;min-width:0;margin-bottom:8px;display:flex}.d2hvtW_taskHeadRow .d2hvtW_popTitle{font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-primary);flex:1}.d2hvtW_jobPopMeta{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);flex-wrap:wrap;align-items:center;gap:6px;display:flex}.d2hvtW_jobPopValue{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-secondary);line-height:1.45}.d2hvtW_jobPopActions{justify-content:space-between;align-items:center;gap:8px;display:flex}.d2hvtW_jobPopFollow{min-width:0;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary);align-items:center;gap:6px;display:inline-flex}.d2hvtW_jobPopFollowLabel{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.d2hvtW_jobPopKillArmed,.d2hvtW_jobPopKillArmed:hover{border:1px solid var(--dsw-alias-state-error-primary);background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);color:var(--dsw-alias-state-error-primary)}.d2hvtW_popTitleRow{align-items:center;gap:6px;min-width:0;display:flex}.d2hvtW_popGlyph{color:var(--dsw-alias-label-tertiary);flex:none;display:inline-flex}.d2hvtW_popTitle{text-overflow:ellipsis;white-space:nowrap;text-transform:none;letter-spacing:0;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-primary);overflow:hidden}.d2hvtW_popRows{grid-template-columns:auto 1fr;align-items:baseline;gap:3px 10px;margin:0;line-height:1.45;display:grid}.d2hvtW_popKey{font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);line-height:1.45}.d2hvtW_popValue{text-align:right;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-secondary);text-overflow:ellipsis;white-space:nowrap;margin:0;line-height:1.45;overflow:hidden}.d2hvtW_popValueMono{font-family:var(--ds-font-family-code,monospace);font-size:11px}.d2hvtW_popSection{border-top:1px solid var(--dsw-alias-border-l1);margin-top:4px;padding-top:8px}.d2hvtW_popList{scrollbar-width:thin;flex-direction:column;gap:1px;max-height:160px;display:flex;overflow-y:auto}.d2hvtW_popGroup{font-family:var(--ds-font-family-code,monospace);letter-spacing:.12em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);padding:4px 2px 2px;font-size:10px}.d2hvtW_popList .d2hvtW_popListRow{box-sizing:border-box;cursor:pointer;border-radius:4px;align-items:center;gap:6px;min-height:28px;padding:0 4px;display:flex}.d2hvtW_popList .d2hvtW_popListRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_popListLabel{min-width:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);text-overflow:ellipsis;white-space:nowrap;flex:1;overflow:hidden}.d2hvtW_popActivityBlock{flex-direction:column;gap:1px;min-width:0;display:flex}.d2hvtW_popActivity{color:var(--dsw-alias-state-business-primary);white-space:nowrap;text-overflow:ellipsis;font-size:10px;line-height:1.45;overflow:hidden}.d2hvtW_popFoot>.d2hvtW_jumpMore{flex:none;width:28px;display:inline-flex;position:relative}.d2hvtW_jumpMoreButton{width:100%;padding:0}.d2hvtW_popFoot>.d2hvtW_popActionIcon{flex:none;width:28px;padding:0}.d2hvtW_jumpMenu{z-index:4;min-width:152px;padding:4px;position:absolute;bottom:calc(100% + 6px);right:0}.d2hvtW_jumpMenuItem{justify-content:flex-start;width:100%}.d2hvtW_popActivityBlock .d2hvtW_popHint{-webkit-line-clamp:3;overflow-wrap:anywhere;-webkit-box-orient:vertical;display:-webkit-box;overflow:hidden}.d2hvtW_popHint.d2hvtW_popHint{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:1.45}.d2hvtW_popError{color:var(--dsw-alias-state-error-primary);font-size:10px}.d2hvtW_taskMarkdown{min-height:0;font:var(--dsw-font-xxs-12);scrollbar-width:thin;--dsw-font-markdown-base:var(--dsw-font-xxs-12);--dsw-font-markdown-base-strong:var(--dsw-font-xxs-strong-12);--dsw-font-markdown-h1:600 13px/18px var(--dsw-font-family);--dsw-font-markdown-h2:600 13px/18px var(--dsw-font-family);--dsw-font-markdown-h3:var(--dsw-font-xxs-strong-12);--dsw-font-markdown-h4:var(--dsw-font-xxs-strong-12);--dsw-font-markdown-code:var(--dsw-font-xxxs-11);--dsw-font-markdown-code-block:var(--dsw-font-markdown-code-block-small);--dsw-font-markdown-table:var(--dsw-font-xxxs-11);--dsw-font-markdown-table-head:var(--dsw-font-xxxs-strong-11);flex:1;padding:2px 0;line-height:1.5;overflow-y:auto}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown>*{color:var(--dsw-alias-label-secondary)}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :is(h1,h2,h3){margin:8px 0 4px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :is(h4,h5,h6){margin:6px 0 2px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :is(p,blockquote,pre){margin:6px 0}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :is(ul,ol){margin:6px 0;padding-left:16px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown li:not(:first-child){margin-top:2px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown li>p{margin:4px 0}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown li::marker{line-height:18px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown blockquote{border-left:1px solid var(--dsw-alias-border-l2);padding-left:10px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown hr{margin:8px 0}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :not(pre)>code{border-radius:3px;font-size:11px!important}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown :is(th,td){border-bottom:1px solid var(--dsw-alias-border-l1);padding:4px 8px}.d2hvtW_taskMarkdown.d2hvtW_taskMarkdown th{border-bottom-color:var(--dsw-alias-border-l2)}.d2hvtW_taskTextarea{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);width:100%;min-height:120px;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code,monospace);resize:vertical;box-sizing:border-box;border-radius:8px;flex:1;padding:6px 8px;font-size:12px;line-height:1.5}.d2hvtW_taskTextarea:focus{border-color:var(--dsw-alias-state-business-primary);outline:none}.d2hvtW_taskForm{flex-direction:column;flex:1;gap:8px;min-height:0;display:flex}.d2hvtW_taskForm>label:last-child{flex:1;min-height:0}.d2hvtW_taskField{flex-direction:column;gap:4px;display:flex}.d2hvtW_taskMarkdown+.d2hvtW_taskField{margin-top:4px}.d2hvtW_taskBody>.d2hvtW_taskField,.d2hvtW_taskBody>.d2hvtW_jobPopMeta,.d2hvtW_taskBody>.d2hvtW_taskHeadRow,.d2hvtW_taskBody>.d2hvtW_teamNote{flex:none}.d2hvtW_taskLabel{font-family:var(--ds-font-family-code,monospace);letter-spacing:.12em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);font-size:10px}.d2hvtW_taskForm .d2hvtW_taskInput input{font:var(--dsw-font-xxs-12)}.d2hvtW_taskForm .d2hvtW_taskInput:not(:focus-within){border-color:var(--dsw-alias-border-l2)}.d2hvtW_taskForm .d2hvtW_taskInput:has(input[aria-invalid=true]):not(:focus-within){border-color:var(--dsw-alias-state-error-primary)}.d2hvtW_taskOwnerRow{flex-wrap:wrap;gap:4px;display:flex}.d2hvtW_taskOwnerRow .d2hvtW_taskOwnerPill{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0}.d2hvtW_taskOwnerRow .d2hvtW_taskOwnerPill:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.d2hvtW_taskOwnerRow .d2hvtW_taskOwnerPillActive{box-sizing:border-box;border:1px solid var(--dsw-alias-button-ghost-active-border);background:var(--dsw-alias-button-ghost-active-fill);color:var(--dsw-alias-label-primary)}.d2hvtW_taskOwnerRow .d2hvtW_taskOwnerPillActive:hover{background:var(--dsw-alias-button-ghost-active-hover)}.d2hvtW_jobPopActions .d2hvtW_taskDanger{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 40%, transparent)}.d2hvtW_jobPopActions .d2hvtW_taskDanger:hover{background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary)}.d2hvtW_jobPopActions .d2hvtW_taskDanger.d2hvtW_taskDangerArmed,.d2hvtW_jobPopActions .d2hvtW_taskDanger.d2hvtW_taskDangerArmed:hover{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.d2hvtW_teamBoard{border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);flex:none}.d2hvtW_teamBoardBar{box-sizing:border-box;border:none;border-bottom:1px solid var(--dsw-alias-border-l1);width:100%;height:28px;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-secondary);cursor:pointer;text-align:left;background:0 0;align-items:center;gap:8px;padding:0 12px;display:flex}.d2hvtW_teamBoardBar:hover{color:var(--dsw-alias-label-primary)}.d2hvtW_teamBoardCount{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary)}.d2hvtW_teamBoardChev{color:var(--dsw-alias-label-tertiary);margin-left:auto}.d2hvtW_teamBoardIcon{color:var(--dsw-alias-label-tertiary);display:inline-flex}.d2hvtW_teamNote{color:var(--dsw-alias-state-warn-primary);padding:0 12px 6px;font-size:10px;line-height:1.4}.d2hvtW_teamActions{flex:none;align-items:center;gap:6px;padding:6px 12px 8px;display:flex}.d2hvtW_teamMembers{flex-wrap:wrap;gap:4px;padding:6px 12px;display:flex}.d2hvtW_teamMemberName{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.d2hvtW_teamTasks{border-bottom:1px solid var(--dsw-alias-border-l1);scrollbar-width:thin;flex-direction:column;gap:1px;max-height:160px;padding:0 6px 6px;display:flex;overflow-y:auto}.d2hvtW_teamTaskRow{align-items:center;gap:2px;display:flex}.d2hvtW_teamTask{text-align:left;border-radius:4px;flex:1;align-items:center;gap:6px;width:100%;min-width:0;min-height:24px;padding:2px 6px;display:flex}.d2hvtW_teamTask>*{min-width:0}.d2hvtW_teamTask:hover{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_teamTaskSubject{min-width:0;font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-primary);text-overflow:ellipsis;white-space:nowrap;flex:1;overflow:hidden}.d2hvtW_teamTaskOwner{max-width:72px;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:none;overflow:hidden}.d2hvtW_teamEmpty{min-height:28px;font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-tertiary);align-items:center;padding:0 6px;display:flex}.d2hvtW_jobsDrawer{border-top:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);z-index:5;flex:none}.d2hvtW_jobsDrawerBar{box-sizing:border-box;border:none;border-bottom:1px solid var(--dsw-alias-border-l1);width:100%;height:28px;font:var(--dsw-font-xxs-strong-12);color:var(--dsw-alias-label-secondary);cursor:pointer;text-align:left;background:0 0;align-items:center;gap:8px;padding:0 12px;display:flex}.d2hvtW_jobsDrawerBar:hover{color:var(--dsw-alias-label-primary)}.d2hvtW_jobsDrawerBar:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.d2hvtW_jobsBigNum{font-family:var(--ds-font-family-code,monospace);font-variant-numeric:tabular-nums;color:var(--dsw-alias-state-business-primary);font-size:12px;font-weight:600}.d2hvtW_jobsDrawerCount{min-width:0;font:var(--dsw-font-xxs-12);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.d2hvtW_jobsDrawerChev{color:var(--dsw-alias-label-tertiary);flex:none;margin-left:auto;transition:transform .18s;display:inline-flex}.d2hvtW_jobsDrawerChev[data-open=true]{transform:rotate(180deg)}.d2hvtW_jobsAutoNote{color:var(--dsw-alias-label-tertiary);padding:6px 12px;font-size:10px;line-height:1.4}.d2hvtW_jobsDrawerBody{scrollbar-width:thin;flex-direction:column;gap:2px;max-height:156px;padding:4px 8px 8px;display:flex;overflow:hidden auto}.d2hvtW_jobsRow{border-radius:3px;align-items:center;gap:7px;min-height:28px;padding:4px 6px;display:flex}.d2hvtW_jobsRow[data-settled=true]{opacity:.62}.d2hvtW_jobsRowMain{min-width:0;color:inherit;cursor:pointer;text-align:left;background:0 0;border:none;flex:1;align-items:center;gap:7px;padding:0;display:flex;overflow:hidden}.d2hvtW_jobsRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.d2hvtW_jobsRow[data-open=true],.d2hvtW_jobsRow[data-open=true]:hover{background:var(--dsw-alias-interactive-bg-active)}.d2hvtW_jobsRowMain:focus-visible{outline:2px solid var(--dsw-alias-interactive-bg-hover-accent);outline-offset:-1px}.d2hvtW_jobsLabel{min-width:33%;font:var(--dsw-font-xxs-strong-12);font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-label-primary);text-overflow:ellipsis;white-space:nowrap;flex:auto;overflow:hidden}.d2hvtW_jobsMeta{min-width:0;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code,monospace);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);text-overflow:ellipsis;white-space:nowrap;flex:0 auto;overflow:hidden}.d2hvtW_jobsKillSlot{flex:none;width:28px;height:28px;position:relative}.d2hvtW_jobsKill{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);min-width:28px;height:28px;color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code,monospace);cursor:pointer;opacity:0;background:0 0;border-radius:3px;padding:0 5px;transition:opacity .12s;position:absolute;top:0;right:0}.d2hvtW_jobsRow:hover .d2hvtW_jobsKill,.d2hvtW_jobsRow:focus-within .d2hvtW_jobsKill,.d2hvtW_jobsKill:focus-visible{opacity:1}.d2hvtW_jobsKill:hover{border-color:var(--dsw-alias-label-primary);color:var(--dsw-alias-label-primary)}.d2hvtW_jobsKill.d2hvtW_jobsKill[data-armed=true],.d2hvtW_jobsKill.d2hvtW_jobsKill[data-armed=true]:hover{border-color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-bg-layer-1);width:auto;color:var(--dsw-alias-state-error-primary);opacity:1;white-space:nowrap;padding:0 7px}.d2hvtW_jobsRow:has(.d2hvtW_jobsKill[data-armed=true]) .d2hvtW_jobsKillSlot{align-items:center;width:auto;display:flex}.d2hvtW_jobsRow:has(.d2hvtW_jobsKill[data-armed=true]) .d2hvtW_jobsKill{position:static}.d2hvtW_jobsRow:has(.d2hvtW_jobsKill[data-armed=true]) .d2hvtW_jobsMeta{display:none}.d2hvtW_jobsKillError{pointer-events:none;background:var(--dsw-alias-bg-layer-1);height:28px;font-family:var(--ds-font-family-code,monospace);color:var(--dsw-alias-state-error-primary);white-space:nowrap;border-radius:3px;align-items:center;padding:0 6px;font-size:10px;display:inline-flex;position:absolute;top:0;right:0}.d2hvtW_viewEmptyHint{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);text-align:center;padding:0 24px}";
 		const tagId$5 = "dsh-external/dsh-better-sidebar/tasks-graph.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$5) + "]") === null) {
 			const tag = document.createElement("style");
@@ -17380,159 +19716,160 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			document.head.appendChild(tag);
 		}
 		var tasks_graph_module_css_default = {
-			"liveTool": "d2hvtW_liveTool",
-			"treeChild": "d2hvtW_treeChild",
-			"controlText": "d2hvtW_controlText",
-			"treeRow": "d2hvtW_treeRow",
-			"jobPopValue": "d2hvtW_jobPopValue",
-			"treeRowActive": "d2hvtW_treeRowActive",
-			"teamMemberName": "d2hvtW_teamMemberName",
-			"popCard": "d2hvtW_popCard",
-			"treeMeta": "d2hvtW_treeMeta",
-			"node": "d2hvtW_node",
 			"teamMembers": "d2hvtW_teamMembers",
-			"graphView": "d2hvtW_graphView",
-			"controls": "d2hvtW_controls",
-			"barState": "d2hvtW_barState",
-			"jobPopTitle": "d2hvtW_jobPopTitle",
-			"jumpMenuItem": "d2hvtW_jumpMenuItem",
-			"teamNote": "d2hvtW_teamNote",
-			"jobsKillError": "d2hvtW_jobsKillError",
-			"taskMore": "d2hvtW_taskMore",
-			"teamBoardCount": "d2hvtW_teamBoardCount",
-			"canvasInner": "d2hvtW_canvasInner",
-			"cardTop": "d2hvtW_cardTop",
-			"barDot": "d2hvtW_barDot",
-			"jobPopKillArmed": "d2hvtW_jobPopKillArmed",
-			"popTitleRow": "d2hvtW_popTitleRow",
-			"kindBadge": "d2hvtW_kindBadge",
-			"phaseBadge": "d2hvtW_phaseBadge",
-			"taskHeadRow": "d2hvtW_taskHeadRow",
-			"edgeTeam": "d2hvtW_edgeTeam",
-			"phase3": "d2hvtW_phase3",
-			"taskState": "d2hvtW_taskState",
-			"phase2": "d2hvtW_phase2",
-			"treeTitle": "d2hvtW_treeTitle",
-			"popHead": "d2hvtW_popHead",
-			"popActivity": "d2hvtW_popActivity",
-			"popError": "d2hvtW_popError",
-			"teamTasks": "d2hvtW_teamTasks",
-			"jobsDrawerBar": "d2hvtW_jobsDrawerBar",
-			"jobsBigNum": "d2hvtW_jobsBigNum",
-			"jobsRow": "d2hvtW_jobsRow",
-			"popGroup": "d2hvtW_popGroup",
-			"cardBadges": "d2hvtW_cardBadges",
-			"nodeDot": "d2hvtW_nodeDot",
-			"phase0": "d2hvtW_phase0",
-			"taskOwnerPillActive": "d2hvtW_taskOwnerPillActive",
-			"liveArgs": "d2hvtW_liveArgs",
-			"popTitle": "d2hvtW_popTitle",
-			"taskSubject": "d2hvtW_taskSubject",
-			"nodeCurrent": "d2hvtW_nodeCurrent",
-			"popSection": "d2hvtW_popSection",
-			"nodeWorkflow": "d2hvtW_nodeWorkflow",
-			"jumpMenu": "d2hvtW_jumpMenu",
-			"jobsLabel": "d2hvtW_jobsLabel",
-			"cardMeta": "d2hvtW_cardMeta",
-			"treeView": "d2hvtW_treeView",
-			"dsh-pop-in": "d2hvtW_dsh-pop-in",
-			"taskMarkdown": "d2hvtW_taskMarkdown",
-			"popGlyph": "d2hvtW_popGlyph",
-			"nodeSettled": "d2hvtW_nodeSettled",
-			"barActivity": "d2hvtW_barActivity",
-			"controlBtnActive": "d2hvtW_controlBtnActive",
-			"taskForm": "d2hvtW_taskForm",
-			"nodeFold": "d2hvtW_nodeFold",
-			"depth1": "d2hvtW_depth1",
-			"phase1": "d2hvtW_phase1",
-			"taskLine": "d2hvtW_taskLine",
-			"controlBtn": "d2hvtW_controlBtn",
-			"treeChip": "d2hvtW_treeChip",
-			"teamActions": "d2hvtW_teamActions",
-			"treeChildLast": "d2hvtW_treeChildLast",
-			"jobsRowMain": "d2hvtW_jobsRowMain",
-			"phaseLabel": "d2hvtW_phaseLabel",
-			"treeKids": "d2hvtW_treeKids",
-			"barError": "d2hvtW_barError",
-			"taskGlyph": "d2hvtW_taskGlyph",
-			"controlZoomLevel": "d2hvtW_controlZoomLevel",
-			"popValue": "d2hvtW_popValue",
-			"cardName": "d2hvtW_cardName",
-			"treeFoldRow": "d2hvtW_treeFoldRow",
-			"taskDanger": "d2hvtW_taskDanger",
-			"teamBoard": "d2hvtW_teamBoard",
-			"canvasDragging": "d2hvtW_canvasDragging",
-			"jobsDrawer": "d2hvtW_jobsDrawer",
-			"jobPopFollow": "d2hvtW_jobPopFollow",
 			"nodeHeader": "d2hvtW_nodeHeader",
-			"teamTaskOwner": "d2hvtW_teamTaskOwner",
-			"edges": "d2hvtW_edges",
-			"popKey": "d2hvtW_popKey",
-			"liveGlyph": "d2hvtW_liveGlyph",
-			"jobsDrawerChev": "d2hvtW_jobsDrawerChev",
-			"treeDot": "d2hvtW_treeDot",
-			"nodeError": "d2hvtW_nodeError",
-			"barFold": "d2hvtW_barFold",
-			"barFoldGlyph": "d2hvtW_barFoldGlyph",
-			"treeGlyph": "d2hvtW_treeGlyph",
-			"popList": "d2hvtW_popList",
-			"teamTaskRow": "d2hvtW_teamTaskRow",
-			"live": "d2hvtW_live",
-			"taskInput": "d2hvtW_taskInput",
-			"phaseFrame": "d2hvtW_phaseFrame",
-			"jobsMeta": "d2hvtW_jobsMeta",
-			"jobsKillSlot": "d2hvtW_jobsKillSlot",
-			"dsh-tasks-bar-sweep": "d2hvtW_dsh-tasks-bar-sweep",
-			"jobPopFollowLabel": "d2hvtW_jobPopFollowLabel",
-			"viewEmptyHint": "d2hvtW_viewEmptyHint",
-			"depth2": "d2hvtW_depth2",
-			"taskBody": "d2hvtW_taskBody",
-			"popHint": "d2hvtW_popHint",
-			"jobsDrawerCount": "d2hvtW_jobsDrawerCount",
-			"popListLabel": "d2hvtW_popListLabel",
-			"taskLabel": "d2hvtW_taskLabel",
-			"nodeMeta": "d2hvtW_nodeMeta",
-			"liveText": "d2hvtW_liveText",
-			"treeContent": "d2hvtW_treeContent",
-			"dsh-card-in": "d2hvtW_dsh-card-in",
-			"jobsAutoNote": "d2hvtW_jobsAutoNote",
-			"depth3": "d2hvtW_depth3",
-			"popActivityBlock": "d2hvtW_popActivityBlock",
-			"taskDangerArmed": "d2hvtW_taskDangerArmed",
-			"taskOwnerRow": "d2hvtW_taskOwnerRow",
-			"teamTask": "d2hvtW_teamTask",
-			"jumpMore": "d2hvtW_jumpMore",
-			"jobsDrawerBody": "d2hvtW_jobsDrawerBody",
-			"taskField": "d2hvtW_taskField",
-			"edge": "d2hvtW_edge",
-			"popFoot": "d2hvtW_popFoot",
-			"jobPopMeta": "d2hvtW_jobPopMeta",
-			"barAction": "d2hvtW_barAction",
-			"jobPopActions": "d2hvtW_jobPopActions",
-			"teamBoardChev": "d2hvtW_teamBoardChev",
-			"popRows": "d2hvtW_popRows",
-			"nodeGlyph": "d2hvtW_nodeGlyph",
-			"teamTaskSubject": "d2hvtW_teamTaskSubject",
-			"jumpMoreButton": "d2hvtW_jumpMoreButton",
-			"depth0": "d2hvtW_depth0",
-			"cardNamePlain": "d2hvtW_cardNamePlain",
-			"canvas": "d2hvtW_canvas",
-			"treeRowSettled": "d2hvtW_treeRowSettled",
-			"teamEmpty": "d2hvtW_teamEmpty",
-			"treeDisclosure": "d2hvtW_treeDisclosure",
-			"edgeWorkflow": "d2hvtW_edgeWorkflow",
+			"nodeDot": "d2hvtW_nodeDot",
+			"taskState": "d2hvtW_taskState",
+			"taskForm": "d2hvtW_taskForm",
+			"teamBoard": "d2hvtW_teamBoard",
 			"teamBoardBar": "d2hvtW_teamBoardBar",
-			"cardBar": "d2hvtW_cardBar",
+			"node": "d2hvtW_node",
+			"popFoot": "d2hvtW_popFoot",
 			"edgeFold": "d2hvtW_edgeFold",
-			"nodeTeam": "d2hvtW_nodeTeam",
-			"kindChip": "d2hvtW_kindChip",
+			"liveText": "d2hvtW_liveText",
+			"treeKids": "d2hvtW_treeKids",
+			"edges": "d2hvtW_edges",
+			"phaseBadge": "d2hvtW_phaseBadge",
+			"depth2": "d2hvtW_depth2",
+			"live": "d2hvtW_live",
+			"jobPopKillArmed": "d2hvtW_jobPopKillArmed",
+			"jobsDrawer": "d2hvtW_jobsDrawer",
+			"teamTaskOwner": "d2hvtW_teamTaskOwner",
+			"jobPopFollow": "d2hvtW_jobPopFollow",
+			"phase3": "d2hvtW_phase3",
+			"popTitle": "d2hvtW_popTitle",
+			"taskInput": "d2hvtW_taskInput",
+			"jobPopActions": "d2hvtW_jobPopActions",
+			"jobPopFollowLabel": "d2hvtW_jobPopFollowLabel",
+			"jobPopMeta": "d2hvtW_jobPopMeta",
+			"teamTaskRow": "d2hvtW_teamTaskRow",
+			"popListLabel": "d2hvtW_popListLabel",
+			"treeGlyph": "d2hvtW_treeGlyph",
+			"jobsKillError": "d2hvtW_jobsKillError",
 			"popValueMono": "d2hvtW_popValueMono",
-			"taskTextarea": "d2hvtW_taskTextarea",
-			"cardText": "d2hvtW_cardText",
-			"taskOwnerPill": "d2hvtW_taskOwnerPill",
-			"popListRow": "d2hvtW_popListRow",
+			"depth3": "d2hvtW_depth3",
+			"phaseFrame": "d2hvtW_phaseFrame",
+			"dsh-tasks-bar-sweep": "d2hvtW_dsh-tasks-bar-sweep",
+			"taskLine": "d2hvtW_taskLine",
 			"teamBoardIcon": "d2hvtW_teamBoardIcon",
-			"jobsKill": "d2hvtW_jobsKill"
+			"jobsKill": "d2hvtW_jobsKill",
+			"popHint": "d2hvtW_popHint",
+			"popActivity": "d2hvtW_popActivity",
+			"canvasDragging": "d2hvtW_canvasDragging",
+			"teamBoardChev": "d2hvtW_teamBoardChev",
+			"barState": "d2hvtW_barState",
+			"taskOwnerPill": "d2hvtW_taskOwnerPill",
+			"jobsKillSlot": "d2hvtW_jobsKillSlot",
+			"cardName": "d2hvtW_cardName",
+			"taskField": "d2hvtW_taskField",
+			"taskLabel": "d2hvtW_taskLabel",
+			"taskTextarea": "d2hvtW_taskTextarea",
+			"depth1": "d2hvtW_depth1",
+			"kindBadge": "d2hvtW_kindBadge",
+			"teamMemberName": "d2hvtW_teamMemberName",
+			"treeMeta": "d2hvtW_treeMeta",
+			"treeRowSettled": "d2hvtW_treeRowSettled",
+			"canvasInner": "d2hvtW_canvasInner",
+			"nodeWorkflow": "d2hvtW_nodeWorkflow",
+			"popList": "d2hvtW_popList",
+			"teamTaskSubject": "d2hvtW_teamTaskSubject",
+			"jobsDrawerChev": "d2hvtW_jobsDrawerChev",
+			"barError": "d2hvtW_barError",
+			"liveTool": "d2hvtW_liveTool",
+			"treeChildLast": "d2hvtW_treeChildLast",
+			"nodeMeta": "d2hvtW_nodeMeta",
+			"treeContent": "d2hvtW_treeContent",
+			"jobsRow": "d2hvtW_jobsRow",
+			"jobsRowMain": "d2hvtW_jobsRowMain",
+			"graphView": "d2hvtW_graphView",
+			"popGlyph": "d2hvtW_popGlyph",
+			"phase0": "d2hvtW_phase0",
+			"popSection": "d2hvtW_popSection",
+			"controlZoomLevel": "d2hvtW_controlZoomLevel",
+			"jumpMore": "d2hvtW_jumpMore",
+			"jumpMenuItem": "d2hvtW_jumpMenuItem",
+			"teamTask": "d2hvtW_teamTask",
+			"jobsMeta": "d2hvtW_jobsMeta",
+			"cardNamePlain": "d2hvtW_cardNamePlain",
+			"taskOwnerPillActive": "d2hvtW_taskOwnerPillActive",
+			"viewEmptyHint": "d2hvtW_viewEmptyHint",
+			"popListRow": "d2hvtW_popListRow",
+			"taskDanger": "d2hvtW_taskDanger",
+			"popError": "d2hvtW_popError",
+			"phaseLabel": "d2hvtW_phaseLabel",
+			"teamBoardCount": "d2hvtW_teamBoardCount",
+			"teamNote": "d2hvtW_teamNote",
+			"treeFoldRow": "d2hvtW_treeFoldRow",
+			"jobsBigNum": "d2hvtW_jobsBigNum",
+			"liveArgs": "d2hvtW_liveArgs",
+			"phase2": "d2hvtW_phase2",
+			"treeChip": "d2hvtW_treeChip",
+			"taskHeadRow": "d2hvtW_taskHeadRow",
+			"jobPopTitle": "d2hvtW_jobPopTitle",
+			"cardTop": "d2hvtW_cardTop",
+			"canvas": "d2hvtW_canvas",
+			"cardBadges": "d2hvtW_cardBadges",
+			"popCard": "d2hvtW_popCard",
+			"edgeTeam": "d2hvtW_edgeTeam",
+			"barActivity": "d2hvtW_barActivity",
+			"taskGlyph": "d2hvtW_taskGlyph",
+			"treeTitle": "d2hvtW_treeTitle",
+			"teamEmpty": "d2hvtW_teamEmpty",
+			"jobsDrawerBar": "d2hvtW_jobsDrawerBar",
+			"dsh-pop-in": "d2hvtW_dsh-pop-in",
+			"treeChild": "d2hvtW_treeChild",
+			"taskBody": "d2hvtW_taskBody",
+			"jobPopValue": "d2hvtW_jobPopValue",
+			"barFold": "d2hvtW_barFold",
+			"treeDot": "d2hvtW_treeDot",
+			"popRows": "d2hvtW_popRows",
+			"nodeSettled": "d2hvtW_nodeSettled",
+			"barFoldGlyph": "d2hvtW_barFoldGlyph",
+			"taskSubject": "d2hvtW_taskSubject",
+			"controls": "d2hvtW_controls",
+			"jumpMenu": "d2hvtW_jumpMenu",
+			"popKey": "d2hvtW_popKey",
+			"cardMeta": "d2hvtW_cardMeta",
+			"phase1": "d2hvtW_phase1",
+			"teamActions": "d2hvtW_teamActions",
+			"nodeGlyph": "d2hvtW_nodeGlyph",
+			"nodeFold": "d2hvtW_nodeFold",
+			"liveGlyph": "d2hvtW_liveGlyph",
+			"cardText": "d2hvtW_cardText",
+			"barAction": "d2hvtW_barAction",
+			"treeDisclosure": "d2hvtW_treeDisclosure",
+			"popActivityBlock": "d2hvtW_popActivityBlock",
+			"treeRowActive": "d2hvtW_treeRowActive",
+			"popTitleRow": "d2hvtW_popTitleRow",
+			"teamTasks": "d2hvtW_teamTasks",
+			"nodeError": "d2hvtW_nodeError",
+			"barDot": "d2hvtW_barDot",
+			"popGroup": "d2hvtW_popGroup",
+			"jobsDrawerCount": "d2hvtW_jobsDrawerCount",
+			"edge": "d2hvtW_edge",
+			"dsh-card-in": "d2hvtW_dsh-card-in",
+			"nodeCurrent": "d2hvtW_nodeCurrent",
+			"popHead": "d2hvtW_popHead",
+			"popActionIcon": "d2hvtW_popActionIcon",
+			"kindChip": "d2hvtW_kindChip",
+			"taskDangerArmed": "d2hvtW_taskDangerArmed",
+			"jobsAutoNote": "d2hvtW_jobsAutoNote",
+			"jumpMoreButton": "d2hvtW_jumpMoreButton",
+			"controlText": "d2hvtW_controlText",
+			"jobsDrawerBody": "d2hvtW_jobsDrawerBody",
+			"depth0": "d2hvtW_depth0",
+			"taskMore": "d2hvtW_taskMore",
+			"jobsLabel": "d2hvtW_jobsLabel",
+			"treeRow": "d2hvtW_treeRow",
+			"taskMarkdown": "d2hvtW_taskMarkdown",
+			"treeView": "d2hvtW_treeView",
+			"taskOwnerRow": "d2hvtW_taskOwnerRow",
+			"nodeTeam": "d2hvtW_nodeTeam",
+			"edgeWorkflow": "d2hvtW_edgeWorkflow",
+			"cardBar": "d2hvtW_cardBar",
+			"popValue": "d2hvtW_popValue",
+			"controlBtn": "d2hvtW_controlBtn",
+			"controlBtnActive": "d2hvtW_controlBtnActive"
 		};
 		//#endregion
 		//#region src/client/tasks-shared.tsx
@@ -17994,10 +20331,10 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			document.head.appendChild(tag);
 		}
 		var tasks_canvas_module_css_default = {
-			"loadingGlyph": "ck4neW_loadingGlyph",
 			"loading": "ck4neW_loading",
-			"nodeTitle": "ck4neW_nodeTitle",
-			"nodeTitlePlain": "ck4neW_nodeTitlePlain"
+			"nodeTitlePlain": "ck4neW_nodeTitlePlain",
+			"loadingGlyph": "ck4neW_loadingGlyph",
+			"nodeTitle": "ck4neW_nodeTitle"
 		};
 		//#endregion
 		//#region src/client/TasksGraph.tsx
@@ -19770,6 +22107,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		function terminalBlockLabels() {
 			return {
 				...blockLabels(),
+				commandLine: (line) => t("sideChatBlockCommandLine", { line }),
 				signal: (signal) => t("sideChatBlockSignal", { signal }),
 				exitCode: (exitCode) => t("sideChatBlockExitCode", { code: exitCode }),
 				noExitCode: t("sideChatBlockNoExitCode"),
@@ -19791,18 +22129,18 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			document.head.appendChild(tag);
 		}
 		var FloatingWindow_module_css_default = {
-			"footer": "ao083W_footer",
-			"window": "ao083W_window",
-			"titleBar": "ao083W_titleBar",
-			"titleActions": "ao083W_titleActions",
 			"title": "ao083W_title",
-			"handleRight": "ao083W_handleRight",
-			"handleCorner": "ao083W_handleCorner",
-			"close": "ao083W_close",
-			"handleBottom": "ao083W_handleBottom",
-			"handle": "ao083W_handle",
 			"body": "ao083W_body",
-			"bodyFill": "ao083W_bodyFill"
+			"titleBar": "ao083W_titleBar",
+			"handle": "ao083W_handle",
+			"footer": "ao083W_footer",
+			"handleRight": "ao083W_handleRight",
+			"close": "ao083W_close",
+			"bodyFill": "ao083W_bodyFill",
+			"handleBottom": "ao083W_handleBottom",
+			"window": "ao083W_window",
+			"handleCorner": "ao083W_handleCorner",
+			"titleActions": "ao083W_titleActions"
 		};
 		//#endregion
 		//#region src/client/FloatingWindow.tsx
@@ -19846,7 +22184,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		/** How much of the title bar must stay on screen while dragging. */
 		const KEEP_ON_SCREEN = 48;
 		/** Free space kept at the viewport edges. */
-		const VIEWPORT_MARGIN$1 = 8;
+		const VIEWPORT_MARGIN = 8;
 		/** Room a window never takes from the viewport (title bar + margins). */
 		const MIN_VIEWPORT_HEIGHT = 160;
 		/** Clamp one number into `[min, max]` (max first, so an inverted range is safe). */
@@ -19861,16 +22199,16 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* check lost it.
 		*/
 		function clampOrigin(start, size, viewport) {
-			const fullyInside = viewport - size - VIEWPORT_MARGIN$1;
-			return fullyInside >= VIEWPORT_MARGIN$1 ? clamp(start, VIEWPORT_MARGIN$1, fullyInside) : clamp(start, KEEP_ON_SCREEN - size, viewport - KEEP_ON_SCREEN);
+			const fullyInside = viewport - size - VIEWPORT_MARGIN;
+			return fullyInside >= VIEWPORT_MARGIN ? clamp(start, VIEWPORT_MARGIN, fullyInside) : clamp(start, KEEP_ON_SCREEN - size, viewport - KEEP_ON_SCREEN);
 		}
 		/** The viewport-clamped initial box of one window. */
 		function initialBox(anchor, size, min, viewport) {
 			const width = clamp(size?.width ?? viewport.width * DEFAULT_WIDTH_RATIO, min.width, Math.max(min.width, viewport.width - 16));
 			const height = clamp(size?.height ?? viewport.height * DEFAULT_HEIGHT_RATIO, min.height, Math.max(min.height, viewport.height - 16));
 			const rect = anchor?.getBoundingClientRect();
-			const left = rect === void 0 ? (viewport.width - width) / 2 : clamp(rect.left, VIEWPORT_MARGIN$1, viewport.width - width - VIEWPORT_MARGIN$1);
-			const top = rect === void 0 ? Math.max(VIEWPORT_MARGIN$1, (viewport.height - height) / 2) : clamp(rect.bottom + 6, VIEWPORT_MARGIN$1, viewport.height - height - VIEWPORT_MARGIN$1);
+			const left = rect === void 0 ? (viewport.width - width) / 2 : clamp(rect.left, VIEWPORT_MARGIN, viewport.width - width - VIEWPORT_MARGIN);
+			const top = rect === void 0 ? Math.max(VIEWPORT_MARGIN, (viewport.height - height) / 2) : clamp(rect.bottom + 6, VIEWPORT_MARGIN, viewport.height - height - VIEWPORT_MARGIN);
 			return {
 				left: Math.round(left),
 				top: Math.round(top),
@@ -19986,8 +22324,8 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 				const growY = drag.axis === "x" ? 0 : event.clientY - drag.startY;
 				pendingBoxRef.current = {
 					...drag.box,
-					width: clamp(drag.box.width + growX, min.width, Math.max(min.width, window.innerWidth - drag.box.left - VIEWPORT_MARGIN$1)),
-					height: clamp(drag.box.height + growY, min.height, Math.max(min.height, window.innerHeight - drag.box.top - VIEWPORT_MARGIN$1))
+					width: clamp(drag.box.width + growX, min.width, Math.max(min.width, window.innerWidth - drag.box.left - VIEWPORT_MARGIN)),
+					height: clamp(drag.box.height + growY, min.height, Math.max(min.height, window.innerHeight - drag.box.top - VIEWPORT_MARGIN))
 				};
 				resizeBatcher.schedule(() => {
 					const pending = pendingBoxRef.current;
@@ -20111,6 +22449,56 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		*/
 		/** How long the kill button stays armed before it needs re-confirming. */
 		const JOB_KILL_ARM_MS = 3e3;
+		/** The cadence of a live row's elapsed text. */
+		const ELAPSED_TICK_MS = 1e3;
+		/**
+		* Whether the PAGE is hidden (a background browser tab). The drawer's clock
+		* must not tick for a document nobody is looking at, and it must show the
+		* truth the moment the page comes back — hence a subscription rather than a
+		* one-shot read.
+		*/
+		function usePageHidden() {
+			const [hidden, setHidden] = (0, react.useState)(() => typeof document !== "undefined" && document.hidden === true);
+			(0, react.useEffect)(() => {
+				if (typeof document === "undefined") return void 0;
+				const sync = () => {
+					setHidden(document.hidden === true);
+				};
+				document.addEventListener("visibilitychange", sync);
+				return () => {
+					document.removeEventListener("visibilitychange", sync);
+				};
+			}, []);
+			return hidden;
+		}
+		/**
+		* One live row's elapsed text. The clock lives HERE — in the span it prints —
+		* and not in the drawer: `setNow(Date.now())` in the drawer handed React a new
+		* value every second, so the whole row list was rebuilt once per tick (and a
+		* parked Tasks tab kept doing it). A memoized span that owns its own second
+		* re-renders one text node per tick instead, and creates no timer at all while
+		* the row is settled, the drawer is collapsed (nothing renders it) or the page
+		* is not really on screen. Leaving and re-entering visibility re-reads the
+		* clock, so the elapsed time shown on return is current, not the value frozen
+		* when the tab was parked.
+		*/
+		const LiveElapsed = (0, react.memo)(function LiveElapsed(props) {
+			const { startedAt, finishedAt, live, visible } = props;
+			const running = live && visible;
+			const [now, setNow] = (0, react.useState)(() => Date.now());
+			(0, react.useEffect)(() => {
+				if (!running) return void 0;
+				setNow(Date.now());
+				const timer = window.setInterval(() => {
+					setNow(Date.now());
+				}, ELAPSED_TICK_MS);
+				return () => {
+					window.clearInterval(timer);
+				};
+			}, [running]);
+			const elapsed = (live ? now : finishedAt ?? startedAt) - startedAt;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: formatJobDuration(elapsed, t) });
+		});
 		/** The Tag tone of one job status. */
 		function jobTone(job) {
 			if (job.status === "running") return "info";
@@ -20119,7 +22507,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			return "neutral";
 		}
 		function JobsDrawer(props) {
-			const { rows, agentCount, jobs, onOpenOutput, openJobId } = props;
+			const { rows, agentCount, jobs, onOpenOutput, openJobId, visible = true } = props;
 			const autoOpen = agentCount < 8;
 			/** Manual override; undefined = follow the auto rule. */
 			const [manualOpen, setManualOpen] = (0, react.useState)(void 0);
@@ -20130,7 +22518,9 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			const [armedId, setArmedId] = (0, react.useState)(void 0);
 			const [killingId, setKillingId] = (0, react.useState)(void 0);
 			const [killErrorId, setKillErrorId] = (0, react.useState)(void 0);
-			const [now, setNow] = (0, react.useState)(() => Date.now());
+			/** The page's own visibility: the elapsed clocks below are gated on it. */
+			const pageHidden = usePageHidden();
+			const ticking = visible && !pageHidden;
 			const liveCount = (0, react.useMemo)(() => rows.reduce((count, row) => count + (isJobLive(row.job) ? 1 : 0), 0), [rows]);
 			const multiOwner = (0, react.useMemo)(() => new Set(rows.map((row) => row.ownerSessionId)).size > 1, [rows]);
 			(0, react.useEffect)(() => {
@@ -20142,16 +22532,6 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 					window.clearTimeout(timer);
 				};
 			}, [armedId]);
-			(0, react.useEffect)(() => {
-				if (liveCount === 0) return;
-				setNow(Date.now());
-				const timer = window.setInterval(() => {
-					setNow(Date.now());
-				}, 1e3);
-				return () => {
-					window.clearInterval(timer);
-				};
-			}, [liveCount]);
 			const kill = (0, react.useCallback)(async (row) => {
 				if (jobs === void 0) return;
 				setKillingId(row.job.id);
@@ -20212,12 +22592,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 							const armed = armedId === job.id;
 							const killing = killingId === job.id;
 							const killFailed = killErrorId === job.id;
-							const elapsed = live ? now - job.startedAt : (job.finishedAt ?? job.startedAt) - job.startedAt;
-							const secondary = [
-								...multiOwner ? [row.ownerTitle] : [],
-								...job.detail !== void 0 && job.detail !== "" ? [job.detail] : [],
-								formatJobDuration(elapsed, t)
-							].filter(Boolean).join(" · ");
+							const meta = [...multiOwner ? [row.ownerTitle] : [], ...job.detail !== void 0 && job.detail !== "" ? [job.detail] : []].filter(Boolean).join(" · ");
 							return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 								className: tasks_graph_module_css_default.jobsRow,
 								"data-settled": live ? "false" : "true",
@@ -20226,7 +22601,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 									variant: "ghost",
 									size: "sm",
 									className: tasks_graph_module_css_default.jobsRowMain,
-									"aria-label": `${job.label} ${jobStatusLabel(job.status, t)} ${secondary}`,
+									"aria-label": `${job.label} ${jobStatusLabel(job.status, t)}${meta === "" ? "" : ` ${meta}`}`,
 									title: t("jobViewOutput"),
 									onClick: (event) => {
 										onOpenOutput(row, event.currentTarget);
@@ -20249,9 +22624,14 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 											tone: jobTone(job),
 											children: jobStatusLabel(job.status, t)
 										}),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
 											className: tasks_graph_module_css_default.jobsMeta,
-											children: secondary
+											children: [meta === "" ? "" : `${meta} · `, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LiveElapsed, {
+												startedAt: job.startedAt,
+												finishedAt: job.finishedAt,
+												live,
+												visible: ticking
+											})]
 										})
 									]
 								}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
@@ -20289,7 +22669,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* (follow-latest, two-click kill).
 		*/
 		function JobOutputWindow(props) {
-			const { jobs, job, ownerSessionId, observed, anchor, onClose } = props;
+			const { jobs, job, ownerSessionId, observed, diagnostics: diagnosticTarget, anchor, onClose } = props;
 			const [follow, setFollow] = (0, react.useState)(true);
 			const [copied, setCopied] = (0, react.useState)(false);
 			const [armed, setArmed] = (0, react.useState)(false);
@@ -20336,7 +22716,12 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 				onClose,
 				...anchor === void 0 ? {} : { anchor },
 				bodyRef,
-				actions: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+				actions: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ContextDiagnosticsButton, {
+					kind: "job",
+					target: diagnosticTarget,
+					iconSize: 12,
+					onNavigate: onClose
+				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 					variant: "ghost",
 					size: "sm",
 					icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCopyOutlineRegular, { size: 12 }),
@@ -20351,7 +22736,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 							}, 1500);
 						});
 					}
-				}) }),
+				})] }),
 				footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 					className: tasks_graph_module_css_default.jobPopActions,
 					children: [
@@ -20446,172 +22831,6 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 					] })
 				]
 			});
-		}
-		//#endregion
-		//#region src/client/AnchoredPopover.tsx
-		/**
-		* The anchored floating popover of the Tasks page (node details, job output,
-		* workflow run detail): a viewport-anchored card portaled to `document.body`,
-		* positioned below its anchor and flipped above when the viewport bottom
-		* would clip it. Dismissal follows the proven selection-popup contract
-		* (fixes upstream issue #425): outside mousedown, Escape, document hidden,
-		* window blur, and the ANCHOR leaving the viewport (tab switches flip the
-		* pane to display:none, which has no DOM event — the IntersectionObserver
-		* geometry signal is the only reliable one).
-		*
-		* DRAGGABLE mode: the job-output popover must be movable (a long log needs to
-		* sit wherever the reader puts it). While `draggable`, dragging the card (or
-		* its `data-popover-handle` area) moves it; the offset is clamped to the
-		* viewport and a double click re-anchors it. The card stays portaled and
-		* viewport-positioned — DSH 0.1.5 has no host free-window API, so the drag
-		* is implemented here rather than reaching for a platform window.
-		*/
-		/** The popover's default visual width (viewport-clamped). */
-		const POP_WIDTH = 264;
-		/** Free space kept at the viewport edges. */
-		const VIEWPORT_MARGIN = 8;
-		/**
-		* Render a viewport-anchored popover. The caller owns WHAT is shown inside;
-		* this component owns geometry, dragging and dismissal. Changing the anchor
-		* re-measures and resets any drag offset.
-		*/
-		function AnchoredPopover(props) {
-			const { anchor, onClose, draggable = false, width = POP_WIDTH, children } = props;
-			const cardRef = (0, react.useRef)(null);
-			const onCloseRef = (0, react.useRef)(onClose);
-			onCloseRef.current = onClose;
-			const [pos, setPos] = (0, react.useState)(null);
-			/** Reader-applied drag offset (added to the anchored position). */
-			const [offset, setOffset] = (0, react.useState)({
-				x: 0,
-				y: 0
-			});
-			const offsetRef = (0, react.useRef)(offset);
-			offsetRef.current = offset;
-			/** The anchored baseline: a drag always starts from the measured position. */
-			const baseRef = (0, react.useRef)({
-				left: 0,
-				top: 0
-			});
-			const cardWidth = Math.min(width, window.innerWidth - 16);
-			(0, react.useLayoutEffect)(() => {
-				if (anchor === null) {
-					setPos(null);
-					return;
-				}
-				const card = cardRef.current;
-				if (card === null) return;
-				const rect = anchor.getBoundingClientRect();
-				const height = card.offsetHeight;
-				let top = rect.bottom + 6;
-				if (top + height > window.innerHeight - VIEWPORT_MARGIN) top = Math.max(VIEWPORT_MARGIN, rect.top - height - 6);
-				const left = Math.min(Math.max(VIEWPORT_MARGIN, rect.left), Math.max(VIEWPORT_MARGIN, window.innerWidth - cardWidth - VIEWPORT_MARGIN));
-				baseRef.current = {
-					left,
-					top
-				};
-				setPos({
-					left: left + offsetRef.current.x,
-					top: top + offsetRef.current.y
-				});
-			}, [
-				anchor,
-				children,
-				cardWidth
-			]);
-			(0, react.useEffect)(() => {
-				setOffset({
-					x: 0,
-					y: 0
-				});
-			}, [anchor]);
-			/** Drag the card (buttons inside it keep working). */
-			const onPointerDown = (0, react.useCallback)((event) => {
-				if (!draggable || event.button !== 0) return;
-				if (event.target.closest("button, input, textarea, select, a, [data-popover-no-drag]") !== null) return;
-				event.preventDefault();
-				const startX = event.clientX;
-				const startY = event.clientY;
-				const start = offsetRef.current;
-				const base = baseRef.current;
-				const onMove = (move) => {
-					const nextX = Math.min(Math.max(start.x + (move.clientX - startX), VIEWPORT_MARGIN - base.left), Math.max(VIEWPORT_MARGIN - base.left, window.innerWidth - cardWidth - VIEWPORT_MARGIN - base.left));
-					const nextY = Math.min(Math.max(start.y + (move.clientY - startY), VIEWPORT_MARGIN - base.top), Math.max(VIEWPORT_MARGIN - base.top, window.innerHeight - 48 - base.top));
-					setOffset({
-						x: nextX,
-						y: nextY
-					});
-					setPos({
-						left: base.left + nextX,
-						top: base.top + nextY
-					});
-				};
-				const onUp = () => {
-					window.removeEventListener("pointermove", onMove);
-					window.removeEventListener("pointerup", onUp);
-					window.removeEventListener("pointercancel", onUp);
-				};
-				window.addEventListener("pointermove", onMove);
-				window.addEventListener("pointerup", onUp);
-				window.addEventListener("pointercancel", onUp);
-			}, [draggable, cardWidth]);
-			(0, react.useEffect)(() => {
-				if (anchor === null) return;
-				const onMouseDown = (event) => {
-					const card = cardRef.current;
-					if (card !== null && (card === event.target || card.contains(event.target))) return;
-					if (anchor === event.target || anchor.contains(event.target)) return;
-					onCloseRef.current();
-				};
-				const onKeyDown = (event) => {
-					if (event.key === "Escape") onCloseRef.current();
-				};
-				const onHidden = () => {
-					if (document.hidden) onCloseRef.current();
-				};
-				const onBlur = () => {
-					onCloseRef.current();
-				};
-				document.addEventListener("mousedown", onMouseDown, true);
-				document.addEventListener("keydown", onKeyDown, true);
-				document.addEventListener("visibilitychange", onHidden);
-				window.addEventListener("blur", onBlur);
-				let observer;
-				if (typeof IntersectionObserver !== "undefined") {
-					observer = new IntersectionObserver((entries) => {
-						for (const entry of entries) if (!entry.isIntersecting) onCloseRef.current();
-					}, { threshold: 0 });
-					observer.observe(anchor);
-				}
-				return () => {
-					document.removeEventListener("mousedown", onMouseDown, true);
-					document.removeEventListener("keydown", onKeyDown, true);
-					document.removeEventListener("visibilitychange", onHidden);
-					window.removeEventListener("blur", onBlur);
-					observer?.disconnect();
-				};
-			}, [anchor]);
-			if (anchor === null) return null;
-			return (0, react_dom.createPortal)(/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-				ref: cardRef,
-				role: "dialog",
-				style: {
-					position: "fixed",
-					left: pos?.left ?? -9999,
-					top: pos?.top ?? -9999,
-					width: cardWidth,
-					zIndex: 90,
-					visibility: pos === null ? "hidden" : "visible"
-				},
-				onPointerDown,
-				onDoubleClick: draggable ? () => {
-					setOffset({
-						x: 0,
-						y: 0
-					});
-				} : void 0,
-				children
-			}), document.body);
 		}
 		//#endregion
 		//#region src/client/sidechat-transcript.ts
@@ -21281,6 +23500,10 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* The ROOT node has no child to embed — it IS the main session — and a host
 		* without the `subagentchat` type has no sidebar to open into, so both keep the
 		* single button.
+		*
+		* The optional `children` slot carries the card's OTHER footer control (the
+		* diagnostics jump): the two live in one row so the card still has exactly one
+		* action band, and the split's own box stays fixed-width beside it.
 		*/
 		function JumpActions(props) {
 			const { node, asideAvailable, onJump } = props;
@@ -21289,46 +23512,50 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			(0, _deepseek_ai_dsh_client_ui_primitives.useDismissOnOutsidePointer)(rootRef, open, setOpen);
 			const split = asideAvailable && node.childAddress !== void 0;
 			const primaryPlace = split ? "side" : "main";
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-				variant: "primary",
-				size: "sm",
-				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconRightUpOutlineRegular, { size: 12 }),
-				onClick: () => {
-					onJump(node, primaryPlace);
-				},
-				children: t("tasksNodeJump")
-			}), split && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-				className: tasks_graph_module_css_default.jumpMore,
-				ref: rootRef,
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 					variant: "primary",
 					size: "sm",
-					className: tasks_graph_module_css_default.jumpMoreButton,
-					"aria-label": t("tasksNodeOpenMain"),
-					"aria-haspopup": "menu",
-					"aria-expanded": open,
-					title: t("tasksNodeOpenMain"),
+					icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconRightUpOutlineRegular, { size: 12 }),
 					onClick: () => {
-						setOpen((current) => !current);
+						onJump(node, primaryPlace);
 					},
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutlineRegular, { size: 12 })
-				}), open && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.MenuSurface, {
-					compact: true,
-					className: tasks_graph_module_css_default.jumpMenu,
-					role: "menu",
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-						variant: "ghost",
+					children: t("tasksNodeJump")
+				}),
+				split && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+					className: tasks_graph_module_css_default.jumpMore,
+					ref: rootRef,
+					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+						variant: "primary",
 						size: "sm",
-						role: "menuitem",
-						className: tasks_graph_module_css_default.jumpMenuItem,
+						className: tasks_graph_module_css_default.jumpMoreButton,
+						"aria-label": t("tasksNodeOpenMain"),
+						"aria-haspopup": "menu",
+						"aria-expanded": open,
+						title: t("tasksNodeOpenMain"),
 						onClick: () => {
-							setOpen(false);
-							onJump(node, "main");
+							setOpen((current) => !current);
 						},
-						children: t("tasksNodeOpenMain")
-					})
-				})]
-			})] });
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutlineRegular, { size: 12 })
+					}), open && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.MenuSurface, {
+						compact: true,
+						className: tasks_graph_module_css_default.jumpMenu,
+						role: "menu",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+							variant: "ghost",
+							size: "sm",
+							role: "menuitem",
+							className: tasks_graph_module_css_default.jumpMenuItem,
+							onClick: () => {
+								setOpen(false);
+								onJump(node, "main");
+							},
+							children: t("tasksNodeOpenMain")
+						})
+					})]
+				}),
+				props.children
+			] });
 		}
 		/**
 		* The agent node detail popover.
@@ -21355,6 +23582,20 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			const elapsed = elapsedMs(node.metrics?.timing, Date.now());
 			const usageTip = usage === void 0 ? void 0 : usageTitle(usage);
 			const activity = activityLine(node);
+			/**
+			* The diagnostics jump's address: a child node carries the durable
+			* parent/child address its catalog row built, and the ROOT node has none —
+			* it IS the tree's main session — so it is addressed by its own session id.
+			* A node whose address is incomplete (a stale parent, a synthesized member)
+			* yields no diagnostics control; the transcript's original footer gate is
+			* independent of this optional integration.
+			*/
+			const diagnosticsAddress = node.parentId === void 0 ? void 0 : diagnosticAddressOf(node.id, node.childAddress);
+			const diagnosticsTarget = (node.parentId === void 0 ? true : diagnosticsAddress !== void 0) ? {
+				sessionId: node.id,
+				label: node.label,
+				...diagnosticsAddress === void 0 ? {} : { address: diagnosticsAddress }
+			} : void 0;
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: tasks_graph_module_css_default.popCard,
 				children: [
@@ -21448,7 +23689,14 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(JumpActions, {
 							node,
 							asideAvailable: props.asideAvailable,
-							onJump
+							onJump,
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ContextDiagnosticsButton, {
+								kind: "agent",
+								target: diagnosticsTarget,
+								iconSize: 14,
+								className: tasks_graph_module_css_default.popActionIcon,
+								onNavigate: props.onClose
+							})
 						})
 					})
 				]
@@ -22205,18 +24453,18 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			document.head.appendChild(tag);
 		}
 		var SubagentView_module_css_default = {
-			"subagentEmpty": "wxwsGW_subagentEmpty",
-			"subagentTitle": "wxwsGW_subagentTitle",
-			"subagentSubject": "wxwsGW_subagentSubject",
-			"subagentEmptyHint": "wxwsGW_subagentEmptyHint",
 			"subagentHeader": "wxwsGW_subagentHeader",
-			"subagentRefresh": "wxwsGW_subagentRefresh",
+			"subagentSep": "wxwsGW_subagentSep",
 			"subagent": "wxwsGW_subagent",
-			"subagentError": "wxwsGW_subagentError",
-			"subagentHeading": "wxwsGW_subagentHeading",
+			"subagentEmpty": "wxwsGW_subagentEmpty",
 			"subagentCount": "wxwsGW_subagentCount",
+			"subagentRefresh": "wxwsGW_subagentRefresh",
+			"subagentEmptyHint": "wxwsGW_subagentEmptyHint",
+			"subagentError": "wxwsGW_subagentError",
+			"subagentTitle": "wxwsGW_subagentTitle",
 			"subagentErrorRetry": "wxwsGW_subagentErrorRetry",
-			"subagentSep": "wxwsGW_subagentSep"
+			"subagentHeading": "wxwsGW_subagentHeading",
+			"subagentSubject": "wxwsGW_subagentSubject"
 		};
 		//#endregion
 		//#region src/client/SubagentView.tsx
@@ -22255,20 +24503,88 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		const POLL_MS$3 = 3e3;
 		/** Poll cadence of the workflow-run and team views while the page is visible. */
 		const TELEMETRY_POLL_MS = 5e3;
+		/** The empty live map / run list: ONE identity, so a reset that changes
+		*  nothing (or a poll that returns nothing) never re-renders the page. */
+		const NO_LIVE = {};
+		const NO_RUNS = [];
+		/**
+		* Whether two activity summaries say the same thing. Every field the cards
+		* read is compared — the activity line (`running`, `preparing`,
+		* `runningDetail`) and the settled tally (`counts`) — and nothing else, so a
+		* re-serialized but equal summary is not a change.
+		*/
+		function sameSummary(left, right) {
+			if (left === right) return true;
+			if (left === void 0 || right === void 0) return false;
+			if (left.running !== right.running || left.preparing !== right.preparing || left.runningDetail !== right.runningDetail || left.counts.length !== right.counts.length) return false;
+			return left.counts.every((entry, index) => {
+				const other = right.counts[index];
+				return entry.kind === other.kind && entry.count === other.count;
+			});
+		}
+		/** Whether two children's live views say the same thing (see the card render
+		*  sites for the fields: the running flag, the detail text, the summary). */
+		function sameLiveView(left, right) {
+			if (left === right) return true;
+			if (left === void 0 || right === void 0) return false;
+			return left.running === right.running && left.text === right.text && left.lastEventTime === right.lastEventTime && sameSummary(left.summary, right.summary);
+		}
+		/**
+		* Whether two `subagents.live` answers are the same map. The route answers with
+		* a FRESH object graph on every tick; publishing it unconditionally re-derived
+		* the whole agent tree and the graph layout every 3 s although nothing had
+		* changed.
+		*/
+		function sameLive(left, right) {
+			if (left === right) return true;
+			const keys = Object.keys(left);
+			if (keys.length !== Object.keys(right).length) return false;
+			return keys.every((key) => Object.prototype.hasOwnProperty.call(right, key) && sameLiveView(left[key], right[key]));
+		}
+		/** Whether two workflow-run answers are the same list (runs → phases →
+		*  members, field by field). */
+		function sameRuns(left, right) {
+			if (left === right) return true;
+			if (left.length !== right.length) return false;
+			return left.every((run, index) => {
+				const other = right[index];
+				if (run.runId !== other.runId || run.name !== other.name || run.originSessionId !== other.originSessionId || run.status !== other.status || run.stopReason !== other.stopReason || run.startedSeq !== other.startedSeq || run.startedAt !== other.startedAt || run.finishedAt !== other.finishedAt || run.phases.length !== other.phases.length) return false;
+				return run.phases.every((phase, phaseIndex) => {
+					const peer = other.phases[phaseIndex];
+					if (phase.title !== peer.title || phase.members.length !== peer.members.length) return false;
+					return phase.members.every((member, memberIndex) => {
+						const mate = peer.members[memberIndex];
+						return member.seq === mate.seq && member.label === mate.label && member.phase === mate.phase && member.childId === mate.childId && member.outcome === mate.outcome;
+					});
+				});
+			});
+		}
 		/**
 		* One shared live-preview poller for the whole tree. At most ONE
 		* `subagents.live` request in flight (self-scheduling); a response settling
 		* after the poller stopped is dropped via the aborted signal.
 		*/
 		function useSubagentLive(rootId, active) {
-			const [live, setLive] = (0, react.useState)({});
+			const [live, setLive] = (0, react.useState)(NO_LIVE);
+			/**
+			* What has been PUBLISHED. An equal answer must not reach React at all: even
+			* handing `setLive` an updater that returns the previous state lets React
+			* render the component once ("React may still need to render that specific
+			* component again before bailing out"), and one render re-derives the whole
+			* tasks model and the graph layout hanging off it.
+			*/
+			const published = (0, react.useRef)(NO_LIVE);
 			(0, react.useEffect)(() => {
-				setLive({});
+				published.current = NO_LIVE;
+				setLive((current) => Object.keys(current).length === 0 ? current : NO_LIVE);
 			}, [rootId]);
 			const poll = (0, react.useCallback)(async (signal) => {
 				if (rootId === void 0) return;
 				const result = await api.subagentsLive(rootId, signal);
-				if (!signal.aborted) setLive(result.live);
+				if (signal.aborted) return;
+				if (sameLive(published.current, result.live)) return;
+				published.current = result.live;
+				setLive((current) => sameLive(current, result.live) ? current : result.live);
 			}, [rootId]);
 			usePolling(rootId !== void 0 && active, poll, {
 				intervalMs: POLL_MS$3,
@@ -22279,14 +24595,19 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		}
 		/** The folded workflow runs of the tree (poll-driven; empty when none). */
 		function useWorkflowRuns(rootId, active) {
-			const [runs, setRuns] = (0, react.useState)([]);
+			const [runs, setRuns] = (0, react.useState)(NO_RUNS);
+			const published = (0, react.useRef)(NO_RUNS);
 			(0, react.useEffect)(() => {
-				setRuns([]);
+				published.current = NO_RUNS;
+				setRuns((current) => current.length === 0 ? current : NO_RUNS);
 			}, [rootId]);
 			const poll = (0, react.useCallback)(async (signal) => {
 				if (rootId === void 0) return;
 				const result = await api.workflowsList(rootId, signal);
-				if (!signal.aborted) setRuns(result.runs);
+				if (signal.aborted) return;
+				if (sameRuns(published.current, result.runs)) return;
+				published.current = result.runs;
+				setRuns((current) => sameRuns(current, result.runs) ? current : result.runs);
 			}, [rootId]);
 			usePolling(rootId !== void 0 && active, poll, {
 				intervalMs: TELEMETRY_POLL_MS,
@@ -22398,6 +24719,38 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 				foldedIds,
 				expandedGroups
 			]);
+			/**
+			* The tree's agent nodes by their session id — the ONLY sanctioned source of
+			* a job's diagnostics target. A jobs row is a roster entry under a WATCHED
+			* session (`row.ownerSessionId`) whose real owner is `job.owner`; a roster
+			* payload without an owner is announced under the watching session, which is
+			* not necessarily the session that owns the job. Resolving through the model
+			* therefore answers both halves at once: whether the owning session is in
+			* this tree at all, and what that node's address is (the root node has none
+			* — it IS the tree's main session — and must be addressed by its own id).
+			*/
+			const agentNodeBySession = (0, react.useMemo)(() => {
+				const nodes = /* @__PURE__ */ new Map();
+				for (const node of model) if (node.kind === "agent") nodes.set(node.id, node);
+				return nodes;
+			}, [model]);
+			/**
+			* The diagnostics target of one conversation, when this tree holds its node.
+			* The label is the NODE's own — the card's durable label, resolved by the
+			* model — never a caller's title: a jobs row only knows the watched
+			* session's display title, which is not the owning agent's name.
+			*/
+			const diagnosticsTargetOf = (0, react.useCallback)((ownerId) => {
+				const node = agentNodeBySession.get(ownerId);
+				if (node === void 0) return void 0;
+				const address = diagnosticAddressOf(node.id, node.childAddress);
+				if (node.parentId !== void 0 && address === void 0) return void 0;
+				return {
+					sessionId: node.id,
+					label: node.label,
+					...address === void 0 ? {} : { address }
+				};
+			}, [agentNodeBySession]);
 			/**
 			* Show one conversation in the main view. DSH moved child and session
 			* navigation OFF `ISessions` (0.1.6's `open` / `openSubagent` are gone from
@@ -22595,7 +24948,8 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 						job: row.job,
 						observed: treeJobs.observed[row.job.id],
 						anchor: popover.anchor,
-						onClose: closePopover
+						onClose: closePopover,
+						diagnostics: row.job.owner === void 0 ? void 0 : diagnosticsTargetOf(row.job.owner)
 					});
 				}
 				const node = model.find((candidate) => candidate.id === popover.nodeId);
@@ -22611,7 +24965,8 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 					node,
 					asideAvailable,
 					onJump: jumpToNode,
-					onOpenTask: openTaskById
+					onOpenTask: openTaskById,
+					onClose: closePopover
 				});
 				return null;
 			})();
@@ -22744,6 +25099,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 						jobs: treeJobs.jobs,
 						observed: observedJob,
 						openJobId: popover?.kind === "job" ? popover.jobId : void 0,
+						visible: active,
 						onOpenOutput: (row, anchor) => {
 							setPopover(popover?.kind === "job" && popover.jobId === row.job.id ? null : {
 								kind: "job",
@@ -22779,20 +25135,25 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* pull stays the single source of transcript data and a dropped socket
 		* self-heals through the same pull (plus the slow fallback poll).
 		*
-		* Lifecycle mirrors use-dir-watch: one socket for the component's lifetime,
-		* a full `watch` frame re-announcing the subscription set whenever the id
-		* list changes, exponential backoff (1s → 15s) on a drop, and no socket at
-		* all while the list is empty.
+		* Lifecycle mirrors use-dir-watch: one socket for the component's lifetime
+		* while the tab is VISIBLE, a full `watch` frame re-announcing the
+		* subscription set whenever the id list changes, exponential backoff
+		* (1s → 15s) on a drop, and no socket at all while the list is empty or the
+		* tab is parked. The host keeps every visited tab body mounted, so an un-gated
+		* subscription would leave one socket per side-chat tab the reader ever
+		* opened — and a notice delivered to a parked tab re-pulled a transcript
+		* nobody could see. A parked tab therefore closes its socket, and a late frame
+		* from that dead socket is dropped (`closed`) instead of triggering a pull.
 		*/
 		/** How long to wait before re-opening a dropped socket; failures back off to the cap. */
 		const RETRY_BASE_MS = 1e3;
 		const RETRY_MAX_MS = 15e3;
 		/**
 		* Follow the host's staleness notices for the given side-chat threads.
-		* @param options - the watched ids and the invalidation callback.
+		* @param options - the watched ids, the tab's visibility, and the invalidation callback.
 		*/
 		function useSidechatPush(options) {
-			const { threadIds, onInvalidate } = options;
+			const { threadIds, visible = true, onInvalidate } = options;
 			const idsKey = threadIds.join("\0");
 			const wanted = (0, react.useMemo)(() => idsKey === "" ? [] : idsKey.split("\0"), [idsKey]);
 			const wantedRef = (0, react.useRef)(wanted);
@@ -22801,8 +25162,12 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			invalidateRef.current = onInvalidate;
 			/** Set by the socket effect; re-announces the current subscription set. */
 			const reconcileRef = (0, react.useRef)(() => {});
-			/** Stable dependency: re-open the socket only when it gains or loses every id. */
-			const subscribed = idsKey !== "";
+			/**
+			* Stable dependency: re-open the socket only when it gains or loses every
+			* id — or when the tab is parked/shown. Visibility is an INPUT here rather
+			* than a second mechanism, so a parked tab is simply "not subscribed".
+			*/
+			const subscribed = visible && idsKey !== "";
 			(0, react.useEffect)(() => {
 				if (!subscribed) return;
 				let socket = null;
@@ -22825,6 +25190,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 						reconcile();
 					};
 					socket.onmessage = (event) => {
+						if (closed) return;
 						if (typeof event.data !== "string") return;
 						let frame;
 						try {
@@ -22853,6 +25219,18 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			(0, react.useEffect)(() => {
 				reconcileRef.current();
 			}, [idsKey]);
+			/**
+			* Shown again after being parked: the socket is new (nothing the host
+			* noticed in between was delivered), so the transcript may have moved. Pull
+			* once through the same invalidation path the host's own frames use.
+			*/
+			const wasSubscribedRef = (0, react.useRef)(subscribed);
+			(0, react.useEffect)(() => {
+				const previous = wasSubscribedRef.current;
+				wasSubscribedRef.current = subscribed;
+				if (!subscribed || previous) return;
+				for (const id of wantedRef.current) invalidateRef.current(id);
+			}, [subscribed]);
 		}
 		//#endregion
 		//#region \0dsh-css:/home/runner/work/DSH-better-sidebar/DSH-better-sidebar/src/client/SideChatView.module.css.mjs
@@ -22866,53 +25244,53 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			document.head.appendChild(tag);
 		}
 		var SideChatView_module_css_default = {
-			"sidechatComposerSpacer": "_4BEzFa_sidechatComposerSpacer",
-			"sidechatIconBtn": "_4BEzFa_sidechatIconBtn",
-			"sidechatHero": "_4BEzFa_sidechatHero",
-			"sidechatHeroTitle": "_4BEzFa_sidechatHeroTitle",
-			"sidechatPending": "_4BEzFa_sidechatPending",
-			"sidechatRowChevron": "_4BEzFa_sidechatRowChevron",
-			"sidechatRowFailed": "_4BEzFa_sidechatRowFailed",
-			"sidechatHeroDesc": "_4BEzFa_sidechatHeroDesc",
-			"sidechatRowSummary": "_4BEzFa_sidechatRowSummary",
-			"sidechatRowIcon": "_4BEzFa_sidechatRowIcon",
-			"sidechatSendBtn": "_4BEzFa_sidechatSendBtn",
-			"sidechatScroll": "_4BEzFa_sidechatScroll",
 			"sidechatAssistant": "_4BEzFa_sidechatAssistant",
-			"sidechatShimmerText": "_4BEzFa_sidechatShimmerText",
-			"sidechatPendingText": "_4BEzFa_sidechatPendingText",
-			"sidechatErrorRow": "_4BEzFa_sidechatErrorRow",
-			"sidechat": "_4BEzFa_sidechat",
 			"sidechatPendingMeta": "_4BEzFa_sidechatPendingMeta",
-			"sidechatRowCode": "_4BEzFa_sidechatRowCode",
-			"sidechatStatusText": "_4BEzFa_sidechatStatusText",
+			"sidechat": "_4BEzFa_sidechat",
+			"sidechatComposer": "_4BEzFa_sidechatComposer",
+			"sidechatComposerSpacer": "_4BEzFa_sidechatComposerSpacer",
+			"sidechatRowMeta": "_4BEzFa_sidechatRowMeta",
+			"sidechatRowIcon": "_4BEzFa_sidechatRowIcon",
+			"sidechatPrimaryBtn": "_4BEzFa_sidechatPrimaryBtn",
 			"sidechatRowStatic": "_4BEzFa_sidechatRowStatic",
-			"sidechatRowIn": "_4BEzFa_sidechatRowIn",
-			"sidechatModelName": "_4BEzFa_sidechatModelName",
-			"sidechatHint": "_4BEzFa_sidechatHint",
-			"sidechatModelBtn": "_4BEzFa_sidechatModelBtn",
-			"sidechatRowMono": "_4BEzFa_sidechatRowMono",
-			"sidechatRowLabel": "_4BEzFa_sidechatRowLabel",
 			"sidechatTurnSummary": "_4BEzFa_sidechatTurnSummary",
+			"sidechatModelName": "_4BEzFa_sidechatModelName",
+			"sidechatComposerBar": "_4BEzFa_sidechatComposerBar",
+			"sidechatBtnIn": "_4BEzFa_sidechatBtnIn",
+			"sidechatRowFailed": "_4BEzFa_sidechatRowFailed",
+			"sidechatPending": "_4BEzFa_sidechatPending",
+			"sidechatPendingText": "_4BEzFa_sidechatPendingText",
+			"sidechatRowProse": "_4BEzFa_sidechatRowProse",
+			"sidechatErrorRow": "_4BEzFa_sidechatErrorRow",
+			"sidechatRowSummary": "_4BEzFa_sidechatRowSummary",
+			"sidechatComposerInput": "_4BEzFa_sidechatComposerInput",
+			"sidechatRowBody": "_4BEzFa_sidechatRowBody",
+			"sidechatModelBtn": "_4BEzFa_sidechatModelBtn",
+			"sidechatUser": "_4BEzFa_sidechatUser",
+			"sidechatStatusText": "_4BEzFa_sidechatStatusText",
+			"sidechatIconBtn": "_4BEzFa_sidechatIconBtn",
+			"sidechatScroll": "_4BEzFa_sidechatScroll",
+			"sidechatTipShrink": "_4BEzFa_sidechatTipShrink",
+			"sidechatRowCode": "_4BEzFa_sidechatRowCode",
+			"sidechatSendBtn": "_4BEzFa_sidechatSendBtn",
+			"sidechatHeroDesc": "_4BEzFa_sidechatHeroDesc",
+			"sidechatHero": "_4BEzFa_sidechatHero",
+			"sidechatRowLine": "_4BEzFa_sidechatRowLine",
+			"sidechatRowMono": "_4BEzFa_sidechatRowMono",
+			"sidechatDequeueBtn": "_4BEzFa_sidechatDequeueBtn",
+			"sidechatComposerTools": "_4BEzFa_sidechatComposerTools",
+			"sidechatRow": "_4BEzFa_sidechatRow",
+			"sidechatError": "_4BEzFa_sidechatError",
+			"sidechatRowIn": "_4BEzFa_sidechatRowIn",
+			"sidechatHint": "_4BEzFa_sidechatHint",
+			"sidechatRowLabel": "_4BEzFa_sidechatRowLabel",
+			"sidechatHeroTitle": "_4BEzFa_sidechatHeroTitle",
 			"sidechatSweep": "_4BEzFa_sidechatSweep",
 			"sidechatStatus": "_4BEzFa_sidechatStatus",
-			"sidechatFadeIn": "_4BEzFa_sidechatFadeIn",
-			"sidechatPrimaryBtn": "_4BEzFa_sidechatPrimaryBtn",
-			"sidechatComposer": "_4BEzFa_sidechatComposer",
-			"sidechatRow": "_4BEzFa_sidechatRow",
-			"sidechatComposerInput": "_4BEzFa_sidechatComposerInput",
-			"sidechatUser": "_4BEzFa_sidechatUser",
-			"sidechatComposerBar": "_4BEzFa_sidechatComposerBar",
-			"sidechatError": "_4BEzFa_sidechatError",
-			"sidechatComposerTools": "_4BEzFa_sidechatComposerTools",
 			"sidechatTipAnchor": "_4BEzFa_sidechatTipAnchor",
-			"sidechatTipShrink": "_4BEzFa_sidechatTipShrink",
-			"sidechatRowMeta": "_4BEzFa_sidechatRowMeta",
-			"sidechatBtnIn": "_4BEzFa_sidechatBtnIn",
-			"sidechatDequeueBtn": "_4BEzFa_sidechatDequeueBtn",
-			"sidechatRowBody": "_4BEzFa_sidechatRowBody",
-			"sidechatRowLine": "_4BEzFa_sidechatRowLine",
-			"sidechatRowProse": "_4BEzFa_sidechatRowProse"
+			"sidechatRowChevron": "_4BEzFa_sidechatRowChevron",
+			"sidechatFadeIn": "_4BEzFa_sidechatFadeIn",
+			"sidechatShimmerText": "_4BEzFa_sidechatShimmerText"
 		};
 		//#endregion
 		//#region src/client/SideChatView.tsx
@@ -22988,10 +25366,34 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		/** Where the last side-chat thread of each main session is remembered (the
 		*  client store's own key space, like the diff pane's redaction flag). */
 		const LAST_THREAD_KEY = "dsh-sidebar:v1:sidechat-thread";
+		/**
+		* How many sessions keep their remembered thread. The map lives for the life
+		* of the page and is serialised WHOLE, so it needs both a bound (LRU: the
+		* least recently bound session is forgotten) and — below — a write that is
+		* coalesced instead of re-serialising the map on every bind.
+		*/
+		const LAST_THREAD_MAX = 32;
 		/** The in-memory mirror of {@link LAST_THREAD_KEY}. */
 		const lastThreadBySession = /* @__PURE__ */ new Map();
 		/** Whether the localStorage mirror has been read into the map yet. */
 		let lastThreadsLoaded = false;
+		/** Pending coalesced write of {@link LAST_THREAD_KEY} (undefined = none). */
+		let lastThreadsWrite;
+		/**
+		* Write the whole map once the binds stop coming. A thread switch binds two
+		* or three ids in a row (mint, switch, reattach); serialising per bind was
+		* pure churn for a value nothing reads back mid-page. Best-effort like the
+		* rest of this storage: a denied or full write keeps the in-memory binding.
+		*/
+		function scheduleLastThreadsWrite() {
+			if (lastThreadsWrite !== void 0) window.clearTimeout(lastThreadsWrite);
+			lastThreadsWrite = window.setTimeout(() => {
+				lastThreadsWrite = void 0;
+				try {
+					localStorage.setItem(LAST_THREAD_KEY, JSON.stringify(Object.fromEntries(lastThreadBySession)));
+				} catch {}
+			}, 200);
+		}
 		/**
 		* A native tab's record and its navigation params live in the host's memory
 		* only, so collapsing the sidebar (or restarting DSH) remounts the tab with
@@ -23021,10 +25423,14 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		function rememberSidechatThread(sessionId, threadId) {
 			loadLastThreads();
 			if (lastThreadBySession.get(sessionId) === threadId) return;
+			lastThreadBySession.delete(sessionId);
 			lastThreadBySession.set(sessionId, threadId);
-			try {
-				localStorage.setItem(LAST_THREAD_KEY, JSON.stringify(Object.fromEntries(lastThreadBySession)));
-			} catch {}
+			while (lastThreadBySession.size > LAST_THREAD_MAX) {
+				const oldest = lastThreadBySession.keys().next();
+				if (oldest.done === true) break;
+				lastThreadBySession.delete(oldest.value);
+			}
+			scheduleLastThreadsWrite();
 		}
 		/** The catalog row of one route: the model picker reads its reasoning efforts
 		*  and its default effort. Undefined when the route is not in the catalog
@@ -23280,6 +25686,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 					injectionLabel: t("sideChatInjection"),
 					terminal: {
 						...shared,
+						commandLine: (line) => t("sideChatBlockCommandLine", { line }),
 						signal: (signal) => t("sideChatBlockSignal", { signal }),
 						exitCode: (exitCode) => t("sideChatBlockExitCode", { code: exitCode }),
 						noExitCode: t("sideChatBlockNoExitCode"),
@@ -23518,6 +25925,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			}, [fetchThread, fetchInfo]);
 			useSidechatPush({
 				threadIds: (0, react.useMemo)(() => threadId === void 0 ? [] : [threadId], [threadId]),
+				visible,
 				onInvalidate: handleInvalidate
 			});
 			(0, react.useEffect)(() => {
@@ -24772,6 +27180,12 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* 判定来自插件 host 半区的只读路由（与会话对象同源），**不做任何 DOM 探测**。
 		* 轮询策略：仅在 blank 期间每 1s 重取一次；翻转为非 blank（发出第一条消息）即停止；
 		* 路由/宿主不支持时按非 blank 降级（入口留在会话头，行为与今天一致）。
+		*
+		* 两条稳态约束（v0.25 的稳态开销治理）：
+		* - **页面不可见时不发请求**（隐藏的标签页没有要服务的相位），回到可见时由
+		*   `visibilitychange` 立刻补一次；
+		* - **值没变就不写 state**：相位对象每次都是新的 JSON，无条件 `setPhase(next)` 会让
+		*   一个开着不管的 blank 会话每秒重渲染一次。只有 `blank` 真的翻转才提交。
 		*/
 		/** 轮询间隔：blank 是一次性状态（发一条消息即翻转），无需更快。 */
 		const POLL_MS$1 = 1e3;
@@ -24782,8 +27196,10 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		*/
 		function useSessionPhase(sessionId) {
 			const [phase, setPhase] = (0, react.useState)(void 0);
+			const pushedRef = (0, react.useRef)(void 0);
 			(0, react.useEffect)(() => {
 				if (sessionId === void 0) {
+					pushedRef.current = void 0;
 					setPhase(void 0);
 					return;
 				}
@@ -24794,22 +27210,35 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 					clearInterval(timer);
 					timer = void 0;
 				};
+				/** 只有 `blank` 真的翻转才提交（见 pushedRef 的注释）。 */
+				const push = (next) => {
+					const previous = pushedRef.current;
+					if (previous !== void 0 && previous.blank === next.blank) return;
+					pushedRef.current = next;
+					setPhase(next);
+				};
 				const tick = () => {
+					if (document.hidden) return;
 					sessionPhase(sessionId).then((next) => {
 						if (!alive) return;
-						setPhase(next);
+						push(next);
 						if (!next.blank) stop();
 					}).catch(() => {
 						if (!alive) return;
-						setPhase({ blank: false });
+						push({ blank: false });
 						stop();
 					});
 				};
+				const onVisibilityChange = () => {
+					if (!document.hidden && timer !== void 0) tick();
+				};
 				tick();
 				timer = setInterval(tick, POLL_MS$1);
+				document.addEventListener("visibilitychange", onVisibilityChange);
 				return () => {
 					alive = false;
 					stop();
+					document.removeEventListener("visibilitychange", onVisibilityChange);
 				};
 			}, [sessionId]);
 			return phase;
@@ -24829,9 +27258,39 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* 两个条件都要求，是为了让**失败方向安全**：宿主哪天改了命名，这里读成 `false`
 		* （= 不隐藏），按钮照旧出现、位置由 {@link ./dock-fallback.tsx} 的让位逻辑兜住；
 		* 而不是读成「永远展开」把按钮永久藏掉。
+		*
+		* **全模块只有一份答案、一条表**（v0.25 的稳态开销治理）：早先每个消费者各建一条
+		* 500ms 的表、各做两趟全文档 `querySelectorAll`（本文件 + `dock-fallback.tsx` 共两条），
+		* 与挂载了多少个消费者成正比。现在订阅者只是引用计数——0 → 1 才起表并立刻读一次，
+		* 1 → 0 就停表；消费者再多也只有一条表。
+		*
+		* **页面不可见时表本身不存在**（不是「tick 进来再早退」）：隐藏的页面没有要服务的
+		* 版面，`visibilitychange` 回到可见时才立刻读一次并重新起表。
 		*/
 		/** 复核间隔：与备用入口的位置对齐同一节拍（500ms）。 */
 		const POLL_MS = 500;
+		/** 共享的展开态答案；所有消费者读同一份。 */
+		let open = false;
+		/** 当前订阅者；0 → 1 起表（并立刻读一次），1 → 0 停表。 */
+		const listeners = /* @__PURE__ */ new Set();
+		/** 全模块**唯一**的定时器：消费者再多也只有这一条。 */
+		let timer;
+		/** 真实浏览器里的 document；SSR / 极端环境缺席。 */
+		function pageDocument() {
+			return typeof document === "undefined" ? void 0 : document;
+		}
+		/** 页面是否可见（document 缺席时按可见处理，与旧行为一致）。 */
+		function pageVisible() {
+			const doc = pageDocument();
+			return doc === void 0 || doc.visibilityState !== "hidden";
+		}
+		/** 读一次宿主角落控件：这个元素**可见**才算数（见 {@link readRightPanelOpen}）。 */
+		function isVisible(element) {
+			const rect = element.getBoundingClientRect();
+			if (rect.width <= 0 || rect.height <= 0) return false;
+			const style = getComputedStyle(element);
+			return style.visibility !== "hidden" && style.display !== "none";
+		}
 		/**
 		* 读取一次宿主右侧面板的展开态。
 		*
@@ -24840,33 +27299,81 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* 各 1 个、面板明明已经展开），只有**可见性**才区分得开——展开时可见的是
 		* Collapse（`data-sidebar-right-toggle`），收起时可见的是 Open（`data-sidebar-right-expand`）。
 		* 早先按「属性在不在」判定会一直读成「没展开」，按钮于是照旧出现在宿主编簇旁边。
+		*
+		* **先问「收起态」再问「展开态」**：收起时可见的是 Open 控件（`expand`），一旦量到它
+		* 就能立刻返回 `false` —— 展开态那批 toggle 一次都不用碰，而它们在 DOM 里始终存在，
+		* 量它们纯属白做。只有当 expand 全都不可见时才轮到 toggle（`true` = 至少一个可见）。
+		* 两趟各是一趟循环，不建临时数组，也不对没参与判定的元素读布局。
 		* @returns 展开时为 true；`document` 缺席（SSR/极端环境）时为 false。
 		*/
 		function readRightPanelOpen() {
-			if (typeof document === "undefined") return false;
-			const visible = (element) => {
-				const rect = element.getBoundingClientRect();
-				if (rect.width <= 0 || rect.height <= 0) return false;
-				const style = getComputedStyle(element);
-				return style.visibility !== "hidden" && style.display !== "none";
+			const doc = pageDocument();
+			if (doc === void 0) return false;
+			for (const element of doc.querySelectorAll("[data-sidebar-right-expand]")) if (isVisible(element)) return false;
+			for (const element of doc.querySelectorAll("[data-sidebar-right-toggle]")) if (isVisible(element)) return true;
+			return false;
+		}
+		/** 读一次并广播——答案没变时连 `open` 都不动（订阅者的 setState 会自然 bail out）。 */
+		function publish() {
+			const next = readRightPanelOpen();
+			if (next === open) return;
+			open = next;
+			for (const listener of listeners) listener(next);
+		}
+		function stopTimer$1() {
+			if (timer === void 0) return;
+			clearInterval(timer);
+			timer = void 0;
+		}
+		/** 起表；页面不可见时**不建表**（不是建了再早退）。 */
+		function startTimer$1() {
+			if (timer !== void 0) return;
+			if (!pageVisible()) return;
+			timer = setInterval(publish, POLL_MS);
+		}
+		function onVisibilityChange() {
+			if (!pageVisible()) {
+				stopTimer$1();
+				return;
+			}
+			if (listeners.size === 0) return;
+			publish();
+			startTimer$1();
+		}
+		function subscribe(listener) {
+			const first = listeners.size === 0;
+			listeners.add(listener);
+			if (first) {
+				pageDocument()?.addEventListener("visibilitychange", onVisibilityChange);
+				if (pageVisible()) publish();
+				startTimer$1();
+			}
+			return () => {
+				listeners.delete(listener);
+				if (listeners.size > 0) return;
+				stopTimer$1();
+				pageDocument()?.removeEventListener("visibilitychange", onVisibilityChange);
 			};
-			return [...document.querySelectorAll("[data-sidebar-right-toggle]")].some(visible) && ![...document.querySelectorAll("[data-sidebar-right-expand]")].some(visible);
+		}
+		/**
+		* 首帧同步读取（与旧实现同为渲染期读一次）：可见时读一次并更新共享缓存，但不广播——
+		* 渲染期不能触发别人的更新，其他消费者各自的 state 会在下一次 tick 或订阅时对齐。
+		* 页面不可见时直接用缓存，一次版都不量。
+		*/
+		function primeOpen() {
+			if (!pageVisible()) return open;
+			open = readRightPanelOpen();
+			return open;
 		}
 		/**
 		* 跟踪宿主右侧面板的展开态。
-		* @returns 展开时为 true（首帧同步读取，之后每 500ms 复核一次）。
+		* @returns 展开时为 true（首帧同步读取，之后由模块级共享 poller 每 500ms 复核；
+		*  订阅者归零即停表，页面隐藏期间不起表）。
 		*/
 		function useRightPanelOpen() {
-			const [open, setOpen] = (0, react.useState)(readRightPanelOpen);
-			(0, react.useEffect)(() => {
-				const timer = setInterval(() => {
-					setOpen(readRightPanelOpen());
-				}, POLL_MS);
-				return () => {
-					clearInterval(timer);
-				};
-			}, []);
-			return open;
+			const [isOpen, setIsOpen] = (0, react.useState)(primeOpen);
+			(0, react.useEffect)(() => subscribe(setIsOpen), []);
+			return isOpen;
 		}
 		//#endregion
 		//#region src/client/sidebar/dock-fallback.tsx
@@ -24876,6 +27383,10 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* blank 会话里宿主不渲染会话头，本插件挂在 `header.utilities` 的入口随之不可达；
 		* 这里把同一个开关以 `position: fixed` 放到宿主「Open right sidebar」按钮的**左侧紧邻**
 		* （按该按钮的 rect 对齐，随窗口 resize 与 500ms 周期重对齐）。
+		*
+		* **重对齐的周期表只在入口真的渲染时存在**（v0.25 的稳态开销治理）：正常会话里本组件
+		* 返回 `null`，而 `measure()` 的让位走查要做命中测试——表挂在早退之前时，一个看不见的
+		* 入口会一直烧着这些测量。窗口 resize 监听则是常驻的（见下面的两个 effect）。
 		*
 		* **相位不足以判定互斥**：相位是每 1s 轮询来的，而会话头的入口由宿主在它认为合适的
 		* 时机渲染，两者之间必然有窗口；相位读取失败时还会按「非 blank」降级，一个从未成功
@@ -24889,6 +27400,10 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		const GAP = 8;
 		/** 让位时的搜索步长（像素）：够细以免跨过窄芯片，够粗以免几百次命中测试。 */
 		const STEP_PX = 4;
+		/** 周期重对齐间隔：与宿主角落控件出现的时机无关，500ms 足够跟上版面漂移。 */
+		const REALIGN_MS = 500;
+		/** 让位走查的步数上限：100 步 × 4px = 400px。 */
+		const MAX_RETREAT_STEPS = 100;
 		/**
 		* 整个槽位是否空着——**必须采样多个点**。
 		*
@@ -24970,8 +27485,11 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* 3. **占位与否要真的去问页面**——见 {@link slotOccupied}：页签芯片会把那一排填满，
 		*    按角色筛元素是筛不干净的。
 		*
-		* 因此这里从锚点左侧起逐像素左移，取**最近的一个真的空着**的槽位；一直退到视口
-		* 左缘仍被占时停在最左（宁可贴边，也不叠在宿主控件上）。
+		* 因此这里从锚点左侧起逐像素左移，取**最近的一个真的空着**的槽位。走查是**有界**的：
+		* 最多 {@link MAX_RETREAT_STEPS} 步（400px）——真实的宿主编簇只有几个 28px 按钮，退过
+		* 400px 说明整排都被占着，而每一步都要采样 5 个点做命中测试，不封顶的走查（旧值 400 步）
+		* 会把一次 tick 变成上千次命中测试。到达上限仍未找到空位就接受当前槽位；一直退到
+		* 视口左缘（`left <= 4`）仍被占时停在最左（宁可贴边，也不叠在宿主控件上）。
 		* @returns 视口坐标下的 top/left。
 		*/
 		function measure() {
@@ -24983,7 +27501,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			const rect = anchor.getBoundingClientRect();
 			const top = Math.max(4, rect.top + (rect.height - BUTTON_SIZE) / 2);
 			let left = Math.max(4, rect.left - GAP - BUTTON_SIZE);
-			for (let step = 0; step < 400; step++) {
+			for (let step = 0; step < MAX_RETREAT_STEPS; step++) {
 				if (slotFree(left, top)) break;
 				left -= STEP_PX;
 				if (left <= 4) {
@@ -25001,19 +27519,32 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			const rightOpen = useRightPanelOpen();
 			const [pos, setPos] = (0, react.useState)(measure);
 			const [headerEntry, setHeaderEntry] = (0, react.useState)(headerEntryPresent);
+			const rendered = phase !== void 0 && phase.blank && !headerEntry && !rightOpen;
+			const onResize = (0, react.useCallback)(() => {
+				if (document.hidden) return;
+				const next = measure();
+				setPos((prev) => prev.top === next.top && prev.left === next.left ? prev : next);
+				setHeaderEntry(headerEntryPresent());
+			}, []);
 			(0, react.useEffect)(() => {
-				const onResize = () => {
-					const next = measure();
-					setPos((prev) => prev.top === next.top && prev.left === next.left ? prev : next);
-					setHeaderEntry(headerEntryPresent());
-				};
 				window.addEventListener("resize", onResize);
-				const timer = setInterval(onResize, 500);
 				return () => {
 					window.removeEventListener("resize", onResize);
-					clearInterval(timer);
 				};
-			}, []);
+			}, [onResize]);
+			(0, react.useEffect)(() => {
+				if (!rendered) return;
+				onResize();
+				const timer = setInterval(onResize, REALIGN_MS);
+				const onVisibilityChange = () => {
+					if (!document.hidden) onResize();
+				};
+				document.addEventListener("visibilitychange", onVisibilityChange);
+				return () => {
+					clearInterval(timer);
+					document.removeEventListener("visibilitychange", onVisibilityChange);
+				};
+			}, [rendered, onResize]);
 			if (phase === void 0 || !phase.blank) return null;
 			if (headerEntry) return null;
 			if (rightOpen) return null;
@@ -25841,8 +28372,10 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 							observer?.disconnect();
 							observer = void 0;
 						}
+						startRetry();
 						return;
 					}
+					stopRetry();
 					if (centerColRef.current !== col) {
 						centerColRef.current?.removeAttribute("data-dsh-center-col");
 						centerColRef.current = col;
@@ -25852,6 +28385,16 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 						observer.observe(col);
 						measureCenter();
 					}
+				};
+				let retry;
+				const stopRetry = () => {
+					if (retry === void 0) return;
+					window.clearInterval(retry);
+					retry = void 0;
+				};
+				const startRetry = () => {
+					if (retry !== void 0) return;
+					retry = window.setInterval(locate, 1500);
 				};
 				locate();
 				let locateFrame = null;
@@ -25874,11 +28417,10 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 					attributes: true,
 					attributeFilter: ["style"]
 				});
-				const retry = window.setInterval(locate, 1500);
 				return () => {
 					disposed = true;
 					if (locateFrame !== null) cancelAnimationFrame(locateFrame);
-					window.clearInterval(retry);
+					stopRetry();
 					observer?.disconnect();
 					watcher.disconnect();
 					htmlStyleWatcher.disconnect();
@@ -25892,223 +28434,6 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 				centerMeasured,
 				measureCenter,
 				draggingRef
-			};
-		}
-		//#endregion
-		//#region src/client/native/surface.ts
-		/** The native controller, probed at call time (the service can arrive late). */
-		function controllerOf(ctx) {
-			try {
-				return ctx.get("sidebarRight");
-			} catch {
-				return;
-			}
-		}
-		/**
-		* The on-screen-session feed, as anything outside this module should read it.
-		*
-		* The session-list snapshot carries NO current-session field in any DSH
-		* release (0.1.6 and 0.1.7 both publish only `ids` / `byId` / `phase` plus
-		* projections), so a read of one was always `undefined`: `mounted` is the
-		* only sanctioned source, and the plugin's own type invented the field it
-		* used to read.
-		*
-		* The probe tolerates a host without `mounted` (or a controller the runtime
-		* has not provided yet — the seat race this plugin already hit once on
-		* 0.1.5): the session list then doubles as the change pulse, so a late
-		* service is still picked up on the next list publish instead of never.
-		*
-		* @param ctx - the client context.
-		* @returns the observable face of the mounted seat's session id.
-		*/
-		function mountedSessions(ctx) {
-			return {
-				getSnapshot: () => {
-					try {
-						const mounted = controllerOf(ctx)?.mounted;
-						return typeof mounted?.getSnapshot === "function" ? mounted.getSnapshot() : void 0;
-					} catch {
-						return;
-					}
-				},
-				subscribe: (listener) => {
-					const mounted = controllerOf(ctx)?.mounted;
-					return typeof mounted?.subscribe === "function" ? mounted.subscribe(listener) : ctx.sessions.list.subscribe(listener);
-				}
-			};
-		}
-		/**
-		* The session whose seat is on screen, or `undefined` — no seat is mounted
-		* (global panel, column not mounted) or the host has no mounted feed. Callers
-		* treat `undefined` as "not this session": nothing the plugin draws belongs to
-		* that surface, so it must neither write into it nor manage its column.
-		*
-		* @param ctx - the client context.
-		* @returns the on-screen session id, when there is one.
-		*/
-		function mountedSessionId(ctx) {
-			return mountedSessions(ctx).getSnapshot();
-		}
-		/**
-		* Bind the plugin's write face to the native controller.
-		* @param ctx - the client context (session list + `ctx.sidebarRight`).
-		* @param records - the plugin's native tab record registry.
-		* @returns the surface, plus a disposer unbinding its two feed subscriptions.
-		*/
-		function createNativeSurface(ctx, records) {
-			const pending = [];
-			const controller = () => controllerOf(ctx);
-			const place = (entry) => {
-				const api = controller();
-				if (api === void 0) return false;
-				const onScreen = mountedSessionId(ctx) === entry.sessionId;
-				if (entry.kind === "tab") {
-					const options = {
-						params: entry.params,
-						revealIfOpened: entry.revealIfOpened,
-						...entry.preferNewPane ? { preferNewPane: true } : {}
-					};
-					if (onScreen) {
-						api.openTab(entry.tabKind, options);
-						return true;
-					}
-					return false;
-				}
-				const options = {
-					...entry.line === void 0 ? {} : { params: { line: entry.line } },
-					revealIfOpened: entry.revealIfOpened,
-					...entry.preferNewPane ? { preferNewPane: true } : {}
-				};
-				if (onScreen) {
-					api.openResource(entry.address, options);
-					return true;
-				}
-				return false;
-			};
-			const flushPending = () => {
-				if (pending.length === 0) return;
-				for (let index = pending.length - 1; index >= 0; index--) {
-					const entry = pending[index];
-					if (entry !== void 0 && place(entry)) pending.splice(index, 1);
-				}
-			};
-			const enqueue = (entry) => {
-				if (!place(entry)) pending.push(entry);
-			};
-			/**
-			* The seat session a bare tab id belongs to.
-			*
-			* The public write face speaks ids without sessions (its consumer contract),
-			* while records are per seat session — the same native id names a tab in
-			* EVERY session. The mounted seat answers for a caller acting on what is on
-			* screen; with no seat mounted (a global panel) a unique match across the
-			* live sessions still resolves, and an id that names a tab in more than one
-			* session resolves to none — guessing would write into another conversation.
-			* @param tabId - the native tab id.
-			* @param sessionId - the explicit session, when the caller has one.
-			* @returns the owning session, or undefined.
-			*/
-			const sessionOf = (tabId, sessionId) => {
-				if (sessionId !== void 0) return records.has(sessionId, tabId) ? sessionId : void 0;
-				const mounted = mountedSessionId(ctx);
-				if (mounted !== void 0 && records.has(mounted, tabId)) return mounted;
-				const byId = ctx.sessions.list.getSnapshot().byId ?? {};
-				let found;
-				for (const candidate of Object.keys(byId)) {
-					if (!records.has(candidate, tabId)) continue;
-					if (found !== void 0 && found !== candidate) return void 0;
-					found = candidate;
-				}
-				return found;
-			};
-			/**
-			* Forget the records of sessions that no longer exist.
-			*
-			* A `keepMounted` body survives until its tab or its session ends, and a
-			* session the user DELETED never unmounts anything the plugin can hook, so
-			* its records (and their tree/edit state) would live for the life of the
-			* page. The mounted session is always kept: it can be missing from `byId`
-			* for a moment while the list reloads.
-			*/
-			const evictGoneSessions = () => {
-				try {
-					const live = new Set(Object.keys(ctx.sessions.list.getSnapshot().byId ?? {}));
-					const mounted = mountedSessionId(ctx);
-					if (mounted !== void 0) live.add(mounted);
-					records.retain(live);
-				} catch {}
-			};
-			let mountedUnsubscribe;
-			const onListChange = () => {
-				if (mountedUnsubscribe === void 0) {
-					const mounted = controller()?.mounted;
-					if (typeof mounted?.subscribe === "function") mountedUnsubscribe = mounted.subscribe(flushPending);
-				}
-				flushPending();
-				evictGoneSessions();
-			};
-			const unsubscribeList = ctx.sessions.list.subscribe(onListChange);
-			evictGoneSessions();
-			return {
-				openTab({ sessionId, kind, params, revealIfOpened, preferNewPane }) {
-					enqueue({
-						kind: "tab",
-						sessionId,
-						tabKind: kind,
-						params,
-						revealIfOpened,
-						preferNewPane: preferNewPane === true
-					});
-				},
-				openResource({ sessionId, address, line, revealIfOpened, preferNewPane }) {
-					enqueue({
-						kind: "resource",
-						sessionId,
-						address,
-						line,
-						revealIfOpened,
-						preferNewPane: preferNewPane === true
-					});
-				},
-				fileAddress(sessionId, cwd, path) {
-					return fileAddressFor(sessionId, cwd, path);
-				},
-				tabTypeOf(sessionId, tabId) {
-					return records.get(sessionId, tabId)?.tab.type;
-				},
-				close(sessionId, tabId) {
-					const record = records.get(sessionId, tabId);
-					if (record === void 0) return void 0;
-					records.drop(sessionId, tabId);
-					const api = controller();
-					if (api !== void 0) {
-						if (sessionId === mountedSessionId(ctx)) api.close(tabId);
-						else if (api.closeIn !== void 0) api.closeIn(sessionId, tabId);
-					}
-					return {
-						type: record.tab.type,
-						title: record.tab.title,
-						...record.tab.meta === void 0 ? {} : { meta: record.tab.meta }
-					};
-				},
-				update(tabId, patch, sessionId) {
-					const owner = sessionOf(tabId, sessionId);
-					if (owner === void 0) return false;
-					records.update(owner, tabId, patch);
-					return true;
-				},
-				activate(tabId, sessionId) {
-					if (sessionOf(tabId, sessionId) === void 0) return false;
-					controller()?.focus?.(tabId);
-					return true;
-				},
-				has: (tabId, sessionId) => sessionOf(tabId, sessionId) !== void 0,
-				pathTabs: () => records.pathTabs(),
-				flushPending,
-				dispose: () => {
-					unsubscribeList();
-					mountedUnsubscribe?.();
-				}
 			};
 		}
 		//#endregion
@@ -26428,52 +28753,154 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* The client session list carries the session HEADER cwd, captured once when
 		* the session started. The HOST is the authority on where the session is
 		* actually working, because it can follow the agent into a linked git worktree
-		*  including one belonging to a different repository. Ask the host, prefer
-		* its answer, and re-ask when the window regains focus, when a file refresh is
-		* requested, and on a slow timer so a mid-session worktree move is picked up.
+		* including one belonging to a different repository. Ask the host, prefer
+		* its answer, and re-ask when the window regains focus, when the document
+		* becomes visible again, when a file refresh is requested, and on a slow timer
+		* so a mid-session worktree move is picked up.
+		*
+		* ONE store per `sessionId` (the `ui/git-status.ts` shape: a module-level Map
+		* of slots with `retain()` / `release()` and `useSyncExternalStore`). The host
+		* keeps every visited native tab body mounted, so a per-hook poller meant one
+		* 5 s `session.cwd` POST per live body — three visited tabs on one session
+		* were three requests per tick, and each of those lands in the host's
+		* `activeWorktreeRootOf` (up to four real `git` spawns on a cache miss, whose
+		* TTL is shorter than this cadence). The store therefore runs EXACTLY ONE
+		* timer per session, and only while at least one subscriber reports itself
+		* visible (`visible: false` is what the host hands a parked tab body, and the
+		* sidebar shell passes its own panel-open state). A parked body holds no timer
+		* and issues no request; `document.hidden` pauses the timers the same way.
+		*
+		* A parked body keeps its last answer — releasing the last visible subscriber
+		* stops the timer but does not drop the resolved root, so re-showing a tab
+		* paints the worktree the session was in instead of falling back to the frozen
+		* list cwd. Becoming visible again (a subscriber turning visible, the document
+		* turning visible, or the window regaining focus) refreshes immediately once
+		* instead of waiting for the next tick. Both listeners belong to the store:
+		* the old per-instance `window.focus` listener was added once per mounted hook
+		* and never removed for the life of the page.
 		*
 		* Shared by both client surfaces: the plugin's own sidebar shell
 		* (`Sidebar.tsx`) and the native DSH right-sidebar tab body
-		* (`native/tab-adapter.tsx`). They used to disagree  the native body read the
+		* (`native/tab-adapter.tsx`). They used to disagree — the native body read the
 		* frozen list summary directly, so a host-side worktree change never reached
 		* the file list drawn in the host's own right Sidebar.
 		*/
 		/** How often the host is re-asked while the document is visible. */
 		const SESSION_ROOT_POLL_MS = 5e3;
+		const slots = /* @__PURE__ */ new Map();
+		/** Whether the store's one-shot window/document listeners are attached. */
+		let listening = false;
+		/** The slot of one session, created on first use. */
+		function slotOf(sessionId) {
+			const existing = slots.get(sessionId);
+			if (existing !== void 0) return existing;
+			const slot = {
+				sessionId,
+				cwd: void 0,
+				version: 0,
+				visible: 0,
+				timer: void 0,
+				generation: 0,
+				listeners: /* @__PURE__ */ new Set()
+			};
+			slots.set(sessionId, slot);
+			attachListeners();
+			return slot;
+		}
+		function notify(slot) {
+			slot.version += 1;
+			for (const listener of slot.listeners) listener();
+		}
+		/**
+		* Ask the host where the session is working now. A hidden document issues
+		* nothing: the answer would only drive panels nobody can see.
+		*/
+		function fetchSlot(slot) {
+			if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+			const generation = ++slot.generation;
+			api.sessionCwd({ sessionId: slot.sessionId }).then((result) => {
+				if (generation !== slot.generation) return;
+				if (slot.cwd === result.cwd) return;
+				slot.cwd = result.cwd;
+				notify(slot);
+			}).catch(() => {});
+		}
+		function startTimer(slot) {
+			if (slot.timer !== void 0) return;
+			slot.timer = window.setInterval(() => {
+				fetchSlot(slot);
+			}, SESSION_ROOT_POLL_MS);
+		}
+		function stopTimer(slot) {
+			if (slot.timer === void 0) return;
+			window.clearInterval(slot.timer);
+			slot.timer = void 0;
+		}
+		/** Re-read every session that has at least one visible subscriber. */
+		function refreshVisible() {
+			for (const slot of slots.values()) if (slot.visible > 0) fetchSlot(slot);
+		}
+		/**
+		* Attach the store's listeners once, on the first slot: `focus` and the file
+		* refresh are window events, so per-hook listeners accumulated for the life of
+		* the page (a body that remounts on every session switch added another).
+		*/
+		function attachListeners() {
+			if (listening) return;
+			listening = true;
+			window.addEventListener("focus", refreshVisible);
+			window.addEventListener("dsh-sidebar:refresh-files", refreshVisible);
+			document.addEventListener("visibilitychange", () => {
+				if (document.visibilityState === "hidden") {
+					for (const slot of slots.values()) stopTimer(slot);
+					return;
+				}
+				for (const slot of slots.values()) {
+					if (slot.visible === 0) continue;
+					startTimer(slot);
+					fetchSlot(slot);
+				}
+			});
+		}
+		/** One more visible subscriber: the first one owns the timer and re-reads now. */
+		function retain(slot) {
+			slot.visible += 1;
+			if (slot.visible > 1) return;
+			startTimer(slot);
+			fetchSlot(slot);
+		}
+		/** One fewer visible subscriber: the last one takes the timer with it. */
+		function release(slot) {
+			slot.visible = Math.max(0, slot.visible - 1);
+			if (slot.visible === 0) stopTimer(slot);
+		}
 		/**
 		* Resolve the live workspace root for one session.
 		* @param ctx - client plugin context (owns the session list feed + API).
 		* @param sessionId - the session to resolve; `undefined` resolves to `undefined`.
+		* @param options - `visible: false` parks this caller (no polling).
 		* @returns the host's active root, falling back to the list summary cwd.
 		*/
-		function useSessionRoot(ctx, sessionId) {
+		function useSessionRoot(ctx, sessionId, options = {}) {
+			const { visible = true } = options;
 			const summaryCwd = (0, react.useSyncExternalStore)((0, react.useMemo)(() => (listener) => ctx.sessions.list.subscribe(listener), [ctx]), () => sessionId === void 0 ? void 0 : ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd);
-			const [fetched, setFetched] = (0, react.useState)(void 0);
-			(0, react.useEffect)(() => {
-				if (sessionId === void 0) return;
-				let cancelled = false;
-				const load = () => {
-					if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-					api.sessionCwd({ sessionId }).then((result) => {
-						if (cancelled) return;
-						setFetched((previous) => previous !== void 0 && previous.sessionId === sessionId && previous.cwd === result.cwd ? previous : {
-							sessionId,
-							cwd: result.cwd
-						});
-					}).catch(() => {});
-				};
-				load();
-				window.addEventListener("focus", load);
-				window.addEventListener("dsh-sidebar:refresh-files", load);
-				const timer = window.setInterval(load, SESSION_ROOT_POLL_MS);
+			const slot = sessionId === void 0 ? void 0 : slotOf(sessionId);
+			const subscribe = (0, react.useCallback)((listener) => {
+				if (slot === void 0) return () => {};
+				slot.listeners.add(listener);
 				return () => {
-					cancelled = true;
-					window.removeEventListener("focus", load);
-					window.removeEventListener("dsh-sidebar:refresh-files", load);
-					window.clearInterval(timer);
+					slot.listeners.delete(listener);
 				};
-			}, [sessionId]);
-			return fetched !== void 0 && fetched.sessionId === sessionId ? fetched.cwd : summaryCwd;
+			}, [slot]);
+			(0, react.useSyncExternalStore)(subscribe, () => slot?.version ?? 0, () => slot?.version ?? 0);
+			(0, react.useEffect)(() => {
+				if (slot === void 0 || !visible) return void 0;
+				retain(slot);
+				return () => {
+					release(slot);
+				};
+			}, [slot, visible]);
+			return slot?.cwd ?? summaryCwd;
 		}
 		//#endregion
 		//#region src/client/Sidebar.tsx
@@ -26615,7 +29042,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 					for (const tag of tags) tag.remove();
 				};
 			}, [customCss]);
-			const cwd = useSessionRoot(ctx, sessionId);
+			const cwd = useSessionRoot(ctx, sessionId, { visible: state?.bottomOpen === true });
 			const newTabOptions = (0, react.useMemo)(() => state === void 0 || sessionId === void 0 ? [] : buildNewTabOptions(state, ctx, {
 				sessionId,
 				cwd
@@ -27167,7 +29594,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			/** The session-state authority (bound through {@link NativeTabRecords.attachStore}). */
 			let store;
 			/** The session's expansion set (absent session = nothing expanded yet). */
-			const expandedOf = (sessionId) => store?.getSessionStates().get(sessionId)?.expanded ?? [];
+			const expandedOf = (sessionId) => store?.getSessionState(sessionId)?.expanded ?? [];
 			/**
 			* Re-read every view's expansion projection from the session state. Views
 			* that changed get a version bump (which is what re-renders their bodies);
@@ -27176,10 +29603,9 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			*/
 			const syncExpanded = () => {
 				if (store === void 0) return;
-				const states = store.getSessionStates();
 				let changed = false;
 				for (const [id, entry] of views) {
-					const next = states.get(entry.scope.sessionId)?.expanded ?? [];
+					const next = store.getSessionState(entry.scope.sessionId)?.expanded ?? [];
 					if (samePaths(entry.expanded, next)) continue;
 					views.set(id, {
 						...entry,
@@ -27361,7 +29787,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			const seatSessionId = props.sessionId;
 			const scopeSessionId = props.sessionIdOf?.(info) ?? seatSessionId;
 			useRecordVersion(records, seatSessionId, nativeTab.id);
-			const cwd = useSessionRoot(ctx, scopeSessionId);
+			const cwd = useSessionRoot(ctx, scopeSessionId, { visible: nativeTab.visible });
 			const scope = (0, react.useMemo)(() => ({
 				sessionId: scopeSessionId,
 				cwd
@@ -27400,7 +29826,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 				tab: view.tab,
 				visible: nativeTab.visible
 			}));
-			return (0, react.createElement)(RenderBoundary, { className: sidebar_module_css_default.tabBoundaryError }, (0, react.createElement)("div", {
+			return (0, react.createElement)(RenderBoundary, { className: sidebar_module_css_default.tabBoundaryError }, (0, react.createElement)(ContextDiagnosticsHost, { controller: props.diagnostics }, (0, react.createElement)("div", {
 				className: sidebar_module_css_default.nativeTabHost,
 				"data-dsh-native-tab-host": ""
 			}, (0, react.createElement)(descriptor.component, {
@@ -27431,7 +29857,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 						meta: { childSessionId }
 					}, scope);
 				}
-			})));
+			}))));
 		}
 		/**
 		* A live tab chip: the type's glyph followed by the synthetic record's title
@@ -27692,7 +30118,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* @returns a disposer unregistering everything.
 		*/
 		function registerNativeSurface(deps) {
-			const { ctx, store, service, records, reportFailure } = deps;
+			const { ctx, store, service, records, reportFailure, diagnostics } = deps;
 			records.attachStore(store);
 			const seat = ctx.inject(["sidebarRightTabs"], (injected) => {
 				const tabs = injected.get("sidebarRightTabs");
@@ -27721,7 +30147,8 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 							inject: (sessionId) => ({
 								...injected,
 								...params,
-								sessionId
+								sessionId,
+								...diagnostics === void 0 ? {} : { diagnostics }
 							})
 						}, NativeTabBody)));
 						disposers.push(ctx.slots.inject("sidebar.right.pane.tab.title", () => ctx.slots.register({
@@ -28000,6 +30427,10 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* an icon field, the plugin identifies only its own localized row after the
 		* dialog mounts. The marker owns no shell structure and is removed on fiber
 		* disposal, so the adaptation remains HMR-safe.
+		*
+		* Mutation bursts are coalesced into one sync per animation frame: the
+		* observer watches the whole body, so chat streaming would otherwise run the
+		* document-wide row query at microtask cadence.
 		*/
 		const SETTINGS_NAV_MARKER = "data-dsh-better-sidebar-settings-nav";
 		/**
@@ -28010,6 +30441,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		*/
 		function registerSettingsNavIcon(label) {
 			let disposed = false;
+			let frame = null;
 			const sync = () => {
 				if (disposed) return;
 				const currentLabel = label().trim();
@@ -28017,16 +30449,27 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 				for (const button of buttons) if (currentLabel.length > 0 && button.textContent?.trim() === currentLabel) button.setAttribute(SETTINGS_NAV_MARKER, "");
 				else button.removeAttribute(SETTINGS_NAV_MARKER);
 			};
+			/** One sync per frame at most: the first mutation of a burst schedules it. */
+			const schedule = () => {
+				if (disposed || frame !== null) return;
+				frame = requestAnimationFrame(() => {
+					frame = null;
+					sync();
+				});
+			};
 			sync();
-			const observer = new MutationObserver(sync);
+			const observer = new MutationObserver(schedule);
 			observer.observe(document.body, {
 				childList: true,
-				subtree: true,
-				characterData: true
+				subtree: true
 			});
 			return () => {
 				disposed = true;
 				observer.disconnect();
+				if (frame !== null) {
+					cancelAnimationFrame(frame);
+					frame = null;
+				}
 				document.querySelectorAll(`[${SETTINGS_NAV_MARKER}]`).forEach((element) => {
 					element.removeAttribute(SETTINGS_NAV_MARKER);
 				});
@@ -29519,11 +31962,13 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			const nativeRecords = createNativeTabRecords();
 			const nativeSurface = createNativeSurface(ctx, nativeRecords);
 			service.setSurface(nativeSurface);
+			const diagnostics = createContextDiagnosticsHost(ctx);
 			ctx.effect(() => registerNativeSurface({
 				ctx,
 				store: sidebarStore,
 				service,
 				records: nativeRecords,
+				diagnostics,
 				reportFailure: (phase, error) => {
 					fail(`native ${phase}`, error);
 				}
@@ -29533,6 +31978,10 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 				nativeSurface.dispose();
 				service.setSurface(void 0);
 			}, "dsh-better-sidebar: native right-Sidebar surface");
+			ctx.effect(() => registerContextDiagnosticsUI(ctx, diagnostics), "dsh-better-sidebar: context diagnostics surfaces");
+			ctx.effect(() => () => {
+				diagnostics.dispose();
+			}, "dsh-better-sidebar: context diagnostics controller");
 			ctx.effect(() => registerBuiltins(ctx, service), "dsh-better-sidebar: register built-in tabs and viewers");
 			try {
 				setChunkModuleSystem(ctx.modules);
@@ -29620,10 +32069,10 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 							host.setAttribute("data-dsh-better-sidebar", "");
 							document.body.appendChild(host);
 							root = (0, react_dom_client.createRoot)(host);
-							root.render((0, react.createElement)(RenderBoundary, { className: sidebar_module_css_default.boundaryError }, (0, react.createElement)(Sidebar, {
+							root.render((0, react.createElement)(RenderBoundary, { className: sidebar_module_css_default.boundaryError }, (0, react.createElement)(ContextDiagnosticsHost, { controller: diagnostics }, (0, react.createElement)(Sidebar, {
 								ctx,
 								store: sidebarStore
-							})));
+							}))));
 							mounted = true;
 							guardAnchor();
 							scheduleHostCheck();

@@ -4,8 +4,8 @@ This is an independent classroom distribution, not an official DeepSeek, DataEle
 
 | Component | Source / reference | License and local changes |
 | --- | --- | --- |
-| DSH Desktop 0.11.1 | https://github.com/dataelement/dsh-desktop/tree/v0.11.1 | MIT, Copyright 2026 DataElement; original release downloaded, no application code redistributed here |
-| dsh-better-sidebar 0.26.0 | https://github.com/omdsh-dev/DSH-better-sidebar/tree/v0.26.0 (9323f48d0946432ffd94655df1c115a1cd89f34c) | MIT, Copyright 2026 dsh-external; unmodified prebuilt package source subset, LICENSE in plugin |
+| DSH Desktop 0.12.1 | https://github.com/dataelement/dsh-desktop/tree/v0.12.1 | MIT, Copyright 2026 DataElement; original release downloaded, no application code redistributed here |
+| dsh-better-sidebar 0.28.0 | https://github.com/omdsh-dev/DSH-better-sidebar/tree/v0.28.0 (83faf70940160e5cd4c5332f5400aa8f4dbbb6d6) | MIT, Copyright 2026 dsh-external; unmodified prebuilt package source subset, LICENSE in plugin |
 | dsh-suggest-prompt | https://github.com/studyzy/dsh-suggest-prompt (b766d30b55ced7194fdf4d1e9eb4eb398bba90ac, upstream 1.2.2) | MIT, Copyright 2026 studyzy; local Desktop 1.2.2-desktop.2 adaptation, provenance in UPSTREAM.json, LICENSE in plugin |
 | MCP / Skills managers | https://github.com/Yinxe/deepseek-harness-plugins | MIT, Copyright 2026 Yinxe; Desktop wrapper around upstream host/client, LICENSE in each plugin. Exact historical adaptation base was not recorded; do not infer it from current upstream HEAD |
 | Tavily provider | https://github.com/deepseek-ai/deepseek-harness | MIT, Copyright 2026 DeepSeek; provider adapted to Tavily and Desktop, official MIT text retained in LICENSE-DeepSeek |
