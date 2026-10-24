@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "0.7.0",
+  "version": "0.8.0",
   "updated": "2026-10-24",
   "repository": "https://github.com/kylin985ti/dsh-desktop-classroom",
   "desktop": {
@@ -48,13 +48,13 @@
       "upstream": "https://github.com/omdsh-dev/DSH-better-sidebar"
     },
     {
-      "path": "plugins/dsh-suggest-prompt",
-      "name": "@studyzy/dsh-suggest-prompt",
-      "version": "1.2.2-desktop.2",
-      "title": "下一轮提示词预测",
-      "capability": "灰色候选、Tab 填入、Esc 忽略",
-      "setup": "需自行连接 Ollama Cloud，默认 deepseek-v4.1-flash",
-      "upstream": "https://github.com/studyzy/dsh-suggest-prompt"
+      "path": "plugins/dsh-ghost-prompt",
+      "name": "dsh-ghost-prompt",
+      "version": "1.2.2",
+      "title": "输入预测",
+      "capability": "每轮回答后预测下一句，输入框显示灰色幽灵文字，→ 或 Tab 采纳、Esc 忽略",
+      "setup": "默认跟随会话模型；可在插件页选模型，或添加自定义 provider 与 Key",
+      "upstream": "https://github.com/MochiNek0/dsh-ghost-prompt"
     },
     {
       "path": "plugins/dsh-library",
@@ -148,8 +148,18 @@
       "version": "1.8.1",
       "title": "任务栏工作台",
       "capability": "多级任务、甘特图与任务月历、可选工作域扫描、AI 连续规划、图上选择接受与整批撤销",
-      "setup": "可单独打包安装；不随默认九插件安装器启用，不包含任务数据或个人会话",
+      "setup": "可单独打包安装；不随默认插件安装器启用，不包含任务数据或个人会话",
       "distribution": "source-only"
+    }
+  ],
+  "npmPlugins": [
+    {
+      "name": "@anionex/dsh-computer-use",
+      "version": "0.3.4",
+      "title": "macOS 桌面操作",
+      "capability": "无障碍优先的应用观察与操作；动作绑定新鲜观察、按 App 授权，不移动真实光标",
+      "setup": "需 macOS 14+；系统设置授权辅助功能，截图另需屏幕录制；首次操作某个 App 时确认",
+      "upstream": "https://github.com/Anionex/dsh-computer-use"
     }
   ]
 }

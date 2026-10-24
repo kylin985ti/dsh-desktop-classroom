@@ -50,11 +50,11 @@ ${config.platforms.map(p => '| ' + p.name + ' | ' + p.status + ' |').join('\n')}
 
 | 插件 | 固定版本 | 能力 | 首次使用 / 边界 |
 | --- | --- | --- | --- |
-${config.plugins.map(p => '| ' + (p.upstream ? '[' + p.title + '](' + p.upstream + ')' : p.title) + ' | ' + p.version + ' | ' + p.capability + ' | ' + p.setup + ' |').join('\n')}
+${[...config.plugins, ...(config.npmPlugins ?? []).map(p => ({ ...p, version: p.version + '（npm）' }))].map(p => '| ' + (p.upstream ? '[' + p.title + '](' + p.upstream + ')' : p.title) + ' | ' + p.version + ' | ' + p.capability + ' | ' + p.setup + ' |').join('\n')}
 
 ${config.workbenches?.length ? `## 可选工作台源码
 
-以下工作台单独保存源码与必要构建产物，**不随默认九插件安装器启用**。按 [任务栏说明](docs/TASK_BOARD.md) 单独构建与安装；同步不包含个人任务、会话或工作域资料。
+以下工作台单独保存源码与必要构建产物，**不随默认插件安装器启用**。按 [任务栏说明](docs/TASK_BOARD.md) 单独构建与安装；同步不包含个人任务、会话或工作域资料。
 
 | 工作台 | 版本 | 能力 | 分发边界 |
 | --- | --- | --- | --- |

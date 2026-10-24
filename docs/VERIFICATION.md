@@ -1,5 +1,14 @@
 # 验证记录
 
+## 0.8.0 输入预测替换与桌面操作插件
+
+日期：2026-10-24。环境：macOS 26.3.1（Apple Silicon），Desktop 0.12.1 / Harness 0.2.1-rc.2。
+
+- `dsh-ghost-prompt` 1.2.2 以预构建包收录，入口 id 为 `next-prompt`，与旧 `suggest-prompt` 入口不冲突；安装器不会自动卸载旧插件，升级前置步骤已写入变更日志与验收清单。
+- `@anionex/dsh-computer-use` 0.3.4 含 macOS 原生 helper（universal，约 861 KB）。按仓库「公开负载不放二进制」的约束，它不进入逐文件校验清单；安装器改用 Desktop 原生 registry 安装路径按 `name@version` 获取，doctor 与安装回执按 generation 核对版本。
+- 维护者本机已安装该版本并验证：`/_dsh/computer-use/settings` 返回 `ready: true`，辅助功能与屏幕录制均为 `granted`，`computer_list_apps` 与 `computer_observe` 正常返回；未执行任何写操作作为验收。
+- 未在全新临时 DSH home 重跑完整安装，也未做学员机界面验收；macOS 14 以下不支持该插件。
+
 ## 0.7.0 Desktop 0.12.1 与增强侧栏 0.28.0
 
 日期：2026-10-24。环境：macOS 26.3.1（Apple Silicon），Desktop 0.12.1 / Harness 0.2.1-rc.2。本轮只更新 Desktop 固定版本、两个安装包 SHA256 与增强侧栏版本，其余插件、工作台与安装协议不变。

@@ -26,7 +26,8 @@ const onlyIndex = args.indexOf('--only');
 const onlyName = onlyIndex < 0 ? null : args[onlyIndex + 1];
 if (onlyIndex >= 0 && (!onlyName || onlyName.startsWith('--'))) throw new Error('Missing --only plugin name');
 const plugins = onlyName ? manifest.plugins.filter(p => p.name === onlyName) : manifest.plugins;
-if (!plugins.length) throw new Error('Unknown --only plugin: ' + onlyName);
+const npmPlugins = onlyName ? (manifest.npmPlugins ?? []).filter(p => p.name === onlyName) : (manifest.npmPlugins ?? []);
+if (!plugins.length && !npmPlugins.length) throw new Error('Unknown --only plugin: ' + onlyName);
 const appInfo = JSON.parse(await fs.readFile(join(appRoot, 'package.json'), 'utf8'));
 if (appInfo.version !== manifest.desktop.version) throw new Error(`Desktop ${appInfo.version} is outside the tested pin ${manifest.desktop.version}; no changes made.`);
 await verifyPayload(root);
@@ -69,6 +70,10 @@ if (args.includes('--doctor')) {
   for (const p of plugins) {
     const g = generations.find(g => selected.includes(g.id) && g.pluginName === p.name && g.version === p.version);
     report.plugins.push({ name: p.name, expected: p.version, installed: !!g });
+  }
+  for (const p of npmPlugins) {
+    const g = generations.find(g => selected.includes(g.id) && g.pluginName === p.name && g.version === p.version);
+    report.plugins.push({ name: p.name, expected: p.version, installed: !!g, source: 'npm' });
   }
   try { const receipt = JSON.parse(await fs.readFile(join(home, 'classroom/wechat-bridge.json'), 'utf8')); report.wechatBridge = { installed: receipt.version === manifest.wechatBridge.version && existsSync(receipt.app), expected: manifest.wechatBridge.version, authorization: 'student-owned; not inspected' }; } catch { report.wechatBridge = { installed: false, minimumMacOS: manifest.wechatBridge.minimumMacOS }; }
   console.log(JSON.stringify(report, null, 2));
@@ -140,6 +145,31 @@ for (const p of plugins) {
   if (!g) { await result.rollback?.(); throw new Error('Native generation verification failed: ' + p.name); }
   result.commit?.();
   const row = { name: p.name, version: p.version, sourceHash, generation: g.id, action: 'installed' };
+  report.plugins.push(row); progress.set(p.name, row);
+  await saveReceipt('installing');
+}
+for (const p of npmPlugins) {
+  const sourceHash = createHash('sha256').update('npm:' + p.name + '@' + p.version).digest('hex');
+  const current = await readDesired(home);
+  generations = await listGenerations(home);
+  const installed = generations.find(g => current.includes(g.id) && g.pluginName === p.name && g.version === p.version);
+  if (installed) {
+    const row = { name: p.name, version: p.version, sourceHash, generation: installed.id, action: 'unchanged', source: 'npm' };
+    report.plugins.push(row); progress.set(p.name, row);
+    console.log('Unchanged: ' + p.name); continue;
+  }
+  console.log('Installing: ' + p.name + '@' + p.version + ' from npm');
+  const result = await backend.install({ kind: 'registry', spec: p.name + '@' + p.version,
+    expectedName: p.name, expectedVersion: p.version, autoInstallPeers: false, minimumReleaseAge: 1440 });
+  if (result?.packageResult?.exitCode !== 0 || result.bundle !== p.name) {
+    await result?.rollback?.();
+    throw new Error('Native installation failed for ' + p.name + ' (npm). See local native plugin-manager logs; output is not uploaded.');
+  }
+  const next = await readDesired(home);
+  const g = (await listGenerations(home)).find(g => next.includes(g.id) && g.pluginName === p.name && g.version === p.version);
+  if (!g) { await result.rollback?.(); throw new Error('Native generation verification failed: ' + p.name); }
+  result.commit?.();
+  const row = { name: p.name, version: p.version, sourceHash, generation: g.id, action: 'installed', source: 'npm' };
   report.plugins.push(row); progress.set(p.name, row);
   await saveReceipt('installing');
 }

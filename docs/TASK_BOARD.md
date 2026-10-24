@@ -2,7 +2,7 @@
 
 源码位于 [workbenches/task-board](../workbenches/task-board)，能力见其 [README](../workbenches/task-board/README.md)，验证范围见 [当前版本摘要](../workbenches/task-board/docs/CURRENT-VERSION.md)。
 
-本工作台作为可选源码同步，包含已构建客户端；默认教学安装器仍安装 `classroom.json.plugins` 中的九个插件，不自动启用 `workbenches`。GitHub 同步不安装插件到维护者正在运行的 DSH，也不访问个人任务、模型或账号。
+本工作台作为可选源码同步，包含已构建客户端；默认教学安装器仍安装 `classroom.json.plugins` 与 `classroom.json.npmPlugins` 中列出的插件，不自动启用 `workbenches`。GitHub 同步不安装插件到维护者正在运行的 DSH，也不访问个人任务、模型或账号。
 
 ## 单独构建与安装
 
@@ -17,7 +17,7 @@ pnpm check:package
 pnpm pack
 ```
 
-生成的 `dsh-task-board-1.8.1.tgz` 可通过本人 Desktop 的插件安装入口或原生 CLI 加到本人确认的 web profile。仓库不保存维护者的原始安装包、DSH home、profile、任务或凭据。工作台与默认九插件分别安装。
+生成的 `dsh-task-board-1.8.1.tgz` 可通过本人 Desktop 的插件安装入口或原生 CLI 加到本人确认的 web profile。仓库不保存维护者的原始安装包、DSH home、profile、任务或凭据。工作台与默认插件分别安装。
 
 工作台身份保留为 `xudingsheng/dsh-task-board`，用于兼容既有状态；此字符串不是当前源码托管地址。不要只为调整 GitHub 路径而改变它。
 
